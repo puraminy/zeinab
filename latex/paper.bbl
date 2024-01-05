@@ -1,0 +1,70 @@
+\begin{thebibliography}{10}
+
+\bibitem{ref1}
+B.C. Pak and Y.I. Cho.
+\newblock Hydrodynamic and heat transfer study of dispersed fluids with
+  submicron metallic oxide particle.
+\newblock {\em Exp. Heat Transfer}, 11:151–170, 1998.
+
+\bibitem{ref2}
+Y.~He, Y.~Men, Y.~Zhao, H.~Lu, and Y.~Ding.
+\newblock Numerical investigation into the convective heat transfer of tio2
+  nanofluids flowing through a straight tube under the laminar flow conditions.
+\newblock {\em Appl. Therm. Eng.}, 29:1965--1972, 2009.
+
+\bibitem{ref3}
+A.~K. Santra, N.~Chakraborty, and S.~Sen.
+\newblock Prediction of heat transfer due to presence of copper–water
+  nanofluid using resilient-propagation neural network.
+\newblock {\em International Journal of Thermal Sciences}, 48:1311–1318,
+  2009.
+
+\bibitem{ref4}
+S.~A. Fazeli, S.~M. Hosseini~Hashemi, H.~Zirakzadeh, and Mehdi Ashjaee.
+\newblock Experimental and numerical investigation of heat transfer in a
+  miniature heat sink utilizing silica nanofluid.
+\newblock {\em Superlattices and Microstructures}, 51:247–264, 2012.
+
+\bibitem{ref5}
+M.~Balcilar, A.S. Dalkilic, A.~Suriyawong, T.~Yiamsawas, and S.~Wongwises.
+\newblock Investigation of pool boiling of nanofluids using artificial neural
+  networks and correlation development techniques.
+\newblock {\em International Communications in Heat and Mass Transfer},
+  39:424–431, 2012.
+
+\bibitem{ref6}
+M.~M. Papari, F.~Yousefi, J.~Moghadasi, H.~Karimi, and A.~Campo.
+\newblock Modeling thermal conductivity augmentation of nanofluids using
+  diffusion neural networks.
+\newblock {\em International Journal of Thermal Sciences}, 50:44–52, 2011.
+
+\bibitem{ref7}
+M.~Hojjat, S.Gh. Etemad, R.~Bagheri, and J.~Thibault.
+\newblock Thermal conductivity of non-newtonian nanofluids: Experimental data
+  and modeling using neural network.
+\newblock {\em International Journal of Heat and Mass Transfer},
+  54:1017–1023, 2011.
+
+\bibitem{ref8}
+R.L. Hamilton and O.K. Crosser.
+\newblock Thermal conductivity of heterogeneous two-component systems.
+\newblock {\em I \& EC Fundam.}, 125 (3):187–191, 1962.
+
+\bibitem{ref11}
+A.B. Bulsari.
+\newblock {\em Neural networks for chemical engineers}.
+\newblock Elsevier Science Inc., New York, 1995.
+
+\bibitem{ref9}
+V.~Gnielinski.
+\newblock New equations for heat and mass transfer in turbulent pipe and
+  channel flow.
+\newblock {\em Int. Chem. Eng.}, 16:359--368, 1976.
+
+\bibitem{ref10}
+R.~K Shah.
+\newblock Thermal entry length solutions for the circular tube and parallel
+  plates.
+\newblock pages 11--75, 1975.
+
+\end{thebibliography}
