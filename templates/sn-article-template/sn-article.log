@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.25 (MiKTeX 23.10) (preloaded format=pdflatex 2024.1.4)  5 JAN 2024 11:53
+This is pdfTeX, Version 3.141592653-2.6-1.40.25 (MiKTeX 23.10) (preloaded format=pdflatex 2024.1.4)  5 JAN 2024 11:55
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -729,10 +729,7 @@ LaTeX Font Warning: Font shape `U/rsfs/m/n' in size <5.52061> not available
 LaTeX Font Info:    Calculating math sizes for size <10.03749> on input line 14
 9.
 
-Package natbib Warning: Citation `ref1' on page 1 undefined on input line 153.
-
-
-Package natbib Warning: Citation `ref2' on page 1 undefined on input line 163.
+Package natbib Warning: Citation `bib1' on page 1 undefined on input line 152.
 
 
 Underfull \vbox (badness 10000) has occurred while \output is active []
@@ -740,220 +737,220 @@ Underfull \vbox (badness 10000) has occurred while \output is active []
  [1
 
 {C:/Users/tadbirsabz/AppData/Local/MiKTeX/fonts/map/pdftex/pdftex.map}]
-
-Package natbib Warning: Citation `ref3' on page 2 undefined on input line 168.
-
-
-Package natbib Warning: Citation `ref4' on page 2 undefined on input line 168.
-
-
-Package natbib Warning: Citation `ref5' on page 2 undefined on input line 168.
-
-
-Package natbib Warning: Citation `ref6' on page 2 undefined on input line 170.
-
-
-Package natbib Warning: Citation `ref7' on page 2 undefined on input line 170.
-
-
 Underfull \vbox (badness 10000) has occurred while \output is active []
 
  [2]
-
-Package natbib Warning: Citation `ref8' on page 3 undefined on input line 210.
-
-
-Underfull \vbox (badness 10000) has occurred while \output is active []
-
- [3]
-LaTeX Font Info:    Calculating math sizes for size <8.03> on input line 256.
+LaTeX Font Info:    Calculating math sizes for size <8.03> on input line 208.
 
 
 LaTeX Font Warning: Font shape `OT1/cmr/m/n' in size <4.015> not available
-(Font)              size <5> substituted on input line 256.
+(Font)              size <5> substituted on input line 208.
 
 
 LaTeX Font Warning: Font shape `OML/cmm/m/it' in size <4.015> not available
-(Font)              size <5> substituted on input line 256.
+(Font)              size <5> substituted on input line 208.
 
 
 LaTeX Font Warning: Font shape `OMS/cmsy/m/n' in size <4.015> not available
-(Font)              size <5> substituted on input line 256.
-
-
-LaTeX Font Warning: Font shape `OT1/cmr/bx/n' in size <4.015> not available
-(Font)              size <5> substituted on input line 256.
+(Font)              size <5> substituted on input line 208.
 
 
 LaTeX Font Warning: Font shape `U/rsfs/m/n' in size <4.015> not available
-(Font)              size <5> substituted on input line 256.
+(Font)              size <5> substituted on input line 208.
 
 
-Package natbib Warning: Citation `ref11' on page 4 undefined on input line 269.
-
+LaTeX Warning: `h' float specifier changed to `ht'.
 
 
 Underfull \vbox (badness 10000) has occurred while \output is active []
 
- [4
+ [3
 pdfTeX warning (ext4): destination with the same identifier (name{table.1}) has
  been already used, duplicate ignored
 <argument> ...shipout:D \box_use:N \l_shipout_box 
                                                   \__shipout_drop_firstpage_...
-l.270 
-      ]
+l.272 \vfill\eject
+                  ]
 
 LaTeX Warning: No positions in optional float specifier.
-               Default added (so using `tbp') on input line 271.
+               Default added (so using `tbp') on input line 277.
 
-
-Package natbib Warning: Citation `ref9' on page 5 undefined on input line 288.
-
-
-Package natbib Warning: Citation `chen2023' on page 5 undefined on input line 2
-99.
-
-
-Package natbib Warning: Citation `ref10' on page 5 undefined on input line 303.
-
-
+Package epstopdf Info: Source file: <fig.eps>
+(epstopdf)                    date: 2010-04-07 16:58:46
+(epstopdf)                    size: 91593 bytes
+(epstopdf)             Output file: <fig-eps-converted-to.pdf>
+(epstopdf)                    date: 2024-01-05 11:55:30
+(epstopdf)                    size: 3136 bytes
+(epstopdf)             Command: <miktex-epstopdf --outfile=fig-eps-converted-to
+.pdf fig.eps>
+(epstopdf)             \includegraphics on input line 317.
+Package epstopdf Info: Output file is already uptodate.
+<fig-eps-converted-to.pdf, id=117, 505.89pt x 84.315pt>
+File: fig-eps-converted-to.pdf Graphic file (type pdf)
+<use fig-eps-converted-to.pdf>
+Package pdftex.def Info: fig-eps-converted-to.pdf  used on input line 317.
+(pdftex.def)             Requested size: 334.79773pt x 55.79987pt.
 
 Underfull \vbox (badness 10000) has occurred while \output is active []
 
- [5
+ [4
 pdfTeX warning (ext4): destination with the same identifier (name{table.2}) has
  been already used, duplicate ignored
 <argument> ...shipout:D \box_use:N \l_shipout_box 
                                                   \__shipout_drop_firstpage_...
-l.304 
-      ]
+l.323 F
+       or sample purpose, we have included the width of images in the option...
+
+pdfTeX warning (ext4): destination with the same identifier (name{figure.1}) ha
+s been already used, duplicate ignored
+<argument> ...shipout:D \box_use:N \l_shipout_box 
+                                                  \__shipout_drop_firstpage_...
+l.323 F
+       or sample purpose, we have included the width of images in the option...
+ <./fig-eps-converted-to.pdf>]
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+ [5
+pdfTeX warning (ext4): destination with the same identifier (name{table.3}) has
+ been already used, duplicate ignored
+<argument> ...shipout:D \box_use:N \l_shipout_box 
+                                                  \__shipout_drop_firstpage_...
+l.323 F
+       or sample purpose, we have included the width of images in the option...
+]
+LaTeX Font Info:    Trying to load font information for OMS+cmss on input line 
+367.
+LaTeX Font Info:    No file OMScmss.fd. on input line 367.
+
+
+LaTeX Font Warning: Font shape `OMS/cmss/m/n' undefined
+(Font)              using `OMS/cmsy/m/n' instead
+(Font)              for symbol `textbraceleft' on input line 367.
+
+Package hyperref Info: bookmark level for unknown algorithm defaults to 0 on in
+put line 374.
+(d:\MiKTeX\tex/latex/listings\lstlang1.sty
+File: lstlang1.sty 2023/02/27 1.9 listings language file
+)
+LaTeX Font Info:    Trying to load font information for OMS+cmr on input line 4
+09.
+ (d:\MiKTeX\tex/latex/base\omscmr.fd
+File: omscmr.fd 2023/04/13 v2.5m Standard LaTeX font definitions
+)
+LaTeX Font Info:    Font shape `OMS/cmr/m/n' in size <9> not available
+(Font)              Font shape `OMS/cmsy/m/n' tried instead on input line 409.
+
+Overfull \hbox (7.55843pt too wide) in paragraph at lines 403--415
+[]$[]$ 
+ []
+
+
 Underfull \vbox (badness 10000) has occurred while \output is active []
 
  [6]
-(sn-article.bbl)
-<fig1.png, id=115, 669.2503pt x 826.58812pt>
-File: fig1.png Graphic file (type png)
-<use fig1.png>
-Package pdftex.def Info: fig1.png  used on input line 339.
-(pdftex.def)             Requested size: 334.79773pt x 413.52007pt.
-<fig2.png, id=116, 302.3295pt x 162.6075pt>
-File: fig2.png Graphic file (type png)
-<use fig2.png>
-Package pdftex.def Info: fig2.png  used on input line 346.
-(pdftex.def)             Requested size: 297.60114pt x 160.07132pt.
-<fig3.png, id=118, 251.13824pt x 165.0165pt>
-File: fig3.png Graphic file (type png)
-<use fig3.png>
-Package pdftex.def Info: fig3.png  used on input line 353.
-(pdftex.def)             Requested size: 297.60114pt x 195.5537pt.
-<fig4.png, id=119, 471.2004pt x 319.9152pt>
-File: fig4.png Graphic file (type png)
-<use fig4.png>
-Package pdftex.def Info: fig4.png  used on input line 360.
-(pdftex.def)             Requested size: 334.79773pt x 227.30734pt.
-<fig5.png, id=120, 471.2004pt x 317.988pt>
-File: fig5.png Graphic file (type png)
-<use fig5.png>
-Package pdftex.def Info: fig5.png  used on input line 367.
-(pdftex.def)             Requested size: 260.39886pt x 175.73334pt.
-<fig8.png, id=121, 471.2004pt x 319.9152pt>
-File: fig8.png Graphic file (type png)
-<use fig8.png>
-Package pdftex.def Info: fig8.png  used on input line 374.
-(pdftex.def)             Requested size: 297.60114pt x 202.05531pt.
-<fig6.png, id=122, 530.58224pt x 342.078pt>
-File: fig6.png Graphic file (type png)
-<use fig6.png>
-Package pdftex.def Info: fig6.png  used on input line 382.
-(pdftex.def)             Requested size: 334.79773pt x 215.85477pt.
-<fig9.png, id=123, 344.9688pt x 216.81pt>
-File: fig9.png Graphic file (type png)
-<use fig9.png>
-Package pdftex.def Info: fig9.png  used on input line 390.
-(pdftex.def)             Requested size: 260.39886pt x 163.67235pt.
+Underfull \vbox (badness 10000) has occurred while \output is active []
 
+ [7]
+
+Package natbib Warning: Citation `bib1' on page 8 undefined on input line 434.
+
+
+Package natbib Warning: Citation `bib2' on page 8 undefined on input line 434.
+
+
+Package natbib Warning: Citation `bib3' on page 8 undefined on input line 436.
+
+
+Package natbib Warning: Citation `bib4' on page 8 undefined on input line 436.
+
+
+Package natbib Warning: Citation `bib5' on page 8 undefined on input line 436.
+
+
+Package natbib Warning: Citation `bib6' on page 8 undefined on input line 436.
+
+
+Package natbib Warning: Citation `bib7' on page 8 undefined on input line 436.
+
+
+Package natbib Warning: Citation `bib8' on page 8 undefined on input line 436.
+
+
+Package natbib Warning: Citation `bib9' on page 8 undefined on input line 436.
+
+
+Package natbib Warning: Citation `bib10' on page 8 undefined on input line 436.
+
+
+
+Package natbib Warning: Citation `bib11' on page 8 undefined on input line 436.
+
+
+
+Package natbib Warning: Citation `bib12' on page 8 undefined on input line 436.
+
+
+
+Package natbib Warning: Citation `bib13' on page 8 undefined on input line 436.
+
+
+
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+ [8]
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+ [9]
+Underfull \hbox (badness 1859) in paragraph at lines 531--532
+\OT1/cmr/m/n/10 of a clin-i-cal trial then addi-tional infor-ma-tion will be re
+quired. Please visit
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 531--532
+\OT1/cmr/m/n/10 ([][]$https : / / www . nature . com / nature-[]research / edit
+orial-[]policies$[][]) for Nature Port-
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 531--532
+\OT1/cmr/m/n/10 fo-lio jour-nals, ([][]$https : / / www . springer . com / gp /
+ authors-[]editors / journal-[]author /
+ []
+
+
+Underfull \hbox (badness 4634) in paragraph at lines 531--532
+\OT1/cmr/m/n/10 journal-[]author-[]helpdesk / publishing-[]ethics / 14214$[][])
+ for Springer Nature jour-nals,
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 531--532
+\OT1/cmr/m/n/10 or ([][]$https : / / www . biomedcentral . com / getpublished /
+ editorial-[]policies # ethics + and +
+ []
+
+
+Package hyperref Warning: Difference (4) between bookmark levels is greater 
+(hyperref)                than one, level fixed on input line 547.
+
+
+Package hyperref Warning: Difference (3) between bookmark levels is greater 
+(hyperref)                than one, level fixed on input line 555.
+
+
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+ [10]
+(sn-article.bbl)
 
 Package natbib Warning: There were undefined citations.
 
 
 Underfull \vbox (badness 10000) has occurred while \output is active []
 
- [7
-pdfTeX warning (ext4): destination with the same identifier (name{table.3}) has
- been already used, duplicate ignored
-<argument> ...shipout:D \box_use:N \l_shipout_box 
-                                                  \__shipout_drop_firstpage_...
-l.452 \end{document}
-                    
-pdfTeX warning (ext4): destination with the same identifier (name{table.4}) has
- been already used, duplicate ignored
-<argument> ...shipout:D \box_use:N \l_shipout_box 
-                                                  \__shipout_drop_firstpage_...
-l.452 \end{document}
-                    ]
-Underfull \vbox (badness 10000) has occurred while \output is active []
-
- [8
-pdfTeX warning (ext4): destination with the same identifier (name{figure.1}) ha
-s been already used, duplicate ignored
-<argument> ...shipout:D \box_use:N \l_shipout_box 
-                                                  \__shipout_drop_firstpage_...
-l.452 \end{document}
-                     <./fig1.png (PNG copy)>]
-Underfull \vbox (badness 10000) has occurred while \output is active []
-
- [9
-pdfTeX warning (ext4): destination with the same identifier (name{figure.2}) ha
-s been already used, duplicate ignored
-<argument> ...shipout:D \box_use:N \l_shipout_box 
-                                                  \__shipout_drop_firstpage_...
-l.452 \end{document}
-                    
-pdfTeX warning (ext4): destination with the same identifier (name{figure.3}) ha
-s been already used, duplicate ignored
-<argument> ...shipout:D \box_use:N \l_shipout_box 
-                                                  \__shipout_drop_firstpage_...
-l.452 \end{document}
-                     <./fig2.png> <./fig3.png>]
-Underfull \vbox (badness 10000) has occurred while \output is active []
-
- [10
-pdfTeX warning (ext4): destination with the same identifier (name{figure.4}) ha
-s been already used, duplicate ignored
-<argument> ...shipout:D \box_use:N \l_shipout_box 
-                                                  \__shipout_drop_firstpage_...
-l.452 \end{document}
-                    
-pdfTeX warning (ext4): destination with the same identifier (name{figure.5}) ha
-s been already used, duplicate ignored
-<argument> ...shipout:D \box_use:N \l_shipout_box 
-                                                  \__shipout_drop_firstpage_...
-l.452 \end{document}
-                     <./fig4.png> <./fig5.png>]
-Underfull \vbox (badness 10000) has occurred while \output is active []
-
- [11
-pdfTeX warning (ext4): destination with the same identifier (name{figure.6}) ha
-s been already used, duplicate ignored
-<argument> ...shipout:D \box_use:N \l_shipout_box 
-                                                  \__shipout_drop_firstpage_...
-l.452 \end{document}
-                    
-pdfTeX warning (ext4): destination with the same identifier (name{figure.7}) ha
-s been already used, duplicate ignored
-<argument> ...shipout:D \box_use:N \l_shipout_box 
-                                                  \__shipout_drop_firstpage_...
-l.452 \end{document}
-                     <./fig8.png> <./fig6.png>]
-Underfull \vbox (badness 10000) has occurred while \output is active []
-
- [12
-pdfTeX warning (ext4): destination with the same identifier (name{figure.8}) ha
-s been already used, duplicate ignored
-<argument> ...shipout:D \box_use:N \l_shipout_box 
-                                                  \__shipout_drop_firstpage_...
-l.452 \end{document}
-                     <./fig9.png>] (sn-article.aux)
+ [11]
+(sn-article.aux)
  ***********
 LaTeX2e <2023-06-01> patch level 1
 L3 programming layer <2023-08-29>
@@ -963,34 +960,43 @@ L3 programming layer <2023-08-29>
 LaTeX Font Warning: Size substitutions with differences
 (Font)              up to 0.985pt have occurred.
 
+
+LaTeX Font Warning: Some font shapes were not available, defaults substituted.
+
 Package rerunfilecheck Info: File `sn-article.out' has not changed.
-(rerunfilecheck)             Checksum: 8D695839A774A83C8CA39A6E821AA46F;3877.
+(rerunfilecheck)             Checksum: B1366A264836B167BE71CB57F1A49884;3117.
  ) 
 Here is how much of TeX's memory you used:
- 14685 strings out of 475248
- 216356 string characters out of 5774214
- 1933785 words of memory out of 5000000
- 35904 multiletter control sequences out of 15000+600000
- 575649 words of font info for 108 fonts, out of 8000000 for 9000
+ 15104 strings out of 475248
+ 220918 string characters out of 5774214
+ 1945785 words of memory out of 5000000
+ 36293 multiletter control sequences out of 15000+600000
+ 578678 words of font info for 121 fonts, out of 8000000 for 9000
  1151 hyphenation exceptions out of 8191
- 90i,11n,93p,969b,537s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 90i,17n,93p,739b,1668s stack positions out of 10000i,1000n,20000p,200000b,200000s
  <C:\Users\tadbirsabz\AppData\Local\MiKTeX\fonts/pk/ljfour/jknappen/ec/dpi600
 \tcrm1000.pk><d:/MiKTeX/fonts/type1/public/amsfonts/cmextra/cmbsy8.pfb><d:/MiKT
 eX/fonts/type1/public/amsfonts/cm/cmbx10.pfb><d:/MiKTeX/fonts/type1/public/amsf
 onts/cm/cmbx12.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/cm/cmbx8.pfb><d:/MiKT
 eX/fonts/type1/public/amsfonts/cm/cmbx9.pfb><d:/MiKTeX/fonts/type1/public/amsfo
 nts/cm/cmex10.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/cm/cmmi10.pfb><d:/MiKT
-eX/fonts/type1/public/amsfonts/cm/cmmi7.pfb><d:/MiKTeX/fonts/type1/public/amsfo
-nts/cm/cmr10.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/cm/cmr12.pfb><d:/MiKTeX
-/fonts/type1/public/amsfonts/cm/cmr17.pfb><d:/MiKTeX/fonts/type1/public/amsfont
-s/cm/cmr6.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/cm/cmr7.pfb><d:/MiKTeX/fon
-ts/type1/public/amsfonts/cm/cmr8.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/cm/
-cmr9.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/cm/cmsy10.pfb><d:/MiKTeX/fonts/
-type1/public/amsfonts/cm/cmsy8.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/cm/cm
-tt10.pfb>
-Output written on sn-article.pdf (12 pages, 449630 bytes).
+eX/fonts/type1/public/amsfonts/cm/cmmi6.pfb><d:/MiKTeX/fonts/type1/public/amsfo
+nts/cm/cmmi7.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/cm/cmmi8.pfb><d:/MiKTeX
+/fonts/type1/public/amsfonts/cm/cmmi9.pfb><d:/MiKTeX/fonts/type1/public/amsfont
+s/cm/cmr10.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/cm/cmr12.pfb><d:/MiKTeX/f
+onts/type1/public/amsfonts/cm/cmr17.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/
+cm/cmr6.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/cm/cmr7.pfb><d:/MiKTeX/fonts
+/type1/public/amsfonts/cm/cmr8.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/cm/cm
+r9.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/cm/cmss9.pfb><d:/MiKTeX/fonts/typ
+e1/public/amsfonts/cm/cmssbx10.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/cm/cm
+sy10.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/cm/cmsy7.pfb><d:/MiKTeX/fonts/t
+ype1/public/amsfonts/cm/cmsy8.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/cm/cms
+y9.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/cm/cmti10.pfb><d:/MiKTeX/fonts/ty
+pe1/public/amsfonts/cm/cmtt10.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/symbol
+s/msbm10.pfb><d:/MiKTeX/fonts/type1/public/rsfs/rsfs10.pfb>
+Output written on sn-article.pdf (11 pages, 381296 bytes).
 PDF statistics:
- 261 PDF objects out of 1000 (max. 8388607)
- 51 named destinations out of 1000 (max. 500000)
- 153 words of extra memory for PDF output out of 10000 (max. 10000000)
+ 350 PDF objects out of 1000 (max. 8388607)
+ 71 named destinations out of 1000 (max. 500000)
+ 150 words of extra memory for PDF output out of 10000 (max. 10000000)
 

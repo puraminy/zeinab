@@ -9,9 +9,9 @@ I couldn't open style file sn-mathphys.bst
 I'm skipping whatever remains of this command
 Reallocating 'name_of_file' (item size: 1) to 16 items.
 I found no style file---while reading file sn-article.aux
-You've used 12 entries,
+You've used 13 entries,
             0 wiz_defined-function locations,
-            97 strings with 574 characters,
+            98 strings with 576 characters,
 and the built_in function-call counts, 0 in all, are:
 = -- 0
 > -- 0

@@ -1,6 +1,8 @@
 \documentclass{article}
 \usepackage{graphicx}
 \usepackage{amsmath}
+\usepackage{hyperref}
+
 
 \linespread{1.5} % You can adjust the factor (e.g., 1.5 for 1.5x spacing)
 
@@ -13,17 +15,12 @@
 \maketitle
 
 \begin{abstract}
-	Salam2223232
-	
-	
 In this research, a neural network methodology was implemented to predict the forced convective heat transfer coefficient of nanofluids. Various solutions with distinct TiO2 nanoparticle concentrations were synthesized through the two-step method and directed upward within a vertical pipe under both laminar and turbulent flow conditions. The investigation covered diverse operational parameters, including heat flux, thermal conductivity of fluids, nanoparticle concentration, and flow Reynolds number, to quantify the convective heat transfer coefficient. These operational parameters were incorporated as inputs into an artificial neural network to model the convective heat transfer coefficient. Evaluation metrics, such as mean square error and correlation coefficient, were computed, revealing the remarkable performance of the neural network in capturing the underlying processes. The introduction of nanoparticles into the base fluid significantly amplified the forced convective heat transfer coefficient, with more pronounced effects observed in base fluids exhibiting lower thermal conductivity and flows characterized by higher Reynolds numbers and elevated heat fluxes. The findings underscore the efficacy of neural networks in elucidating the complex interactions governing convective heat transfer in nanofluids.
 \end{abstract}
 
 
-Taghirs
-
 \section{Introduction}
-Improving the efficiency of working fluids in thermo systems enhances their overall performance and minimizes size requirements. Nanofluids, which are suspensions of small percentages (<5 vol.  \%) of various nanoparticles in conventional working fluids, have emerged as an excellent solution to address the thermal challenges in advanced heat transfer systems.
+Improving the efficiency of working fluids in thermo systems enhances their overall performance and minimizes size requirements. Nanofluids, which are suspensions of small percentages (<5 vol.  \%) of various nanoparticles in conventional working fluids, have emerged as an excellent solution to address the thermal challenges in advanced heat transfer systems \cite{chen2023}.
 
 In a study by Pak and Cho on nanofluids consisting of 3 vol.  \% 27 nm titanium dioxide particles in water, a new correlation for turbulent convective heat transfer in dilute nanofluids was reported \cite{ref1}:
 
@@ -37,8 +34,49 @@ where  \textbf{Nu} is the Nusselt number,  \textbf{Re}  is the Reynolds number, 
 
 He et al. synthesized stable aqueous 20 nm titanium dioxide nanofluids with different agglomerate sizes and concentrations, revealing an increase in convective heat transfer coefficient with nanoparticle concentration, particularly in turbulent flow regimes \cite{ref2}.
 
+NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN
+
+The field of nanotechnology, dealing with materials at the nanometer scale, has garnered significant attention from scientists owing to its potential to enhance various material properties [1–4]. This domain has found widespread applications in thermal engineering, particularly in addressing the critical challenges associated with thermal conductivity (TC) of operating fluids. The thermal conductivity of fluids plays a pivotal role in determining the performance of thermal mediums, where higher thermal conductivity is preferred to intensify heat transfer rates. Nanofluids, characterized by suspensions of nanoparticles in conventional working fluids, have emerged as a promising approach for enhancing heat transfer, attributed to their heightened thermal conductivity [5–8].
+
+Numerous studies have demonstrated the efficacy of employing nanofluids in thermal mediums such as heat exchangers and heat pipes, resulting in substantial enhancements in thermal performance [9, 10]. Beyond thermal mediums, the integration of nanofluids has shown potential in improving the efficiency and reliability of different energy-related systems, especially those with low carbon emissions. Active techniques, including the use of nanofluids, have been identified as catalysts for heat transfer augmentation, leading to reduced energy consumption and a positive environmental impact. For instance, Reddy et al.'s comprehensive review on the applications of nanofluids in solar energy highlighted significant improvements in conversion efficiency compared to pure fluids [ref].
+
+In the realm of clean energy systems, the reliability and efficiency of nanofluid applications have been further underscored. For instance, Islam et al. [11] investigated the impact of employing nanofluids in the thermal management of a PEM fuel cell, reporting a substantial increase in convective heat transfer, indicating enhanced cooling system reliability. Similarly, Zhong et al. [12] studied TiO2 nanofluid in a mini channel, observing increased thermal conductivity and viscosity with nanoparticle concentration. The altered flow and thermal patterns of nanofluids, compared to traditional fluids, were highlighted, showcasing their potential in diverse applications.
+
+Further investigations by Gravndyan et al. [13] delved into the flow of water/TiO2 nanofluids inside a microchannel, considering different aspect ratios of ribs. Their findings demonstrated that the addition of nanoparticles increased both friction factor and Performance Evaluation Criteria (PEC), indicating a potential for improved heat transfer performance.
+
+As established in previous studies, the superior heat transfer performance of nanofluids compared to conventional fluids is primarily attributed to their increased thermal conductivity. Consequently, several studies have focused on modeling the thermophysical properties of nanofluids [14, 15]. These modeling efforts have employed various methods, including artificial neural networks (ANN), support vector machines (SVM), and mathematical correlations [16, 17]. Among these approaches, ANNs have demonstrated their attractiveness due to their ability to accurately predict and forecast complex output modes [18, 19].
+
+Esfe et al. [20] applied ANN to estimate the thermal conductivity of Al2O3/EG nanofluid, achieving a maximum deviation of 1.3\%. Vakili et al. [21] successfully employed ANN to model the thermal conductivity of CuO/water-EG nanofluid, demonstrating accurate predictions with an R-squared value of 0.999. Toghraie et al. [22] extended the application of ANN to propose a predictive model for the thermal conductivity of SiO2/EG-water nanofluid, showcasing the great reliability of their model with a maximum error value of 0.0125. In another study, Esfe et al. [23] utilized ANN to estimate the thermal conductivity of Al2O3/water-EG nanofluid, achieving a mean square error (MSE) of around \(2.08 \times 10^{-6}\) under optimal conditions.
+
+Further extending the application of ANN, Esfe et al. [24] employed a two-hidden-layer network to predict the Nusselt number and pressure drop of TiO2 nanofluids with varying nanoparticle diameters. Their study indicated that an increase in Reynolds number and concentration led to higher Nusselt number and pressure drop, showcasing the potential of nanofluids in diverse heat transfer applications.
+
+Considering the wide-ranging applications of TiO2 nanofluids in energy-related technologies, this paper aims to contribute a comprehensive model for the thermal conductivity of various nanofluids. In pursuit of a model applicable to different base fluids, the thermal conductivity of the base fluid is considered as an additional input, along with size, volume fraction, and temperature. The comparative performance analysis of ANN-based models utilizes two methods, namely group method of data handling (GMDH) and multi-layer perceptron (MLP). This study proposes different models for the thermal conductivity modeling of nanofluids with TiO2 across various base fluids. Additionally, two distinct types of networks are assessed to determine the highest accuracy, while varying the architecture of the models to identify the network with the maximum reliability in forecasting the considered output.
+
+
 
 \section{Related Works}
+
+Zhang, Y., et al. (2021): Investigated the convective heat transfer enhancement of TiO2-water nanofluids in a circular tube, emphasizing the impact of nanoparticle concentration and temperature on heat transfer performance \cite{ref8}.
+
+Wang, J., et al. (2022): Explored the influence of particle size and volume fraction on the thermal conductivity of TiO2-based nanofluids, providing insights into their heat transfer characteristics \cite{ref9}.
+
+Li, X., et al. (2023): Applied machine learning techniques, including ANN, for predicting heat transfer coefficients in nanofluids with diverse nanoparticle types, revealing the importance of considering particle morphology in modeling \cite{ref10}.
+
+Chen, Z., et al. (2023): Investigated the convective heat transfer performance of ethylene glycol-based nanofluids containing TiO2 nanoparticles under turbulent flow conditions, highlighting the impact of flow parameters on heat transfer coefficients \cite{ref11}.
+
+Kim, H., et al. (2024): Studied the forced convective heat transfer of TiO2-ethylene glycol nanofluids in a horizontal tube, focusing on the thermal enhancement under varying nanoparticle concentrations and flow velocities \cite{ref12}.Zhang, Y., et al. (2021): Investigated the convective heat transfer enhancement of TiO2-water nanofluids in a circular tube, emphasizing the impact of nanoparticle concentration and temperature on heat transfer performance \cite{ref8}.
+
+Wang, J., et al. (2022): Explored the influence of particle size and volume fraction on the thermal conductivity of TiO2-based nanofluids, providing insights into their heat transfer characteristics \cite{ref9}.
+
+Li, X., et al. (2023): Applied machine learning techniques, including ANN, for predicting heat transfer coefficients in nanofluids with diverse nanoparticle types, revealing the importance of considering particle morphology in modeling \cite{ref10}.
+
+Chen, Z., et al. (2023): Investigated the convective heat transfer performance of ethylene glycol-based nanofluids containing TiO2 nanoparticles under turbulent flow conditions, highlighting the impact of flow parameters on heat transfer coefficients \cite{ref11}.
+
+Kim, H., et al. (2024): Studied the forced convective heat transfer of TiO2-ethylene glycol nanofluids in a horizontal tube, focusing on the thermal enhancement under varying nanoparticle concentrations and flow velocities \cite{ref12}.
+
+
+NNNNNNNNNNNNNNNNNNNNNN
+%###############################
 
 While experimental studies provide valuable insights, more research is needed to model the intricate processes and establish empirical relations between effective parameters. Artificial neural networks (ANNs) have proven effective in modeling various processes. For instance, Santra et al. applied ANN to predict heat transfer in laminar natural convection of copper–water nanofluids, demonstrating accurate predictions within the training data range \cite{ref3}. Fazeli et al. utilized ANN to simulate the heat transfer characteristics of a miniature heat sink cooled by SiO2–water nanofluids, achieving excellent agreement with mathematical simulations \cite{ref4}. Balcilar et al. employed ANNs to determine parameters' effects on the heat transfer coefficient of nanofluids, showing good agreement with experimental data \cite{ref5}.
 

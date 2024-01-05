@@ -1,3 +1,4 @@
+from matplotlib import pyplot as plt
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -5,11 +6,14 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 import pandas as pd
 import numpy as np
+import torch.nn as nn
+from torchviz import make_dot
 
 # Load data from CSV file into a DataFrame
 df = pd.read_csv('data.csv')
 
 # Split and scale the data
+# X = df[['flow_rate', 'conc_nano', 'Kfluid', 'heat_flux', 'X_D']]
 X = df[['flow_rate', 'conc_nano', 'Kfluid', 'heat_flux', 'X_D']]
 y = df['HTC'] # heat transfer Cofficent
 
@@ -166,3 +170,33 @@ y_test_np = y_test_denormalized.numpy()
 # Calculate R-squared
 r_squared = r2_score(y_test_np, predictions_np)
 print(f'R-squared on Test Set: {r_squared}')
+
+
+
+# Visualize the model
+
+dummy_input = torch.randn(1, input_size)
+
+dot = make_dot(model(dummy_input), params=dict(model.named_parameters()))
+dot.render("mlp_structure", format="png", cleanup=True)
+
+
+# Create a scatter plot
+plt.figure(figsize=(10, 6))
+plt.scatter(y_test_np, predictions_np, alpha=0.5)
+plt.title('Predictions vs. Actual (Test Set)')
+plt.xlabel('Actual Values')
+plt.ylabel('Predicted Values')
+plt.grid(True)
+plt.show()
+
+
+plt.figure(figsize=(10, 6))
+plt.scatter(y_test_np, y_test_np, color='green', label='Actual', alpha=0.5)
+plt.scatter(y_test_np, predictions_np, color='blue', label='Predicted', alpha=0.5)
+plt.title('Actual vs. Predicted Values (Test Set)')
+plt.xlabel('Values')
+plt.ylabel('Values')
+plt.legend()
+plt.grid(True)
+plt.show()
