@@ -2,12 +2,13 @@
 \usepackage{graphicx}
 \usepackage{amsmath}
 \usepackage{hyperref}
-
+\usepackage{float}
+\usepackage{booktabs}
 
 \linespread{1.5} % You can adjust the factor (e.g., 1.5 for 1.5x spacing)
 
 \title{Modeling Convective Heat Transfer Augmentation of TiO$_2$ Nanofluids using Neural Networks}
-\author{Zeinab pouramini}
+\author{Zeinab Pouramini, Zohresadat Shahryari, Motahareh Vakili Fathabadi }
 \date{}
 
 \begin{document}
@@ -15,7 +16,7 @@
 \maketitle
 
 \begin{abstract}
-In this research, a neural network methodology was implemented to predict the forced convective heat transfer coefficient of nanofluids. Various solutions with distinct TiO2 nanoparticle concentrations were synthesized through the two-step method and directed upward within a vertical pipe under both laminar and turbulent flow conditions. The investigation covered diverse operational parameters, including heat flux, thermal conductivity of fluids, nanoparticle concentration, and flow Reynolds number, to quantify the convective heat transfer coefficient. These operational parameters were incorporated as inputs into an artificial neural network to model the convective heat transfer coefficient. Evaluation metrics, such as mean square error and correlation coefficient, were computed, revealing the remarkable performance of the neural network in capturing the underlying processes. The introduction of nanoparticles into the base fluid significantly amplified the forced convective heat transfer coefficient, with more pronounced effects observed in base fluids exhibiting lower thermal conductivity and flows characterized by higher Reynolds numbers and elevated heat fluxes. The findings underscore the efficacy of neural networks in elucidating the complex interactions governing convective heat transfer in nanofluids.
+In this research, a neural network methodology was employed to predict the forced convective heat transfer coefficient of nanofluids, considering various operational parameters such as heat flux, thermal conductivity of fluids, nanoparticle concentration, and flow Reynolds number. These parameters served as inputs for the artificial neural network, enabling the modeling of the convective heat transfer coefficient. Through the assessment of different parameter combinations, we identified the most influential factors contributing to accurate predictions. The evaluation metrics, including mean square error and correlation coefficient, demonstrated the remarkable performance of the neural network in capturing the intricate processes. The findings underscore the efficacy of neural networks in elucidating the complex interactions governing convective heat transfer in nanofluids.
 \end{abstract}
 
 
@@ -34,7 +35,14 @@ where  \textbf{Nu} is the Nusselt number,  \textbf{Re}  is the Reynolds number, 
 
 He et al. synthesized stable aqueous 20 nm titanium dioxide nanofluids with different agglomerate sizes and concentrations, revealing an increase in convective heat transfer coefficient with nanoparticle concentration, particularly in turbulent flow regimes \cite{ref2}.
 
+NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN
+The introduction of nanoparticles into the base fluid significantly amplified the forced convective heat transfer coefficient, with more pronounced effects observed in base fluids exhibiting lower thermal conductivity and flows characterized by higher Reynolds numbers and elevated heat fluxes.
+
 NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN
+
+Various solutions with distinct TiO2 nanoparticle concentrations were synthesized through the two-step method and directed upward within a vertical pipe under both laminar and turbulent flow conditions.
+
+NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN
 
 The field of nanotechnology, dealing with materials at the nanometer scale, has garnered significant attention from scientists owing to its potential to enhance various material properties [1–4]. This domain has found widespread applications in thermal engineering, particularly in addressing the critical challenges associated with thermal conductivity (TC) of operating fluids. The thermal conductivity of fluids plays a pivotal role in determining the performance of thermal mediums, where higher thermal conductivity is preferred to intensify heat transfer rates. Nanofluids, characterized by suspensions of nanoparticles in conventional working fluids, have emerged as a promising approach for enhancing heat transfer, attributed to their heightened thermal conductivity [5–8].
 
@@ -50,7 +58,17 @@ Esfe et al. [20] applied ANN to estimate the thermal conductivity of Al2O3/EG na
 
 Further extending the application of ANN, Esfe et al. [24] employed a two-hidden-layer network to predict the Nusselt number and pressure drop of TiO2 nanofluids with varying nanoparticle diameters. Their study indicated that an increase in Reynolds number and concentration led to higher Nusselt number and pressure drop, showcasing the potential of nanofluids in diverse heat transfer applications.
 
-Considering the wide-ranging applications of TiO2 nanofluids in energy-related technologies, this paper aims to contribute a comprehensive model for the thermal conductivity of various nanofluids. In pursuit of a model applicable to different base fluids, the thermal conductivity of the base fluid is considered as an additional input, along with size, volume fraction, and temperature. The comparative performance analysis of ANN-based models utilizes two methods, namely group method of data handling (GMDH) and multi-layer perceptron (MLP). This study proposes different models for the thermal conductivity modeling of nanofluids with TiO2 across various base fluids. Additionally, two distinct types of networks are assessed to determine the highest accuracy, while varying the architecture of the models to identify the network with the maximum reliability in forecasting the considered output.
+Considering the wide-ranging applications of TiO2 nanofluids in energy-related technologies, this paper aims to contribute a comprehensive model for the thermal conductivity of various nanofluids. In pursuit of a model applicable to different base fluids, the thermal conductivity of the base fluid is considered as an additional input, along with size, volume fraction, and temperature. The comparative performance analysis of ANN-based models utilizes two methods, namely group method of data handling (GMDH) and multi-layer perceptron (MLP). This study proposes different models for the thermal conductivity modeling of nanofluids with TiO2 across various base fluids. Additionally, two distinct types of networks are assessed to determine the highest accuracy, while varying the architecture of the models to identify the network with the maximum reliability in forecasting the considered output. In Figrure \ref{fig:scatterplot}
+
+
+FFFF
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=\textwidth]{pics/scatter_plot}
+	\caption{This rere}
+	\label{fig:scatterplot}
+\end{figure}
+
 
 
 
@@ -144,7 +162,12 @@ Pr = \frac{\mu_f \cdot c_f}{k_f} \quad \text{(9)}
 
 For nanofluids, the Prandtl number is predicted by the Einstein equation. In Eq. (7), $x$ represents the axial distance from the entrance of the test section.
 
-
+\begin{figure}[th!]
+	\centering
+	\includegraphics[width=0.8\linewidth]{fig2}
+	\caption{}
+	\label{fig:fig2}
+\end{figure}
 
 \section{Modeling}
 
@@ -178,6 +201,27 @@ To identify the optimal back-propagation learning algorithm, various algorithms 
 As evident from Table 1, the Levenberg–Marquardt (LM) algorithm exhibited the lowest Mean Squared Error (MSE) of 0.0010, establishing it as the most effective back-propagation learning algorithm.
 
 \subsection{Optimization of Artificial Neural Network}
+Table \ref{table:myt} shows
+
+
+
+\begin{table}
+	\centering
+	\caption{This is table}
+    \label{table:myt}
+\begin{tabular}{c|c|c|cc|}
+	\hline
+	&  &  &  &  \\
+	\hline
+	&  &  &  &  \\
+	\hline
+	& kg & khjk &  &  \\
+
+	&  &  &  &  \\
+	\hline
+\end{tabular}
+
+\end{table}
 
 The number of hidden layer neurons significantly influences the performance of artificial neural networks (ANNs). Inappropriately low values hinder proper training, while excessively high values lead to overfitting \cite{ref11}. The optimal number of neurons in the hidden layer was determined through trial and error, ranging from 2 to 9 neurons. The relationship between the number of hidden layer neurons and MSE is presented in Table 2. The minimum MSE value of 0.0008 was observed with 6 neurons in the hidden layer. Consequently, the ANN was configured with 6 neurons in the hidden layer.
 
@@ -197,6 +241,30 @@ The number of hidden layer neurons significantly influences the performance of a
 \end{table}
 
 \subsection{Convective Heat Transfer Coefficient of Distilled Water}
+
+
+\begin{table}[h]
+	\centering
+	\begin{tabular}{lcccc}
+		\toprule
+		Algorithm & R2 & MSE & Function \\
+		\midrule
+		Back Propagation (BP) & 0.9899 & 0.0099 & trainrp \\
+		Resilient Backpropagation (Rprop) & 0.9969 & 0.0031 & traincgf \\
+		Fletcher–Reeves Conjugate Gradient & 0.9957 & 0.0042 & traincgp \\
+		Polak–Ribière Conjugate Gradient & 0.9960 & 0.0039 & traincgb \\
+		Powell–Beale Conjugate Gradient BP & 0.9990 & 0.0010 & trainlm \\
+		Levenberg–Marquardt BP & 0.9944 & 0.0112 & trainscg \\
+		Scaled Conjugate Gradient BP & 0.9963 & 0.0037 & trainbfg \\
+		BFGS Quasi-Newton BP & 0.9957 & 0.0042 & trainoss \\
+		One-Step Secant BP & 0.9910 & 0.0089 & traingd \\
+		Batch Gradient Descent & 0.7778 & 0.2186 & traingdx \\
+		Variable Learning Rate BP & & & \\
+		\bottomrule
+	\end{tabular}
+	\caption{Your table caption here.}
+	\label{tab:yourtablelabel}
+\end{table}
 
 The experimental system was tested with distilled water at Reynolds numbers of 2960 and 3960. To validate the constant heat flux boundary condition, the experimental data of the convective heat transfer coefficient of distilled water, represented as the Nusselt number (Nu), was compared with the predicted Nu number from the Gnielinski equation \cite{ref9}. The Gnielinski equation for constant heat flux boundary conditions is given by:
 
@@ -254,12 +322,7 @@ In this study, experimental work has been conducted to investigate the heat tran
 	\label{fig:fig1}
 \end{figure}
 
-\begin{figure}
-	\centering
-	\includegraphics[width=0.8\linewidth]{fig2}
-	\caption{}
-	\label{fig:fig2}
-\end{figure}
+
 
 \begin{figure}
 	\centering

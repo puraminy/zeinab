@@ -15,6 +15,7 @@ df = pd.read_csv('data.csv')
 # Split and scale the data
 # X = df[['flow_rate', 'conc_nano', 'Kfluid', 'heat_flux', 'X_D']]
 X = df[['flow_rate', 'conc_nano', 'Kfluid', 'heat_flux', 'X_D']]
+
 y = df['HTC'] # heat transfer Cofficent
 
 # Split data to test and train sets

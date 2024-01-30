@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.25 (MiKTeX 23.10) (preloaded format=pdflatex 2024.1.4)  5 JAN 2024 12:15
+This is pdfTeX, Version 3.141592653-2.6-1.40.25 (MiKTeX 23.10) (preloaded format=pdflatex 2024.1.4)  29 JAN 2024 12:32
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -255,45 +255,73 @@ Package uniquecounter Info: New unique counter `rerunfilecheck' on input line 2
 )
 \Hy@SectionHShift=\skip53
 )
+(d:\MiKTeX\tex/latex/float\float.sty
+Package: float 2001/11/08 v1.3d Float enhancements (AL)
+\c@float@type=\count283
+\float@exts=\toks23
+\float@box=\box53
+\@float@everytoks=\toks24
+\@floatcapt=\box54
+)
+(d:\MiKTeX\tex/latex/booktabs\booktabs.sty
+Package: booktabs 2020/01/12 v1.61803398 Publication quality tables
+\heavyrulewidth=\dimen156
+\lightrulewidth=\dimen157
+\cmidrulewidth=\dimen158
+\belowrulesep=\dimen159
+\belowbottomsep=\dimen160
+\aboverulesep=\dimen161
+\abovetopsep=\dimen162
+\cmidrulesep=\dimen163
+\cmidrulekern=\dimen164
+\defaultaddspace=\dimen165
+\@cmidla=\count284
+\@cmidlb=\count285
+\@aboverulesep=\dimen166
+\@belowrulesep=\dimen167
+\@thisruleclass=\count286
+\@lastruleclass=\count287
+\@thisrulewidth=\dimen168
+)
 (d:\MiKTeX\tex/latex/l3backend\l3backend-pdftex.def
 File: l3backend-pdftex.def 2023-04-19 L3 backend support: PDF output (pdfTeX)
-\l__color_backend_stack_int=\count283
-\l__pdf_internal_box=\box53
+\l__color_backend_stack_int=\count288
+\l__pdf_internal_box=\box55
 ) (paper.aux)
 \openout1 = `paper.aux'.
 
-LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 13.
-LaTeX Font Info:    ... okay on input line 13.
-LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 13.
-LaTeX Font Info:    ... okay on input line 13.
-LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 13.
-LaTeX Font Info:    ... okay on input line 13.
-LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 13.
-LaTeX Font Info:    ... okay on input line 13.
-LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 13.
-LaTeX Font Info:    ... okay on input line 13.
-LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 13.
-LaTeX Font Info:    ... okay on input line 13.
-LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 13.
-LaTeX Font Info:    ... okay on input line 13.
-LaTeX Font Info:    Checking defaults for PD1/pdf/m/n on input line 13.
-LaTeX Font Info:    ... okay on input line 13.
-LaTeX Font Info:    Checking defaults for PU/pdf/m/n on input line 13.
-LaTeX Font Info:    ... okay on input line 13.
+LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 14.
+LaTeX Font Info:    ... okay on input line 14.
+LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 14.
+LaTeX Font Info:    ... okay on input line 14.
+LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 14.
+LaTeX Font Info:    ... okay on input line 14.
+LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 14.
+LaTeX Font Info:    ... okay on input line 14.
+LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 14.
+LaTeX Font Info:    ... okay on input line 14.
+LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 14.
+LaTeX Font Info:    ... okay on input line 14.
+LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 14.
+LaTeX Font Info:    ... okay on input line 14.
+LaTeX Font Info:    Checking defaults for PD1/pdf/m/n on input line 14.
+LaTeX Font Info:    ... okay on input line 14.
+LaTeX Font Info:    Checking defaults for PU/pdf/m/n on input line 14.
+LaTeX Font Info:    ... okay on input line 14.
 
 (d:\MiKTeX\tex/context/base/mkii\supp-pdf.mkii
 [Loading MPS to PDF converter (version 2006.09.02).]
-\scratchcounter=\count284
-\scratchdimen=\dimen156
-\scratchbox=\box54
-\nofMPsegments=\count285
-\nofMParguments=\count286
-\everyMPshowfont=\toks23
-\MPscratchCnt=\count287
-\MPscratchDim=\dimen157
-\MPnumerator=\count288
-\makeMPintoPDFobject=\count289
-\everyMPtoPDFconversion=\toks24
+\scratchcounter=\count289
+\scratchdimen=\dimen169
+\scratchbox=\box56
+\nofMPsegments=\count290
+\nofMParguments=\count291
+\everyMPshowfont=\toks25
+\MPscratchCnt=\count292
+\MPscratchDim=\dimen170
+\MPnumerator=\count293
+\makeMPintoPDFobject=\count294
+\everyMPtoPDFconversion=\toks26
 ) (d:\MiKTeX\tex/latex/epstopdf-pkg\epstopdf-base.sty
 Package: epstopdf-base 2020-01-24 v2.11 Base part for package epstopdf
 Package epstopdf-base Info: Redefining graphics rule for `.eps' on input line 4
@@ -302,89 +330,187 @@ Package epstopdf-base Info: Redefining graphics rule for `.eps' on input line 4
 (d:\MiKTeX\tex/latex/00miktex\epstopdf-sys.cfg
 File: epstopdf-sys.cfg 2021/03/18 v2.0 Configuration of epstopdf for MiKTeX
 ))
-Package hyperref Info: Link coloring OFF on input line 13.
+Package hyperref Info: Link coloring OFF on input line 14.
  (paper.out) (paper.out)
 \@outlinefile=\write3
 \openout3 = `paper.out'.
 
 
+Overfull \hbox (28.68794pt too wide) in paragraph at lines 17--17
+ [][] 
+ []
+
 [1
 
 {C:/Users/tadbirsabz/AppData/Local/MiKTeX/fonts/map/pdftex/pdftex.map}]
 [2] [3]
-Overfull \hbox (8.72641pt too wide) in paragraph at lines 49--50
+Overfull \hbox (8.72641pt too wide) in paragraph at lines 50--51
 []\OT1/cmr/m/n/10 Esfe et al. [20] ap-plied ANN to es-ti-mate the ther-mal con-
 duc-tiv-ity of Al2O3/EG
  []
 
-[4]
+<pics/scatter_plot.png, id=91, 722.7pt x 433.62pt>
+File: pics/scatter_plot.png Graphic file (type png)
+<use pics/scatter_plot.png>
+Package pdftex.def Info: pics/scatter_plot.png  used on input line 60.
+(pdftex.def)             Requested size: 345.0pt x 206.9972pt.
+[4] [5
+pdfTeX warning (ext4): destination with the same identifier (name{figure.1}) ha
+s been already used, duplicate ignored
+<argument> ...shipout:D \box_use:N \l_shipout_box 
+                                                  \__shipout_drop_firstpage_...
+l.78 K
+      im, H., et al. (2024): Studied the forced convective heat transfer of ...
+ <./pics/scatter_plot.png>]
 
-LaTeX Warning: Citation `ref12' on page 5 undefined on input line 67.
-
-[5]
-
-LaTeX Warning: Citation `ref12' on page 6 undefined on input line 75.
+LaTeX Warning: Citation `ref12' on page 6 undefined on input line 78.
 
 
-Overfull \hbox (0.4172pt too wide) in paragraph at lines 81--82
+LaTeX Warning: Citation `ref12' on page 6 undefined on input line 86.
+
+
+Overfull \hbox (0.4172pt too wide) in paragraph at lines 92--93
 []\OT1/cmr/m/n/10 While ex-per-i-men-tal stud-ies pro-vide valu-able in-sights,
  more re-search is needed
  []
 
-[6] [7] [8] [9] [10] [11]
-Overfull \hbox (11.11664pt too wide) in paragraph at lines 214--214
+[6] [7] [8]
+<fig2.png, id=144, 302.3295pt x 162.6075pt>
+File: fig2.png Graphic file (type png)
+<use fig2.png>
+Package pdftex.def Info: fig2.png  used on input line 160.
+(pdftex.def)             Requested size: 276.00105pt x 148.4544pt.
+ [9] [10
+pdfTeX warning (ext4): destination with the same identifier (name{figure.2}) ha
+s been already used, duplicate ignored
+<argument> ...shipout:D \box_use:N \l_shipout_box 
+                                                  \__shipout_drop_firstpage_...
+l.182 
+       <./fig2.png>] [11
+pdfTeX warning (ext4): destination with the same identifier (name{table.1}) has
+ been already used, duplicate ignored
+<argument> ...shipout:D \box_use:N \l_shipout_box 
+                                                  \__shipout_drop_firstpage_...
+l.220 
+      
+pdfTeX warning (ext4): destination with the same identifier (name{table.2}) has
+ been already used, duplicate ignored
+<argument> ...shipout:D \box_use:N \l_shipout_box 
+                                                  \__shipout_drop_firstpage_...
+l.220 
+      ] [12
+pdfTeX warning (ext4): destination with the same identifier (name{table.3}) has
+ been already used, duplicate ignored
+<argument> ...shipout:D \box_use:N \l_shipout_box 
+                                                  \__shipout_drop_firstpage_...
+l.263 
+      
+pdfTeX warning (ext4): destination with the same identifier (name{table.4}) has
+ been already used, duplicate ignored
+<argument> ...shipout:D \box_use:N \l_shipout_box 
+                                                  \__shipout_drop_firstpage_...
+l.263 
+      ]
+Overfull \hbox (11.11664pt too wide) in paragraph at lines 275--275
 []\OT1/cmr/bx/n/12 Convective Heat Trans-fer Co-ef-fi-cient of Wa-ter/Ethylene
  []
 
-[12] [13] (paper.bbl [14])
-<fig1.png, id=181, 669.2503pt x 826.58812pt>
+[13] [14] (paper.bbl [15] [16])
+<fig1.png, id=200, 669.2503pt x 826.58812pt>
 File: fig1.png Graphic file (type png)
 <use fig1.png>
-Package pdftex.def Info: fig1.png  used on input line 252.
+Package pdftex.def Info: fig1.png  used on input line 313.
 (pdftex.def)             Requested size: 310.4979pt x 383.50183pt.
-<fig2.png, id=182, 302.3295pt x 162.6075pt>
-File: fig2.png Graphic file (type png)
-<use fig2.png>
-Package pdftex.def Info: fig2.png  used on input line 259.
-(pdftex.def)             Requested size: 276.00105pt x 148.4544pt.
-<fig3.png, id=184, 251.13824pt x 165.0165pt>
+<fig3.png, id=201, 251.13824pt x 165.0165pt>
 File: fig3.png Graphic file (type png)
 <use fig3.png>
-Package pdftex.def Info: fig3.png  used on input line 266.
+Package pdftex.def Info: fig3.png  used on input line 322.
 (pdftex.def)             Requested size: 276.00105pt x 181.36005pt.
-<fig4.png, id=185, 471.2004pt x 319.9152pt>
+<fig4.png, id=202, 471.2004pt x 319.9152pt>
 File: fig4.png Graphic file (type png)
 <use fig4.png>
-Package pdftex.def Info: fig4.png  used on input line 273.
+Package pdftex.def Info: fig4.png  used on input line 329.
 (pdftex.def)             Requested size: 310.4979pt x 210.81273pt.
-<fig5.png, id=186, 471.2004pt x 317.988pt>
+<fig5.png, id=203, 471.2004pt x 317.988pt>
 File: fig5.png Graphic file (type png)
 <use fig5.png>
-Package pdftex.def Info: fig5.png  used on input line 280.
+Package pdftex.def Info: fig5.png  used on input line 336.
 (pdftex.def)             Requested size: 241.49895pt x 162.97717pt.
-<fig8.png, id=187, 471.2004pt x 319.9152pt>
+<fig8.png, id=204, 471.2004pt x 319.9152pt>
 File: fig8.png Graphic file (type png)
 <use fig8.png>
-Package pdftex.def Info: fig8.png  used on input line 287.
+Package pdftex.def Info: fig8.png  used on input line 343.
 (pdftex.def)             Requested size: 276.00105pt x 187.39127pt.
-<fig6.png, id=188, 530.58224pt x 342.078pt>
+<fig6.png, id=205, 530.58224pt x 342.078pt>
 File: fig6.png Graphic file (type png)
 <use fig6.png>
-Package pdftex.def Info: fig6.png  used on input line 295.
+Package pdftex.def Info: fig6.png  used on input line 351.
 (pdftex.def)             Requested size: 310.4979pt x 200.19049pt.
-<fig9.png, id=189, 344.9688pt x 216.81pt>
+<fig9.png, id=206, 344.9688pt x 216.81pt>
 File: fig9.png Graphic file (type png)
 <use fig9.png>
-Package pdftex.def Info: fig9.png  used on input line 303.
+Package pdftex.def Info: fig9.png  used on input line 359.
 (pdftex.def)             Requested size: 241.49895pt x 151.7858pt.
 
-Overfull \hbox (29.0008pt too wide) in paragraph at lines 312--329
+Overfull \hbox (29.0008pt too wide) in paragraph at lines 368--385
  [][] 
  []
 
-[15] [16 <./fig1.png (PNG copy)>] [17 <./fig2.png> <./fig3.png>] [18 <./fig4.pn
-g> <./fig5.png>] [19 <./fig8.png> <./fig6.png>] [20 <./fig9.png>] [21]
-(paper.aux)
+[17
+pdfTeX warning (ext4): destination with the same identifier (name{table.5}) has
+ been already used, duplicate ignored
+<argument> ...shipout:D \box_use:N \l_shipout_box 
+                                                  \__shipout_drop_firstpage_...
+l.408 \end{document}
+                    ] [18
+pdfTeX warning (ext4): destination with the same identifier (name{figure.3}) ha
+s been already used, duplicate ignored
+<argument> ...shipout:D \box_use:N \l_shipout_box 
+                                                  \__shipout_drop_firstpage_...
+l.408 \end{document}
+                     <./fig1.png (PNG copy)>] [19
+pdfTeX warning (ext4): destination with the same identifier (name{figure.4}) ha
+s been already used, duplicate ignored
+<argument> ...shipout:D \box_use:N \l_shipout_box 
+                                                  \__shipout_drop_firstpage_...
+l.408 \end{document}
+                    
+pdfTeX warning (ext4): destination with the same identifier (name{figure.5}) ha
+s been already used, duplicate ignored
+<argument> ...shipout:D \box_use:N \l_shipout_box 
+                                                  \__shipout_drop_firstpage_...
+l.408 \end{document}
+                     <./fig3.png> <./fig4.png>] [20
+pdfTeX warning (ext4): destination with the same identifier (name{figure.6}) ha
+s been already used, duplicate ignored
+<argument> ...shipout:D \box_use:N \l_shipout_box 
+                                                  \__shipout_drop_firstpage_...
+l.408 \end{document}
+                    
+pdfTeX warning (ext4): destination with the same identifier (name{figure.7}) ha
+s been already used, duplicate ignored
+<argument> ...shipout:D \box_use:N \l_shipout_box 
+                                                  \__shipout_drop_firstpage_...
+l.408 \end{document}
+                     <./fig5.png> <./fig8.png>] [21
+pdfTeX warning (ext4): destination with the same identifier (name{figure.8}) ha
+s been already used, duplicate ignored
+<argument> ...shipout:D \box_use:N \l_shipout_box 
+                                                  \__shipout_drop_firstpage_...
+l.408 \end{document}
+                    
+pdfTeX warning (ext4): destination with the same identifier (name{figure.9}) ha
+s been already used, duplicate ignored
+<argument> ...shipout:D \box_use:N \l_shipout_box 
+                                                  \__shipout_drop_firstpage_...
+l.408 \end{document}
+                     <./fig6.png> <./fig9.png>] [22
+pdfTeX warning (ext4): destination with the same identifier (name{table.6}) has
+ been already used, duplicate ignored
+<argument> ...shipout:D \box_use:N \l_shipout_box 
+                                                  \__shipout_drop_firstpage_...
+l.408 \end{document}
+                    ] (paper.aux)
  ***********
 LaTeX2e <2023-06-01> patch level 1
 L3 programming layer <2023-08-29>
@@ -397,13 +523,13 @@ Package rerunfilecheck Info: File `paper.out' has not changed.
 (rerunfilecheck)             Checksum: C509AC82F5FB1DA9F4C66AA42E5B7EAF;3891.
  ) 
 Here is how much of TeX's memory you used:
- 9267 strings out of 475248
- 138732 string characters out of 5774214
+ 9427 strings out of 475248
+ 141205 string characters out of 5774214
  1928785 words of memory out of 5000000
- 30621 multiletter control sequences out of 15000+600000
+ 30769 multiletter control sequences out of 15000+600000
  566366 words of font info for 65 fonts, out of 8000000 for 9000
  1141 hyphenation exceptions out of 8191
- 75i,9n,79p,1362b,552s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 75i,9n,79p,1362b,556s stack positions out of 10000i,1000n,20000p,200000b,200000s
  <C:\Users\tadbirsabz\AppData\Local\MiKTeX\fonts/pk/ljfour/jknappen/ec/dpi600
 \tcrm1000.pk><d:/MiKTeX/fonts/type1/public/amsfonts/cm/cmbx10.pfb><d:/MiKTeX/fo
 nts/type1/public/amsfonts/cm/cmbx12.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/
@@ -416,9 +542,9 @@ type1/public/amsfonts/cm/cmr9.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/cm/cms
 y10.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/cm/cmsy7.pfb><d:/MiKTeX/fonts/ty
 pe1/public/amsfonts/cm/cmti10.pfb><d:/MiKTeX/fonts/type1/public/amsfonts/cm/cmt
 t10.pfb>
-Output written on paper.pdf (21 pages, 449650 bytes).
+Output written on paper.pdf (22 pages, 475123 bytes).
 PDF statistics:
- 321 PDF objects out of 1000 (max. 8388607)
- 72 named destinations out of 1000 (max. 500000)
- 153 words of extra memory for PDF output out of 10000 (max. 10000000)
+ 334 PDF objects out of 1000 (max. 8388607)
+ 76 named destinations out of 1000 (max. 500000)
+ 158 words of extra memory for PDF output out of 10000 (max. 10000000)
 
