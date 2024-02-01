@@ -5,12 +5,12 @@
 \hline
  model              &   R2 &   MSE &   R2 std \\
 \hline
- Linear1HiddenLayer & 81.9 &  0.17 &      0   \\
- Linear2HiddenLayer & 81.9 &  0.17 &      0   \\
- Tanh1HiddenLayer   & 92.6 &  0.07 &      2.9 \\
- Tanh2HiddenLayer   & 92.5 &  0.07 &      3   \\
- Relu1HiddenLayer   & 90   &  0.09 &     26.6 \\
- Relu2HiddenLayer   & 94.4 &  0.05 &      6.4 \\
+ Linear1HiddenLayer & 77.5 &  0.21 &     12.4 \\
+ Linear2HiddenLayer & 86.1 &  0.13 &      4.4 \\
+ Tanh1HiddenLayer   & 74.1 &  0.24 &     50.3 \\
+ Tanh2HiddenLayer   & 85.3 &  0.13 &     23.2 \\
+ Relu1HiddenLayer   & 66.8 &  0.3  &     57   \\
+ Relu2HiddenLayer   & 75.8 &  0.22 &      9.9 \\
 \hline
 \end{tabular}
             \caption{Results of different models}

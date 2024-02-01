@@ -20,21 +20,31 @@ np.random.seed(random_seed)
 # changing random_seed generates different results for each run 
 # The same random_seed gets the same results in each run
 # Dont change it if you want to reproduce the same results
+learning_rate = 0.001
+# The learnign rate used in ANN
+hidden_size1 = 10
+hidden_size2 = 5
+# the number of neurons in hidden layers
 
+# https://alexlenail.me/NN-SVG/
+# use the site above to draw the following network
+#
 class Linear1HiddenLayer(nn.Module):
     activation1 = None
     def __init__(self, input_size):
         super().__init__()
-        #   O1
-        #   O2                     O1                  
-        #   ...   40 x 10 edges    ...   10 x 1       O1 ---> y
-        #   ...                    ...                 
-        #   O39                    O10    
-        #   O40
+        #                          O1
+        #   O1                     O2                  
+        #   ...   5 x 10 edges    ...   10 x 1       O1 ---> y
+        #   ...                   ...                 
+        #   O5                    ...  
+        #                         O10
         #
-        #  input                   hidden1             output 
-        self.input_to_hidden1 = nn.Linear(input_size, 10)
-        self.hidden1_to_output = nn.Linear(10, 1)
+        #  input (5 features)     hidden1           output 
+        #   5 neuron             10 neurons        1 neuron
+        #
+        self.input_to_hidden1 = nn.Linear(input_size, hidden_size1)
+        self.hidden1_to_output = nn.Linear(hidden_size1, 1)
 
     def forward(self, x):
         # order of computation
@@ -49,17 +59,18 @@ class Linear2HiddenLayer(nn.Module):
     activation2 = None
     def __init__(self, input_size):
         super().__init__()
-        #   O1
-        #   O2                     O1                O1
-        #   ...   40 x 10 edges    ...   10 x 5      ...  5 x 1     O1 ---> y
+        #     
+        #   O1                     O1                O1
+        #   ...    5 x 10 edges    ...   10 x 5      ...  5 x 1     O1 ---> y
         #   ...                    ...               O5
-        #   O39                    O10    
-        #   O40
+        #   O5                     O10    
+        #      
         #
-        #  input                   hidden1           hidden2        output 
-        self.input_to_hidden1 = nn.Linear(input_size, 10)
-        self.hidden1_to_hidden2 = nn.Linear(10, 5)
-        self.hidden2_to_output = nn.Linear(5, 1)
+        #  input(5 features)     hidden1           hidden2        output 
+        #                       10 neurons         5 neurons
+        self.input_to_hidden1 = nn.Linear(input_size, hidden_size1)
+        self.hidden1_to_hidden2 = nn.Linear(hidden_size1, hidden_size2)
+        self.hidden2_to_output = nn.Linear(hidden_size2, 1)
 
     def forward(self, x):
         # order of computation
@@ -112,7 +123,7 @@ def apply_model(model_class, X_train, X_test, y_train, y_test, num_epochs,
     # Instantiate the model and define loss function and optimizer
     model = model_class(input_size)
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.01)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
     # Train the model
     for epoch in range(num_epochs):
