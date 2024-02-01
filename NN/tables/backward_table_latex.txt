@@ -5,12 +5,12 @@
 \hline
  features                                                 &    R2 \\
 \hline
- ['flow_rate', 'conc_nano', 'Kfluid', 'heat_flux', 'X_D'] & 95.77 \\
- ['conc_nano', 'Kfluid', 'heat_flux', 'X_D']              & 19.55 \\
- ['flow_rate', 'Kfluid', 'heat_flux', 'X_D']              & 69.05 \\
- ['flow_rate', 'conc_nano', 'heat_flux', 'X_D']           & 83.92 \\
- ['flow_rate', 'conc_nano', 'Kfluid', 'X_D']              & 90.03 \\
- ['flow_rate', 'conc_nano', 'Kfluid', 'heat_flux']        & 82.97 \\
+ ['flow_rate', 'conc_nano', 'Kfluid', 'heat_flux', 'X_D'] & 93.85 \\
+ ['conc_nano', 'Kfluid', 'heat_flux', 'X_D']              & 31.84 \\
+ ['flow_rate', 'Kfluid', 'heat_flux', 'X_D']              & 68.23 \\
+ ['flow_rate', 'conc_nano', 'heat_flux', 'X_D']           & 87.71 \\
+ ['flow_rate', 'conc_nano', 'Kfluid', 'X_D']              & 88.24 \\
+ ['flow_rate', 'conc_nano', 'Kfluid', 'heat_flux']        & 63.55 \\
 \hline
 \end{tabular}
             \caption{Results of Backward Feature Elimination}

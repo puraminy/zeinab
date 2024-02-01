@@ -11,75 +11,85 @@ from sklearn.metrics import r2_score
 from tabulate import tabulate
 import os
 
-# Define the neural network with ReLU activation function
-class ReLUModel(nn.Module):
+num_epochs = 300 
+num_repeats = 5
+# num_repeats shows the number of times to repeat the experiment to get its average values
+random_seed = 123
+torch.manual_seed(random_seed)
+np.random.seed(random_seed)
+# changing random_seed generates different results for each run 
+# The same random_seed gets the same results in each run
+# Dont change it if you want to reproduce the same results
+
+class Linear1HiddenLayer(nn.Module):
+    activation1 = None
     def __init__(self, input_size):
         super().__init__()
-        self.fc1 = nn.Linear(input_size, 10)
-        self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(10, 1)
-        self.linear = nn.Identity()
+        #   O1
+        #   O2                     O1                  
+        #   ...   40 x 10 edges    ...   10 x 1       O1 ---> y
+        #   ...                    ...                 
+        #   O39                    O10    
+        #   O40
+        #
+        #  input                   hidden1             output 
+        self.input_to_hidden1 = nn.Linear(input_size, 10)
+        self.hidden1_to_output = nn.Linear(10, 1)
 
     def forward(self, x):
-        x = self.fc1(x)
-        x = self.relu(x)
-        x = self.fc2(x)
-        x = self.linear(x)
+        # order of computation
+        x = self.input_to_hidden1(x)
+        if self.activation1 is not None:
+            x = self.activation1(x)
+        x = self.hidden1_to_output(x)
         return x
 
-# Define the neural network with Tanh activation function
-class TanhModel(nn.Module):
+class Linear2HiddenLayer(nn.Module):
+    activation1 = None
+    activation2 = None
     def __init__(self, input_size):
         super().__init__()
-        self.fc1 = nn.Linear(input_size, 10)
-        self.tanh = nn.Tanh()
-        self.fc2 = nn.Linear(10, 1)
-        self.linear = nn.Identity()
+        #   O1
+        #   O2                     O1                O1
+        #   ...   40 x 10 edges    ...   10 x 5      ...  5 x 1     O1 ---> y
+        #   ...                    ...               O5
+        #   O39                    O10    
+        #   O40
+        #
+        #  input                   hidden1           hidden2        output 
+        self.input_to_hidden1 = nn.Linear(input_size, 10)
+        self.hidden1_to_hidden2 = nn.Linear(10, 5)
+        self.hidden2_to_output = nn.Linear(5, 1)
 
     def forward(self, x):
-        x = self.fc1(x)
-        x = self.tanh(x)
-        x = self.fc2(x)
-        x = self.linear(x)
+        # order of computation
+        x = self.input_to_hidden1(x)
+        if self.activation1 is not None:
+            x = self.activation1(x)
+        x = self.hidden1_to_hidden2(x)
+        if self.activation2 is not None:
+            x = self.activation2(x)
+        x = self.hidden2_to_output(x)
         return x
 
-# Define the neural network with Tanh activation function
-class ReLUReLUModel(nn.Module):
-    def __init__(self, input_size):
-        super().__init__()
-        self.fc1 = nn.Linear(input_size, 50)
-        self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(50, 10)
-        self.relu = nn.ReLU()
-        self.fc3 = nn.Linear(10, 1)
-        self.linear = nn.Identity()
+# NonLinear Model with 1 hidden layer with Tanjant Hyperbolic function as nonlinear function
+# (Note it inherits from 2 hidden layer class above
+class Tanh1HiddenLayer(Linear1HiddenLayer):
+    activation1 = nn.Tanh()
 
-    def forward(self, x):
-        x = self.fc1(x)
-        x = self.relu(x)
-        x = self.fc2(x)
-        x = self.relu(x)
-        x = self.fc3(x)
-        x = self.linear(x)
-        return x
+# NonLinear Model with 2 hidden layers (Note it inherits from 2 hidden layer class above)
+class Tanh2HiddenLayer(Linear2HiddenLayer):
+    activation1 = nn.Tanh()
+    activation2 = nn.Tanh()
 
-# Define the neural network
-class RegressionModel(nn.Module):
-    def __init__(self, input_size):
-        super().__init__()
-        self.fc1 = nn.Linear(input_size, 64)
-        self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(64, 32)
-        self.fc3 = nn.Linear(32, 1)
+# NonLinear Model with 1 hidden layer with Relu function as nonlinear function
+# (Note it inherits from 2 hidden layer class above
+class Relu1HiddenLayer(Linear1HiddenLayer):
+    activation1 = nn.ReLU()
 
-    def forward(self, x):
-        x = self.fc1(x)
-        x = self.relu(x)
-        x = self.fc2(x)
-        x = self.relu(x)
-        x = self.fc3(x)
-        return x
-
+class Relu2HiddenLayer(Linear2HiddenLayer):
+    activation1 = nn.ReLU()
+    activation2 = nn.ReLU()
 
 # Function to apply model on data and generate predictions
 # Return predictions, MSE and R-Squared
@@ -172,12 +182,12 @@ def generate_latax_table(table, caption="table", label=""):
 ############################ Feature Selection ####################
 # Selects the best combination of features by removing features one by one
 # Search about Backward Feature Elimination 
-def backward_feature_elimination(model_class, data, inputs, output, num_epochs, random_seed):
+def backward_feature_elimination(model_class, data, inputs, output):
     y = data[output] 
     # Remove extra columns
     data = data.drop([output, 'HTC_ANN1', 'HTC_ANN2'], axis=1).copy()
     X = data[inputs]
-    mean_r2, _, _, _ = repeat_apply(3, X, y, num_epochs, random_seed)
+    mean_r2, _, _, _ = repeat_apply(num_repeats, X, y, num_epochs, random_seed)
     best_r2 = mean_r2
     print("Using all features")
     print("Features:", inputs)
@@ -191,7 +201,8 @@ def backward_feature_elimination(model_class, data, inputs, output, num_epochs, 
             # Selet other features except for current feature
             features = [f for f in candidates if f != feature]
             X = data[features]
-            mean_r2, _, _, _ = repeat_apply(3, X, y, num_epochs, random_seed)
+            # it uses num_repeats, num_epochs and random_seed as global variables
+            mean_r2, _, _, _ = repeat_apply(num_repeats, X, y, num_epochs, random_seed)
             results[feature] = mean_r2
             print("---------------------------------------")
             # Results of removing the feature
@@ -229,7 +240,7 @@ def backward_feature_elimination(model_class, data, inputs, output, num_epochs, 
 # This method add features one by one
 # Search about Forward Feature Selction
 
-def forward_feature_selection(model_class, data, inputs, output, num_epochs, random_seed):
+def forward_feature_selection(model_class, data, inputs, output):
     y = data[output] 
     # Remove extra columns
     data = data.drop([output, 'HTC_ANN1', 'HTC_ANN2'], axis=1).copy()
@@ -246,7 +257,7 @@ def forward_feature_selection(model_class, data, inputs, output, num_epochs, ran
                 features = [feature] + candidates 
 
             X = data[features]
-            mean_r2, _, _, _ = repeat_apply(3, X, y, num_epochs, random_seed)
+            mean_r2, _, _, _ = repeat_apply(num_repeats, X, y, num_epochs, random_seed)
             results[feature] = mean_r2
             print("--------------------------------")
             print("Adding feature ", feature)
@@ -311,42 +322,40 @@ def repeat_apply(num_repeats, X, y, num_epochs, random_seed, display_steps=False
     return mean_r2, std_r2, mean_mse, best_preds
 
 ############################### Start of Program ###################
-random_seed = 123
-torch.manual_seed(random_seed)
-np.random.seed(random_seed)
-# changing random_seed is important to get differnt results 
-# The same random_seed gets the same results in each run
 
-models = [RegressionModel, ReLUModel, TanhModel, ReLUReLUModel]
+models = [
+            Linear1HiddenLayer, 
+            Linear2HiddenLayer,
+            Tanh1HiddenLayer,
+            Tanh2HiddenLayer,
+            Relu1HiddenLayer,
+            Relu2HiddenLayer
+         ]
 model_names=[model.__name__ for model in models]
 # User input for selecting the model and number of epochs
-model_type = input("\n".join([str(i) + ")" + name for i,name in enumerate(model_names)]) \
+answer = input("\n".join([str(i) + ")" + name for i,name in enumerate(model_names)]) \
         + "\nSelect the model (enter to select all models) [all]:")
 
-if not model_type:
-    model_type = "all"
+if not answer:
+    answer = "all"
 
-if model_type.lower() == "all":
-    selected_models = range(len(models)) # chose all models
+if answer.lower() == "all":
+    selected_models = range(len(models)) # choose the index of all models
 else:
-    model_type = int(model_type)
-    if model_type > len(models):
-        print("Invalid model selection. Please enter 1 to ", len(models) - 1)
+    model_index = int(answer)
+    if model_index > len(models):
+        print("Invalid model selection. Please enter all or 1 to ", len(models) - 1)
         exit()
-    selected_models = [model_type]
+    selected_models = [model_index]
 
 print("Selected Models:", [model_names[i] for i in selected_models])
-num_epochs = input("Enter the number of epochs [300]:")
-if not num_epochs: 
-    num_epochs = 300 
-else:
-    num_epochs = int(num_epochs)
+answer = input(f"Enter the number of epochs [{num_epochs}]:")
+if answer: 
+   num_epochs = int(answer)
 
-num_repeats = input("Enter the number of repeating predictions [3]:")
-if not num_repeats: 
-    num_repeats = 3 
-else:
-    num_repeats = int(num_repeats)
+answer = input(f"Enter the number of repeating predictions [{num_repeats}]:")
+if answer: 
+   num_repeats = int(answer)
 
 # Load data from CSV file into a DataFrame
 data = pd.read_csv('data.csv')
@@ -362,7 +371,7 @@ best_model_index = -1
 best_mean_r2 = 0
 best_mse = 0
 results = []
-best_predictions = {}
+model_best_predictions = {}
 # for all models
 for model_index in selected_models:
     # Instantiate the selected model
@@ -374,7 +383,7 @@ for model_index in selected_models:
             random_seed=random_seed, display_steps=True)
 
     # Keep best seed to generate the same predictions later
-    best_predictions[model_name] = model_best_preds
+    model_best_predictions[model_name] = model_best_preds
 
     if mean_r2 > best_mean_r2:
         best_mean_r2 = mean_r2
@@ -410,7 +419,7 @@ X_train, X_test, y_train, y_test = train_test_split(X, y,
     random_state=random_seed) 
 
 # Show and save the plot for best results
-best_predictions = best_predictions[best_model_name] 
+best_predictions = model_best_predictions[best_model_name] 
 title = "Prediction of " + output + " using " + " ".join(inputs)
 file_name = f"R-{best_mean_r2:.2f}-" + best_model_name + "-" + output + "-using-".join(inputs) + ".png"
 
@@ -422,15 +431,22 @@ results_df["HTC"] = y_test
 pred_list = [round(x[0]) for x in best_predictions]
 results_df["Predictions"] = pred_list # pd.Series(pred_list)
 results_df.to_csv("results.csv", index=False)
-
-# Show predictions
+print("======= Predictions of best model:", best_model_name)
 print(results_df)
+# Show predictions
+print("=============== Results for models =================")
+print(results_table)
+print("\n\n")
+answer = input("Do you want to run feature selections? [y/n]:")
+if answer.lower() != "y" and answer.lower() != "yes":
+    print("You selected no")
+    exit()
 
 # Apply model to combination of inputs and select the best
 print("============================= Backward Feature Elimination =============")
-backward_table = backward_feature_elimination(best_model, data, inputs, output, num_epochs, random_seed)
+backward_table = backward_feature_elimination(best_model, data, inputs, output)
 print("============================= Forward Feature Selection ================")
-forward_table = forward_feature_selection(best_model, data, inputs, output, num_epochs, random_seed)
+forward_table = forward_feature_selection(best_model, data, inputs, output)
 
 print("------------ backward freature elimination ---------------")
 print(backward_table)
@@ -447,9 +463,6 @@ with open(os.path.join("tables", "forward_table_latex.txt"), 'w') as f:
     print(forward_table_latex, file=f)
 
 
-print("\n")
-print("------------ Results of Models ---------------")
-print(results_table)
 print("\n\n")
 print("----------------------Important! READ -------------------")
 print("images are saved in images folder")
