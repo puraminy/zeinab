@@ -20,7 +20,7 @@ np.random.seed(random_seed)
 # changing random_seed generates different results for each run 
 # The same random_seed gets the same results in each run
 # Dont change it if you want to reproduce the same results
-learning_rate = 0.001
+learning_rate = 0.05
 # The learnign rate used in ANN
 hidden_size1 = 10
 hidden_size2 = 5
@@ -104,7 +104,7 @@ class Relu2HiddenLayer(Linear2HiddenLayer):
 
 # Function to apply model on data and generate predictions
 # Return predictions, MSE and R-Squared
-def apply_model(model_class, X_train, X_test, y_train, y_test, num_epochs, 
+def fit_model(model_class, X_train, X_test, y_train, y_test, num_epochs, 
         display_steps=False):
    # Fix scales
     scaler = StandardScaler()
@@ -157,7 +157,7 @@ def apply_model(model_class, X_train, X_test, y_train, y_test, num_epochs,
     return predictions_np, mse, r2
 
 ############################## Plot Resuts #######################
-def plot_results(predictions_np, y_test, title, file_name):
+def plot_results(predictions_np, y_test, title, file_name, show_plot=False):
     # Convert predictions and y_test to NumPy arrays
     y_test_np = y_test.to_numpy()
     # Calculate R-squared
@@ -171,8 +171,8 @@ def plot_results(predictions_np, y_test, title, file_name):
     plt.ylabel('Predicted Values')
     plt.legend()
     plt.grid(True)
-    # Remove comment if you don't want to show the plot
-    # plt.show()
+    if show_plot is True:
+        plt.show()
     # Save the image of plot in images folder
     plt.savefig(os.path.join("images", file_name), format="png")
 
@@ -198,7 +198,9 @@ def backward_feature_elimination(model_class, data, inputs, output):
     # Remove extra columns
     data = data.drop([output, 'HTC_ANN1', 'HTC_ANN2'], axis=1).copy()
     X = data[inputs]
-    mean_r2, _, _, _ = repeat_apply(num_repeats, X, y, num_epochs, random_seed)
+    # it uses num_repeats, num_epochs and random_seed as global variables
+    # use _ for output of repeat_fit_model, which you don't need to use here
+    mean_r2, _, _, _, _,_ = repeat_fit_model(num_repeats, X, y, num_epochs, random_seed)
     best_r2 = mean_r2
     print("Using all features")
     print("Features:", inputs)
@@ -212,8 +214,7 @@ def backward_feature_elimination(model_class, data, inputs, output):
             # Selet other features except for current feature
             features = [f for f in candidates if f != feature]
             X = data[features]
-            # it uses num_repeats, num_epochs and random_seed as global variables
-            mean_r2, _, _, _ = repeat_apply(num_repeats, X, y, num_epochs, random_seed)
+            mean_r2, _, _, _,_,_ = repeat_fit_model(num_repeats, X, y, num_epochs, random_seed)
             results[feature] = mean_r2
             print("---------------------------------------")
             # Results of removing the feature
@@ -268,7 +269,7 @@ def forward_feature_selection(model_class, data, inputs, output):
                 features = [feature] + candidates 
 
             X = data[features]
-            mean_r2, _, _, _ = repeat_apply(num_repeats, X, y, num_epochs, random_seed)
+            mean_r2, _, _, _,_,_ = repeat_fit_model(num_repeats, X, y, num_epochs, random_seed)
             results[feature] = mean_r2
             print("--------------------------------")
             print("Adding feature ", feature)
@@ -302,8 +303,8 @@ def forward_feature_selection(model_class, data, inputs, output):
     return table
 
 
-# Repeats an apply_model to get average of results
-def repeat_apply(num_repeats, X, y, num_epochs, random_seed, display_steps=False):
+# Repeats an fit_model to get average of results
+def repeat_fit_model(num_repeats, X, y, num_epochs, random_seed, display_steps=False):
     X_train, X_test, y_train, y_test = train_test_split(X, y, 
         test_size=0.2, 
         random_state=random_seed) 
@@ -312,7 +313,7 @@ def repeat_apply(num_repeats, X, y, num_epochs, random_seed, display_steps=False
     max_r2 = 0
     best_preds = None
     for i in range(num_repeats):
-        predictions, mse, r2 = apply_model(model_class, 
+        predictions, mse, r2 = fit_model(model_class, 
                 X_train, X_test, y_train, y_test, num_epochs, display_steps)
 
         if r2 > max_r2:
@@ -327,10 +328,10 @@ def repeat_apply(num_repeats, X, y, num_epochs, random_seed, display_steps=False
 
     mean_r2 = np.mean(r2_list) 
     mean_mse = np.mean(mse_list)
-    std_r2 = np.var(r2_list)
+    std_r2 = np.std(r2_list)
     std_mse = np.std(mse_list)
 
-    return mean_r2, std_r2, mean_mse, best_preds
+    return mean_r2, std_r2, mean_mse, best_preds, max_r2*100, r2_list
 
 ############################### Start of Program ###################
 
@@ -381,6 +382,7 @@ y = data[output]
 best_model_index = -1
 best_mean_r2 = 0
 best_mse = 0
+best_r2 = 0
 results = []
 model_best_predictions = {}
 # for all models
@@ -389,12 +391,15 @@ for model_index in selected_models:
     model_class = models[model_index]
     model_name = model_names[model_index]
     # Apply model on data for 3 times and get predictions, mse and r2
-    mean_r2, std_r2, mean_mse, model_best_preds = repeat_apply(
+    mean_r2, std_r2, mean_mse, model_best_preds, max_r2, r2_list = repeat_fit_model(
             num_repeats, X, y, num_epochs, 
             random_seed=random_seed, display_steps=True)
 
     # Keep best seed to generate the same predictions later
     model_best_predictions[model_name] = model_best_preds
+
+    if max_r2 > best_r2:
+        best_r2 = max_r2
 
     if mean_r2 > best_mean_r2:
         best_mean_r2 = mean_r2
@@ -405,7 +410,8 @@ for model_index in selected_models:
             "model":model_name, 
             "R2": round(mean_r2,1), 
             "MSE": round(mean_mse,2),
-            "R2 std": round(std_r2, 1)
+            "R2 std": round(std_r2, 1),
+            "R2 List:": [round(x, 1) for x in r2_list]
             }
     results.append(result)
 
@@ -416,14 +422,15 @@ results_table_latex = generate_latax_table(results_table, caption="Results of di
 with open(os.path.join("tables", "results_table_latex.txt"), 'w') as f:
     print(results_table_latex, file=f)
 
+best_model = models[best_model_index]
+best_model_name = model_names[best_model_index]
 # Show results
 print("============ Results for models =========================")
 print(results_table)
 print("=========================================================")
-best_model = models[best_model_index]
-best_model_name = model_names[best_model_index]
-print("Best R-Squred", best_mean_r2)
-print("Best model with better R-Squred:", best_model_name) 
+print("Best R-Squred:", best_r2)
+print("Best Mean R-Squred:", best_mean_r2)
+print("Best model with better mean R-Squred:", best_model_name) 
 
 X_train, X_test, y_train, y_test = train_test_split(X, y, 
     test_size=0.2, 
@@ -431,10 +438,16 @@ X_train, X_test, y_train, y_test = train_test_split(X, y,
 
 # Show and save the plot for best results
 best_predictions = model_best_predictions[best_model_name] 
-title = "Prediction of " + output + " using " + " ".join(inputs)
+title = "Prediction of " + output + " using " + " ".join(inputs)+" with " + best_model_name 
 file_name = f"R-{best_mean_r2:.2f}-" + best_model_name + "-" + output + "-using-".join(inputs) + ".png"
 
-plot_results(best_predictions, y_test, title, file_name)
+print("\n\n")
+print("Plot was saved in images folder")
+answer = input("Do you want to see them? [y]:") 
+if answer == "y" or answer == "yes":
+    plot_results(best_predictions, y_test, title, file_name, show_plot=True)
+else:
+    plot_results(best_predictions, y_test, title, file_name, show_plot=False)
 
 # Save results of predicitons in a file named results.csv
 results_df = pd.DataFrame(columns=["HTC", "Predictions"])
@@ -442,11 +455,11 @@ results_df["HTC"] = y_test
 pred_list = [round(x[0]) for x in best_predictions]
 results_df["Predictions"] = pred_list # pd.Series(pred_list)
 results_df.to_csv("results.csv", index=False)
-print("======= Predictions of best model:", best_model_name)
-print(results_df)
-# Show predictions
-print("=============== Results for models =================")
-print(results_table)
+print("Predictions of best model were saved in results.csv")
+answer = input("Do you want to see them? [y]:") 
+if answer == "y" or answer == "yes":
+   print("======= Predictions of best model:", best_model_name)
+   print(results_df)
 print("\n\n")
 answer = input("Do you want to run feature selections? [y/n]:")
 if answer.lower() != "y" and answer.lower() != "yes":

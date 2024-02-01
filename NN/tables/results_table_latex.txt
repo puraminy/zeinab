@@ -1,16 +1,16 @@
 
         \begin{table*}
             \centering
-            \begin{tabular}{lrrr}
+            \begin{tabular}{lrrrl}
 \hline
- model              &   R2 &   MSE &   R2 std \\
+ model              &   R2 &   MSE &   R2 std & R2 List:                       \\
 \hline
- Linear1HiddenLayer & 77.5 &  0.21 &     12.4 \\
- Linear2HiddenLayer & 86.1 &  0.13 &      4.4 \\
- Tanh1HiddenLayer   & 74.1 &  0.24 &     50.3 \\
- Tanh2HiddenLayer   & 85.3 &  0.13 &     23.2 \\
- Relu1HiddenLayer   & 66.8 &  0.3  &     57   \\
- Relu2HiddenLayer   & 75.8 &  0.22 &      9.9 \\
+ Linear1HiddenLayer & 81.9 &  0.17 &      0   & [81.9, 81.9, 81.9, 81.9, 81.9] \\
+ Linear2HiddenLayer & 81.8 &  0.17 &      0.1 & [81.9, 81.9, 81.9, 81.9, 81.6] \\
+ Tanh1HiddenLayer   & 95.5 &  0.04 &      2.2 & [97.1, 97.2, 92.3, 93.4, 97.4] \\
+ Tanh2HiddenLayer   & 95   &  0.05 &      2   & [95.5, 96.6, 95.5, 96.3, 91.0] \\
+ Relu1HiddenLayer   & 87.9 &  0.11 &      7.1 & [89.4, 94.9, 90.1, 74.2, 90.6] \\
+ Relu2HiddenLayer   & 96.2 &  0.04 &      1.6 & [98.6, 96.3, 93.7, 95.1, 97.1] \\
 \hline
 \end{tabular}
             \caption{Results of different models}
