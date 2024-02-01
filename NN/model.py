@@ -171,7 +171,7 @@ def generate_latax_table(table, caption="table", label=""):
 
 ############################ Feature Selection ####################
 # Selects the best combination of features by removing features one by one
-# Searc about Backward Elimination 
+# Search about Backward Feature Elimination 
 def backward_feature_elimination(model_class, data, inputs, output, num_epochs, random_seed):
     y = data[output] 
     # Remove extra columns
@@ -188,11 +188,13 @@ def backward_feature_elimination(model_class, data, inputs, output, num_epochs, 
     rows.append({"features": inputs, "R2": round(mean_r2,2)})
     while(True):
         for feature in candidates:
+            # Selet other features except for current feature
             features = [f for f in candidates if f != feature]
             X = data[features]
             mean_r2, _, _, _ = repeat_apply(3, X, y, num_epochs, random_seed)
             results[feature] = mean_r2
             print("---------------------------------------")
+            # Results of removing the feature
             print("Removing:", feature)
             print("Features:", features)
             print("R2:", mean_r2)
@@ -205,7 +207,7 @@ def backward_feature_elimination(model_class, data, inputs, output, num_epochs, 
             candidates.remove(max_results_key)
             best_r2 = max_results
             print('=================================')
-            print('step: ' + str(len(candidates)))
+            print('step: ' + str(len(inputs) - len(candidates)))
             print(candidates)
             print('Best R2: ' + str(max_results))
             print('================================')
@@ -224,6 +226,9 @@ def backward_feature_elimination(model_class, data, inputs, output, num_epochs, 
     return table
 
 # Finds the combinaiton of features that best predict y
+# This method add features one by one
+# Search about Forward Feature Selction
+
 def forward_feature_selection(model_class, data, inputs, output, num_epochs, random_seed):
     y = data[output] 
     # Remove extra columns
@@ -273,6 +278,8 @@ def forward_feature_selection(model_class, data, inputs, output, num_epochs, ran
 
     table = pd.DataFrame(data=rows)
     return table
+
+
 # Repeats an apply_model to get average of results
 def repeat_apply(num_repeats, X, y, num_epochs, random_seed, display_steps=False):
     X_train, X_test, y_train, y_test = train_test_split(X, y, 
@@ -382,15 +389,16 @@ for model_index in selected_models:
             }
     results.append(result)
 
-# Creata a Table for results with two columns
+# Creata a Table for results
 results_table = pd.DataFrame(data=results)
+# Create and save latex code for table
 results_table_latex = generate_latax_table(results_table, caption="Results of different models", label="models")
-print("=========================================================")
+with open(os.path.join("tables", "results_table_latex.txt"), 'w') as f:
+    print(results_table_latex, file=f)
+
 # Show results
 print("============ Results for models =========================")
 print(results_table)
-with open(os.path.join("tables", "results_table_latex.txt"), 'w') as f:
-    print(results_table_latex, file=f)
 print("=========================================================")
 best_model = models[best_model_index]
 best_model_name = model_names[best_model_index]
@@ -401,23 +409,22 @@ X_train, X_test, y_train, y_test = train_test_split(X, y,
     test_size=0.2, 
     random_state=random_seed) 
 
-print("Predictions:")
-print("Actual, Predicted")
+# Show and save the plot for best results
 best_predictions = best_predictions[best_model_name] 
-for y,p in zip(y_test.to_numpy(), best_predictions):
-   print(y, ",", p.round(2))
-
 title = "Prediction of " + output + " using " + " ".join(inputs)
 file_name = f"R-{best_mean_r2:.2f}-" + best_model_name + "-" + output + "-using-".join(inputs) + ".png"
-# Show the best results
-plot_results(best_predictions, y_test, title, file_name)
-print("Results were saved in results.csv and Images were saved in images folder")
 
+plot_results(best_predictions, y_test, title, file_name)
+
+# Save results of predicitons in a file named results.csv
 results_df = pd.DataFrame(columns=["HTC", "Predictions"])
 results_df["HTC"] = y_test
-pred_list = [x[0] for x in best_predictions]
-results_df["Predictions"] = pd.Series(pred_list)
+pred_list = [round(x[0]) for x in best_predictions]
+results_df["Predictions"] = pred_list # pd.Series(pred_list)
 results_df.to_csv("results.csv", index=False)
+
+# Show predictions
+print(results_df)
 
 # Apply model to combination of inputs and select the best
 print("============================= Backward Feature Elimination =============")
@@ -445,7 +452,10 @@ print("------------ Results of Models ---------------")
 print(results_table)
 print("\n\n")
 print("----------------------Important! READ -------------------")
-print("images are saved in images folder and latex code for tables are saved in tables folder")
+print("images are saved in images folder")
+print("latex code for tables are saved in tables folder")
+print("predictions are saved in results.csv file")
+
 # Visualize the model and save it on mlp_structure image
 # dummy_input = torch.randn(1, input_size)
 # from torchviz import make_dot
