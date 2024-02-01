@@ -163,18 +163,18 @@ def plot_results(predictions_np, y_test, title, file_name, show_plot=False):
     # Calculate R-squared
     r2 = r2_score(y_test_np, predictions_np)
 
-    plt.figure(figsize=(10, 6))
-    plt.scatter(y_test_np, y_test_np, color='green', label='Actual', alpha=0.5)
-    plt.scatter(y_test_np, predictions_np, color='blue', label='Predicted', alpha=0.5)
-    plt.title(title + ' ' +  f' R-Squared:{r2:.2f}')
-    plt.xlabel('Actual Values')
-    plt.ylabel('Predicted Values')
-    plt.legend()
-    plt.grid(True)
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.scatter(y_test_np, y_test_np, color='green', label='Actual', alpha=0.5)
+    ax.scatter(y_test_np, predictions_np, color='blue', label='Predicted', alpha=0.5)
+    ax.set_title(title + ' ' +  f' R-Squared:{r2:.2f}')
+    ax.set_xlabel('Actual Values')
+    ax.set_ylabel('Predicted Values')
+    ax.legend()
+    ax.grid(True)
     if show_plot is True:
         plt.show()
     # Save the image of plot in images folder
-    plt.savefig(os.path.join("images", file_name), format="png")
+    fig.savefig(os.path.join("images", file_name), format="png")
 
 ################ Generate Latex Tables
 def generate_latax_table(table, caption="table", label=""):
@@ -439,7 +439,7 @@ X_train, X_test, y_train, y_test = train_test_split(X, y,
 # Show and save the plot for best results
 best_predictions = model_best_predictions[best_model_name] 
 title = "Prediction of " + output + " using " + " ".join(inputs)+" with " + best_model_name 
-file_name = f"R-{best_mean_r2:.2f}-" + best_model_name + "-" + output + "-using-".join(inputs) + ".png"
+file_name = f"R2-{best_r2:.2f}-" + best_model_name + "-" + output + "-using-".join(inputs) + ".png"
 
 print("\n\n")
 print("Plot was saved in images folder")
