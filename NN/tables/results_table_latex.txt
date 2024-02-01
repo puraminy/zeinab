@@ -1,0 +1,17 @@
+
+        \begin{table*}
+            \centering
+            \begin{tabular}{lrrr}
+\hline
+ model           &   R2 &   MSE &   R2 std \\
+\hline
+ RegressionModel & 91.9 &  0.07 &      4.7 \\
+ ReLUModel       & 88.7 &  0.1  &      4.1 \\
+ TanhModel       & 92.6 &  0.07 &      1.9 \\
+ ReLUReLUModel   & 95.4 &  0.04 &      0.5 \\
+\hline
+\end{tabular}
+            \caption{Results of different models}
+            \label{table-models}
+        \end{table*}
+        

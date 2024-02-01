@@ -9,7 +9,6 @@ import numpy as np
 import torch.nn as nn
 from sklearn.metrics import r2_score
 from tabulate import tabulate
-import os
 
 # Define the neural network with ReLU activation function
 class ReLUModel(nn.Module):
@@ -83,8 +82,7 @@ class RegressionModel(nn.Module):
 
 # Function to apply model on data and generate predictions
 # Return predictions, MSE and R-Squared
-def apply_model(model_class, X_train, X_test, y_train, y_test, num_epochs, 
-        display_steps=False):
+def apply_model(model_class, X_train, X_test, y_train, y_test, num_epochs):
    # Fix scales
     scaler = StandardScaler()
     X_train = torch.tensor(scaler.fit_transform(X_train), dtype=torch.float32)
@@ -99,10 +97,12 @@ def apply_model(model_class, X_train, X_test, y_train, y_test, num_epochs,
     y_test_normalized = (y_test - y_test.mean()) / y_test.std()
 
     input_size = X_train.shape[1]
+    print("input size is:", input_size)
+
     # Instantiate the model and define loss function and optimizer
     model = model_class(input_size)
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.01)
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
 
     # Train the model
     for epoch in range(num_epochs):
@@ -113,7 +113,7 @@ def apply_model(model_class, X_train, X_test, y_train, y_test, num_epochs,
         loss.backward()
         optimizer.step()
 
-        if (epoch + 1) % 10 == 0 and display_steps:
+        if (epoch + 1) % 10 == 0:
             print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item()}')
 
     # Evaluate the model on the test set
@@ -131,185 +131,94 @@ def apply_model(model_class, X_train, X_test, y_train, y_test, num_epochs,
     y_test_np = y_test.numpy()
 
     # Calculate R-squared
-    r2 = r2_score(y_test_np, predictions_np)
+    r_squared = r2_score(y_test_np, predictions_np)
     # Return predictions, MSE and R-Squared
-    return predictions_np, mse, r2
+    return predictions_np, mse, r_squared
 
 ############################## Plot Resuts #######################
 def plot_results(predictions_np, y_test, title, file_name):
     # Convert predictions and y_test to NumPy arrays
     y_test_np = y_test.to_numpy()
     # Calculate R-squared
-    r2 = r2_score(y_test_np, predictions_np)
+    r_squared = r2_score(y_test_np, predictions_np)
 
     plt.figure(figsize=(10, 6))
     plt.scatter(y_test_np, y_test_np, color='green', label='Actual', alpha=0.5)
     plt.scatter(y_test_np, predictions_np, color='blue', label='Predicted', alpha=0.5)
-    plt.title(title + ' ' +  f' R-Squared:{r2:.2f}')
+    plt.title(title + ' ' +  f' R-Squared:{r_squared:.2f}')
     plt.xlabel('Actual Values')
     plt.ylabel('Predicted Values')
     plt.legend()
     plt.grid(True)
     # Remove comment if you don't want to show the plot
-    # plt.show()
+    plt.show()
     # Save the image of plot in images folder
-    plt.savefig(os.path.join("images", file_name), format="png")
-
-################ Generate Latex Tables
-def generate_latax_table(table, caption="table", label=""):
-    latex_table=tabulate(table, headers='keys', 
-            tablefmt='latex_raw', showindex=False)
-    table_env = f"""
-        \\begin{{table*}}
-            \centering
-            {latex_table}
-            \caption{{{caption}}}
-            \label{{table-{label}}}
-        \end{{table*}}
-        """
-    return table_env
+    plt.savefig("images/"+ file_name, format="png")
 
 ############################ Feature Selection ####################
-# Selects the best combination of features by removing features one by one
-# Searc about Backward Elimination 
-def backward_feature_elimination(model_class, data, inputs, output, num_epochs, random_seed):
-    y = data[output] 
-    # Remove extra columns
-    data = data.drop([output, 'HTC_ANN1', 'HTC_ANN2'], axis=1).copy()
-    X = data[inputs]
-    mean_r2, _, _, _ = repeat_apply(3, X, y, num_epochs, random_seed)
-    best_r2 = mean_r2
-    print("Using all features")
-    print("Features:", inputs)
-    print("R2:", mean_r2)
-    candidates = inputs
-    results = {}
-    rows = [] # Rows of a table to show the features and the result
-    rows.append({"features": inputs, "R2": round(mean_r2,2)})
-    while(True):
-        for feature in candidates:
-            features = [f for f in candidates if f != feature]
-            X = data[features]
-            mean_r2, _, _, _ = repeat_apply(3, X, y, num_epochs, random_seed)
-            results[feature] = mean_r2
-            print("---------------------------------------")
-            print("Removing:", feature)
-            print("Features:", features)
-            print("R2:", mean_r2)
-            rows.append({"features": features, "R2": round(mean_r2,2)})
-
-        max_results =  max(results.values())
-        max_results_key = max(results, key=results.get)
-
-        if max_results > best_r2:
-            candidates.remove(max_results_key)
-            best_r2 = max_results
-            print('=================================')
-            print('step: ' + str(len(candidates)))
-            print(candidates)
-            print('Best R2: ' + str(max_results))
-            print('================================')
-        else:
-            break
-
-    print('\n\n')
-    print('=============== Final Features ==================')
-    print('Selected Features: ')
-    print(candidates)
-    print('Final R2: ' + str(best_r2))
-    print('Elminated Features: ')
-    print(set(data.columns).difference(candidates))
-
-    table = pd.DataFrame(data=rows)
-    return table
-
 # Finds the combinaiton of features that best predict y
-def forward_feature_selection(model_class, data, inputs, output, num_epochs, random_seed):
+def FeatureSelection(model_class, data, inputs, output, num_epochs, seed=123):
+    results = {}
+    candidates = []
+    last_max = -1
     y = data[output] 
     # Remove extra columns
     data = data.drop([output, 'HTC_ANN1', 'HTC_ANN2'], axis=1).copy()
-    candidates = []
-    best_r2 = -1
-    results = {}
-    rows = [] # Rows of a table to show the features and the result
     while(True):
-        # for all features except for the candidates
-        for feature in data.drop(candidates, axis=1).columns:
+        for x in data.drop(candidates, axis=1).columns:
             if len(candidates) == 0:
-                features = [feature]
+                features = [x]
             else:
-                features = [feature] + candidates 
+                features = x + candidates 
 
             X = data[features]
-            mean_r2, _, _, _ = repeat_apply(3, X, y, num_epochs, random_seed)
-            results[feature] = mean_r2
-            print("--------------------------------")
-            print("Adding feature ", feature)
-            print("Features:", features)
-            print("R2:", mean_r2)
-            rows.append({"features": features, "R2": round(mean_r2,2)})
+            mean_r_squared, _, _, _ = repeat_apply(num_repeats=3, X, y, num_epochs)
+            results[x] = mean_r_squared
 
         max_results =  max(results.values())
         max_results_key = max(results, key=results.get)
 
-        if max_results > best_r2:
+        if max_results > last_max:
             candidates.append(max_results_key)
-            best_r2 = max_results
-            print('=================================')
+            last_max = max_results
+
             print('step: ' + str(len(candidates)))
             print(candidates)
-            print('Best R2: ' + str(max_results))
-            print('================================')
+            print('Adjusted R2: ' + str(max_results))
+            print('===============')
         else:
             break
 
     print('\n\n')
-    print('=============== Final Features ==================')
-    print('Selected Features: ')
-    print(candidates)
-    print('Final R2: ' + str(best_r2))
-    print('Elminated Features: ')
-    print(set(data.columns).difference(candidates))
+    print('elminated variables: ')
+    print(set(df.drop(y, axis=1).columns).difference(candidates))
 
-    table = pd.DataFrame(data=rows)
-    return table
 # Repeats an apply_model to get average of results
-def repeat_apply(num_repeats, X, y, num_epochs, random_seed, display_steps=False):
-    X_train, X_test, y_train, y_test = train_test_split(X, y, 
-        test_size=0.2, 
-        random_state=random_seed) 
-    r2_list = []
-    mse_list = []
-    max_r2 = 0
-    best_preds = None
+def repeat_apply(num_repeats, X, y, num_epochs):
+    models_r_squared = {}
+    models_mse = {}
     for i in range(num_repeats):
-        predictions, mse, r2 = apply_model(model_class, 
-                X_train, X_test, y_train, y_test, num_epochs, display_steps)
+        # changing random_seed is important to get differnt train and test sets
+        random_seed = i
+        X_train, X_test, y_train, y_test = train_test_split(X, y, 
+            test_size=0.2, random_state=random_seed) 
+        for m_type in selected_models:
+            # Instantiate the selected model
+            model_class = models[m_type]
+            model_name = model_names[m_type]
+            predictions, mse,r_squared=apply_model(model_class, 
+                    X_train, X_test, y_train, y_test, num_epochs)
 
-        if r2 > max_r2:
-            max_r2 = r2
-            best_preds = predictions
+            if not model_names in models_r_squared:
+                models_r_squared[model_name] = []
+                models_mse[model_name] = []
 
-        r2_list.append(r2*100)
-        mse_list.append(mse)
+            models_r_squared[model_name].append(r_squared*100)
+            models_mse[model_name].append(mse)
 
-    if display_steps:
-        print(r2_list)
-
-    mean_r2 = np.mean(r2_list) 
-    mean_mse = np.mean(mse_list)
-    std_r2 = np.var(r2_list)
-    std_mse = np.std(mse_list)
-
-    return mean_r2, std_r2, mean_mse, best_preds
+    return models_r_squared, models_mse
 
 ############################### Start of Program ###################
-random_seed = 123
-torch.manual_seed(random_seed)
-np.random.seed(random_seed)
-# changing random_seed is important to get differnt results 
-# The same random_seed gets the same results in each run
-
 models = [RegressionModel, ReLUModel, TanhModel, ReLUReLUModel]
 model_names=[model.__name__ for model in models]
 # User input for selecting the model and number of epochs
@@ -329,13 +238,13 @@ else:
     selected_models = [model_type]
 
 print("Selected Models:", [model_names[i] for i in selected_models])
-num_epochs = input("Enter the number of epochs [300]:")
+num_epochs = input("Enter the number of epochs: [300]")
 if not num_epochs: 
     num_epochs = 300 
 else:
     num_epochs = int(num_epochs)
 
-num_repeats = input("Enter the number of repeating predictions [3]:")
+num_repeats = input("Enter the number of repeating predictions: [3]")
 if not num_repeats: 
     num_repeats = 3 
 else:
@@ -351,64 +260,75 @@ output = 'HTC'
 X = data[inputs]
 y = data[output] 
 
+# for all models apply model on data for 3 times and get predictions, mse and r_squared
+models_r_squared, models_mse = repeat_apply(num_repeats, X, y, num_epochs)
+
+models_mean_r_squared = {}
+models_std_r_squared = {}
+models_max_r_squared = {}
+for model_name, values in models_r_squared.items():
+    models_mean_r_squared[model_name] = np.mean(values) 
+    models_std_r_squared[model_name] = np.std(values)
+    index = np.argmax(values)
+    maximum = values[index] # get maximum r_squared for a model
+    models_max_r_squared[model_name] = (index, maximum)
+
+for model_name, values in models_mse.items():
+    models_mean_mse[model_name] = np.mean(values)
+
 best_model_index = -1
-best_mean_r2 = 0
+best_r_squared = 0
 best_mse = 0
 results = []
-best_predictions = {}
-# for all models
-for model_index in selected_models:
-    # Instantiate the selected model
-    model_class = models[model_index]
-    model_name = model_names[model_index]
-    # Apply model on data for 3 times and get predictions, mse and r2
-    mean_r2, std_r2, mean_mse, model_best_preds = repeat_apply(
-            num_repeats, X, y, num_epochs, 
-            random_seed=random_seed, display_steps=True)
-
-    # Keep best seed to generate the same predictions later
-    best_predictions[model_name] = model_best_preds
-
-    if mean_r2 > best_mean_r2:
-        best_mean_r2 = mean_r2
-        best_mse = mean_mse
-        best_model_index = model_index
-
+best_predictions = None
+for model_name in model_names:
+    mean_r_squared = models_mean_r_squared[model_name]
+    std_r_squared = models_std_r_squared[model_name]
+    mean_mse = models_mean_mse[model_name]
     result = {
             "model":model_name, 
-            "R2": round(mean_r2,1), 
+            "R2": round(mean_r_squared,1), 
             "MSE": round(mean_mse,2),
-            "R2 std": round(std_r2, 1)
+            "R2 std": round(std_r_squared, 1)
             }
     results.append(result)
+    if mean_r_squared > best_r_squared:
+        best_r_squared = mean_r_squared
+        best_mse = mean_mse
+        best_model = model_name
+        best_predictions = predictions
 
 # Creata a Table for results with two columns
 results_table = pd.DataFrame(data=results)
-results_table_latex = generate_latax_table(results_table, caption="Results of different models", label="models")
+latex_table=tabulate(results_table, headers='keys', 
+        tablefmt='latex_raw', showindex=False)
+print("=============== Latex Code for results =================")
+table_env = f"""
+    \\begin{{table*}}
+        \centering
+        {latex_table}
+        \caption{{Resuls for different models}}
+        \label{{table-results}}
+    \end{{table*}}
+    """
+print(table_env)
 print("=========================================================")
 # Show results
 print("============ Results for models =========================")
 print(results_table)
-with open(os.path.join("tables", "results_table_latex.txt"), 'w') as f:
-    print(results_table_latex, file=f)
 print("=========================================================")
 best_model = models[best_model_index]
 best_model_name = model_names[best_model_index]
-print("Best R-Squred", best_mean_r2)
+print("Best R-Squred", best_r_squared)
 print("Best model with better R-Squred:", best_model_name) 
-
-X_train, X_test, y_train, y_test = train_test_split(X, y, 
-    test_size=0.2, 
-    random_state=random_seed) 
 
 print("Predictions:")
 print("Actual, Predicted")
-best_predictions = best_predictions[best_model_name] 
 for y,p in zip(y_test.to_numpy(), best_predictions):
    print(y, ",", p.round(2))
 
 title = "Prediction of " + output + " using " + " ".join(inputs)
-file_name = f"R-{best_mean_r2:.2f}-" + best_model_name + "-" + output + "-using-".join(inputs) + ".png"
+file_name = f"R-{best_r_squared:.2f}-" + best_model_name + "-" + output + "-using-".join(inputs) + ".png"
 # Show the best results
 plot_results(best_predictions, y_test, title, file_name)
 print("Results were saved in results.csv and Images were saved in images folder")
@@ -419,33 +339,10 @@ pred_list = [x[0] for x in best_predictions]
 results_df["Predictions"] = pd.Series(pred_list)
 results_df.to_csv("results.csv", index=False)
 
+
 # Apply model to combination of inputs and select the best
-print("============================= Backward Feature Elimination =============")
-backward_table = backward_feature_elimination(best_model, data, inputs, output, num_epochs, random_seed)
-print("============================= Forward Feature Selection ================")
-forward_table = forward_feature_selection(best_model, data, inputs, output, num_epochs, random_seed)
+FeatureSelection(best_model, data, inputs, output, num_epochs, seed)
 
-print("------------ backward freature elimination ---------------")
-print(backward_table)
-
-backward_table_latex = generate_latax_table(backward_table, caption="Results of Backward Feature Elimination", label="backward")
-with open(os.path.join("tables", "backward_table_latex.txt"), 'w') as f:
-    print(backward_table_latex, file=f)
-
-print("\n")
-print("------------ forward feature selection ---------------")
-print(forward_table)
-forward_table_latex = generate_latax_table(forward_table, caption="Results of Forward Feature Selection for different features", label="forward")
-with open(os.path.join("tables", "forward_table_latex.txt"), 'w') as f:
-    print(forward_table_latex, file=f)
-
-
-print("\n")
-print("------------ Results of Models ---------------")
-print(results_table)
-print("\n\n")
-print("----------------------Important! READ -------------------")
-print("images are saved in images folder and latex code for tables are saved in tables folder")
 # Visualize the model and save it on mlp_structure image
 # dummy_input = torch.randn(1, input_size)
 # from torchviz import make_dot
