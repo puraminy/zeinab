@@ -24,9 +24,10 @@ git push
 
 https://notepad-plus-plus.org/downloads/v8.6.2/
 
-highlight
+
 
 **‌ به فولدر NN کیلک کن و به انتهای صفحه مراجعه کن تا توضیحات رو ببینی**
+==highlight==
 
 
 ##  ایجاد نمودار شبکه عصبی
