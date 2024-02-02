@@ -14,12 +14,15 @@ import os
 num_epochs = 300 
 num_repeats = 5
 # num_repeats shows the number of times to repeat the experiment to get its average values
-random_seed = 123
-torch.manual_seed(random_seed)
-np.random.seed(random_seed)
-# changing random_seed generates different results for each run 
-# The same random_seed gets the same results in each run
+model_seed = 123 # it is used for random_state of models
+# changing model_seed generates different results for each run for each model
+# The same model_seed produces the same results in each run which is good for reporducability of experiments
 # Dont change it if you want to reproduce the same results
+data_seed = 123 # it is used for random_state of splitting data into source and train sets
+# changing it creates different source and train sets.
+# Since the number of data is low changing it can largely affect the results
+torch.manual_seed(model_seed)
+np.random.seed(model_seed)
 learning_rate = 0.05
 # The learnign rate used in ANN
 hidden_size1 = 10
@@ -198,9 +201,9 @@ def backward_feature_elimination(model_class, data, inputs, output):
     # Remove extra columns
     data = data.drop([output, 'HTC_ANN1', 'HTC_ANN2'], axis=1).copy()
     X = data[inputs]
-    # it uses num_repeats, num_epochs and random_seed as global variables
+    # it uses num_repeats, num_epochs and model_seed as global variables
     # use _ for output of repeat_fit_model, which you don't need to use here
-    mean_r2, _, _, _, _,_ = repeat_fit_model(num_repeats, X, y, num_epochs, random_seed)
+    mean_r2, _, _, _, _,_ = repeat_fit_model(num_repeats, X, y, num_epochs)
     best_r2 = mean_r2
     print("Using all features")
     print("Features:", inputs)
@@ -214,7 +217,7 @@ def backward_feature_elimination(model_class, data, inputs, output):
             # Selet other features except for current feature
             features = [f for f in candidates if f != feature]
             X = data[features]
-            mean_r2, _, _, _,_,_ = repeat_fit_model(num_repeats, X, y, num_epochs, random_seed)
+            mean_r2, _, _, _,_,_ = repeat_fit_model(num_repeats, X, y, num_epochs)
             results[feature] = mean_r2
             print("---------------------------------------")
             # Results of removing the feature
@@ -269,7 +272,7 @@ def forward_feature_selection(model_class, data, inputs, output):
                 features = [feature] + candidates 
 
             X = data[features]
-            mean_r2, _, _, _,_,_ = repeat_fit_model(num_repeats, X, y, num_epochs, random_seed)
+            mean_r2, _, _, _,_,_ = repeat_fit_model(num_repeats, X, y, num_epochs)
             results[feature] = mean_r2
             print("--------------------------------")
             print("Adding feature ", feature)
@@ -304,10 +307,10 @@ def forward_feature_selection(model_class, data, inputs, output):
 
 
 # Repeats an fit_model to get average of results
-def repeat_fit_model(num_repeats, X, y, num_epochs, random_seed, display_steps=False):
+def repeat_fit_model(num_repeats, X, y, num_epochs, display_steps=False):
     X_train, X_test, y_train, y_test = train_test_split(X, y, 
         test_size=0.2, 
-        random_state=random_seed) 
+        random_state=data_seed) 
     r2_list = []
     mse_list = []
     max_r2 = 0
@@ -392,8 +395,7 @@ for model_index in selected_models:
     model_name = model_names[model_index]
     # Apply model on data for 3 times and get predictions, mse and r2
     mean_r2, std_r2, mean_mse, model_best_preds, max_r2, r2_list = repeat_fit_model(
-            num_repeats, X, y, num_epochs, 
-            random_seed=random_seed, display_steps=True)
+            num_repeats, X, y, num_epochs, display_steps=True)
 
     # Keep best seed to generate the same predictions later
     model_best_predictions[model_name] = model_best_preds
@@ -434,7 +436,7 @@ print("Best model with better mean R-Squred:", best_model_name)
 
 X_train, X_test, y_train, y_test = train_test_split(X, y, 
     test_size=0.2, 
-    random_state=random_seed) 
+    random_state=data_seed) 
 
 # Show and save the plot for best results
 best_predictions = model_best_predictions[best_model_name] 

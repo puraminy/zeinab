@@ -5,18 +5,18 @@
 \hline
  features                             &     R2 \\
 \hline
- ['flow_rate']                        &  58.04 \\
- ['conc_nano']                        &  26.86 \\
- ['Kfluid']                           &  35.98 \\
- ['heat_flux']                        &  -0.14 \\
- ['X_D']                              & -13.63 \\
- ['conc_nano', 'flow_rate']           &  30    \\
- ['Kfluid', 'flow_rate']              &  83.42 \\
- ['heat_flux', 'flow_rate']           &  68.62 \\
- ['X_D', 'flow_rate']                 &  71.23 \\
- ['conc_nano', 'flow_rate', 'Kfluid'] &  31.24 \\
- ['heat_flux', 'flow_rate', 'Kfluid'] &  83.14 \\
- ['X_D', 'flow_rate', 'Kfluid']       &  75.47 \\
+ ['flow_rate']                        &  52.13 \\
+ ['conc_nano']                        &  17.53 \\
+ ['Kfluid']                           &  13.14 \\
+ ['heat_flux']                        &  -0.42 \\
+ ['X_D']                              &  -8.4  \\
+ ['conc_nano', 'flow_rate']           &  57.58 \\
+ ['Kfluid', 'flow_rate']              &  66.38 \\
+ ['heat_flux', 'flow_rate']           & -91.89 \\
+ ['X_D', 'flow_rate']                 &   4.31 \\
+ ['conc_nano', 'flow_rate', 'Kfluid'] &  50.69 \\
+ ['heat_flux', 'flow_rate', 'Kfluid'] & -44.07 \\
+ ['X_D', 'flow_rate', 'Kfluid']       &  23.8  \\
 \hline
 \end{tabular}
             \caption{Results of Forward Feature Selection for different features}
