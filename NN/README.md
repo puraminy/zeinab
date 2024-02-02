@@ -5,7 +5,15 @@
 ```
 python model.py
 ```
-را اجرا کن و مراحل مشخص است.
+اگر خطا داد که Module XXX not found اون ماژول رو نصب کن که نوشتم ماژول tabulate نیاز به نصب داره
+
+
+
+
+```
+pip install tabulate
+```
+
 
 ## مدلها
 
