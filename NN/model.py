@@ -369,10 +369,10 @@ answer = input(f"Enter the number of repeating predictions [{num_repeats}]:")
 if answer: 
    num_repeats = int(answer)
 
-# Load data from CSV file into a DataFrame
-data = pd.read_csv('data.csv')
+# Load data from data CSV file in data folder
+data = pd.read_csv(os.path.join('data','data.csv'))
 
-# Input and output 
+# Input features and output 
 inputs = ['flow_rate', 'conc_nano', 'Kfluid', 'heat_flux', 'X_D']
 output = 'HTC'
 # Read data into X and y
