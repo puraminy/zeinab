@@ -21,7 +21,6 @@ __pycache__/
 *.log
 *.out
 *.toc
-*.pdf
 
 # Compiled LaTeX
 *.dvi
