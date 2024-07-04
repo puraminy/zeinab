@@ -1,16 +1,11 @@
 
         \begin{table*}
             \centering
-            \begin{tabular}{lrrrl}
+            \begin{tabular}{lrrlrrrl}
 \hline
- model              &   R2 &   MSE &   R2 std & R2 List:                       \\
+ hidden sizes   &   total hs &   epochs & model   &   R2 &   MSE &   R2 std & R2 List:                       \\
 \hline
- Linear1HiddenLayer & 81.9 &  0.17 &      0   & [81.9, 81.9, 81.9, 81.9, 81.9] \\
- Linear2HiddenLayer & 81.8 &  0.17 &      0.1 & [81.9, 81.9, 81.9, 81.9, 81.6] \\
- Tanh1HiddenLayer   & 95.5 &  0.04 &      2.2 & [97.1, 97.2, 92.3, 93.4, 97.4] \\
- Tanh2HiddenLayer   & 95   &  0.05 &      2   & [95.5, 96.6, 95.5, 96.3, 91.0] \\
- Relu1HiddenLayer   & 87.9 &  0.11 &      7.1 & [89.4, 94.9, 90.1, 74.2, 90.6] \\
- Relu2HiddenLayer   & 96.2 &  0.04 &      1.6 & [98.6, 96.3, 93.7, 95.1, 97.1] \\
+ [15, 10, 3]    &         28 &       40 & VNN     & 67.5 &  0.28 &      4.7 & [68.0, 72.0, 59.2, 72.0, 66.5] \\
 \hline
 \end{tabular}
             \caption{Results of different models}

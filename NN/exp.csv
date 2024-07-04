@@ -1,0 +1,2 @@
+,hidden sizes,total hs,epochs,model,R2,MSE,R2 std,R2 List:
+0,"[15, 10, 3]",28,40,VNN,67.5,0.28,4.7,"[68.0, 72.0, 59.2, 72.0, 66.5]"
