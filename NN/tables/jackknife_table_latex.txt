@@ -1,0 +1,23 @@
+
+        \begin{table*}
+            \centering
+            \begin{tabular}{lrr}
+\hline
+ Feature    &   Sensitivity &   Variance \\
+\hline
+ Kfluid2    &      25.3582  &   380.058  \\
+ Kfluid1    &      19.947   &  1314.43   \\
+ heat_flux2 &      14.0638  &    56.1636 \\
+ X_D2       &      13.99    &   153.755  \\
+ conc_nano1 &      13.944   &   602.438  \\
+ flow_rate1 &      10.1453  &  1023.42   \\
+ conc_nano2 &       8.19428 &   781.809  \\
+ flow_rate2 &       6.09724 &   496.068  \\
+ X_D1       &      -4.22879 &   116.036  \\
+ heat_flux1 &      -4.28939 &    67.6422 \\
+\hline
+\end{tabular}
+            \caption{Results of Jackknife Sensitivity Analysis}
+            \label{table-jackknife}
+        \end{table*}
+        

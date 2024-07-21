@@ -3,20 +3,30 @@
             \centering
             \begin{tabular}{lr}
 \hline
- features                             &     R2 \\
+ features                                &    R2 \\
 \hline
- ['flow_rate']                        &  58.04 \\
- ['conc_nano']                        &  26.86 \\
- ['Kfluid']                           &  35.98 \\
- ['heat_flux']                        &  -0.14 \\
- ['X_D']                              & -13.63 \\
- ['conc_nano', 'flow_rate']           &  30    \\
- ['Kfluid', 'flow_rate']              &  83.42 \\
- ['heat_flux', 'flow_rate']           &  68.62 \\
- ['X_D', 'flow_rate']                 &  71.23 \\
- ['conc_nano', 'flow_rate', 'Kfluid'] &  31.24 \\
- ['heat_flux', 'flow_rate', 'Kfluid'] &  83.14 \\
- ['X_D', 'flow_rate', 'Kfluid']       &  75.47 \\
+ ['X_D1']                                & 13.79 \\
+ ['flow_rate2']                          & 25.99 \\
+ ['conc_nano2']                          & 10.55 \\
+ ['Kfluid2']                             & 65.8  \\
+ ['heat_flux2']                          & -0.18 \\
+ ['flow_rate1', 'Kfluid2']               & 64.61 \\
+ ['conc_nano1', 'Kfluid2']               & 62.12 \\
+ ['Kfluid1', 'Kfluid2']                  & 64.89 \\
+ ['heat_flux1', 'Kfluid2']               & 65.77 \\
+ ['X_D1', 'Kfluid2']                     & 65.28 \\
+ ['flow_rate2', 'Kfluid2']               & 52.59 \\
+ ['conc_nano2', 'Kfluid2']               & 80.67 \\
+ ['heat_flux2', 'Kfluid2']               & 65.27 \\
+ ['X_D2', 'Kfluid2']                     & 65.8  \\
+ ['flow_rate1', 'Kfluid2', 'conc_nano2'] & 69.35 \\
+ ['conc_nano1', 'Kfluid2', 'conc_nano2'] & 64.73 \\
+ ['Kfluid1', 'Kfluid2', 'conc_nano2']    & 69.24 \\
+ ['heat_flux1', 'Kfluid2', 'conc_nano2'] & 76.47 \\
+ ['X_D1', 'Kfluid2', 'conc_nano2']       & 65.38 \\
+ ['flow_rate2', 'Kfluid2', 'conc_nano2'] & 68.01 \\
+ ['heat_flux2', 'Kfluid2', 'conc_nano2'] & 70.19 \\
+ ['X_D2', 'Kfluid2', 'conc_nano2']       & 70.38 \\
 \hline
 \end{tabular}
             \caption{Results of Forward Feature Selection for different features}

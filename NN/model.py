@@ -49,41 +49,49 @@ list_hidden_sizes = [[15, 10, 3], [8, 8, 2], [5, 4, 2]]
 normalization_type = "z_score"
 
 ##################### New Models
-class MLP(nn.Module):
+class RBFNSimple(nn.Module):
     def __init__(self, input_size, hidden_sizes):
         super().__init__()
-        self.hidden_layers = nn.ModuleList()
-        self.activations = activations if activations is not None else []
-
-        self.hidden_layers.append(nn.Linear(input_size, hidden_sizes[0]))
-        for i in range(len(hidden_sizes) - 1):
-            self.hidden_layers.append(nn.Linear(hidden_sizes[i], hidden_sizes[i + 1]))
-        self.hidden_layers.append(nn.Linear(hidden_sizes[-1], 1))
-
-    def forward(self, x):
-        for i, layer in enumerate(self.hidden_layers):
-            x = layer(x)
-            act = self.activations[-1]
-            if i < len(self.activations) and self.activations[i] is not None:
-                act = self.activations[i]
-            x = act(x)
-        return x
-
-class RBFN(nn.Module):
-    def __init__(self, input_size, hidden_size):
-        super().__init__()
+        hidden_size = hidden_sizes[0]
         self.hidden = nn.Linear(input_size, hidden_size)
         self.output = nn.Linear(hidden_size, 1)
         self.hidden_size = hidden_size
 
     def forward(self, x):
+        # Using radial basis function
         x = torch.exp(-torch.cdist(x, self.hidden.weight.data)**2 / 2)
+        x = self.output(x)
+        return x
+
+
+class RBFN(nn.Module):
+    def __init__(self, input_size, hidden_sizes):
+        super().__init__()
+        hidden_size1 = hidden_sizes[0]
+        hidden_size2 = hidden_sizes[1] if len(hidden_sizes) > 1 else hidden_size1
+
+        self.hidden1 = nn.Linear(input_size, hidden_size1)
+        self.hidden2 = nn.Linear(hidden_size1, hidden_size2)
+        self.output = nn.Linear(hidden_size2, 1)
+
+        self.activation = nn.ReLU()
+
+    def forward(self, x):
+        # First hidden layer with radial basis function
+        x = torch.exp(-torch.cdist(x, self.hidden1.weight.data)**2 / 2)
+        x = self.activation(x)
+        
+        # Second hidden layer with radial basis function
+        x = torch.exp(-torch.cdist(x, self.hidden2.weight.data)**2 / 2)
+        x = self.activation(x)
+        
         x = self.output(x)
         return x
 
 class GRNN(nn.Module):
-    def __init__(self, input_size, hidden_size):
+    def __init__(self, input_size, hidden_sizes):
         super().__init__()
+        hidden_size = hidden_sizes[0]
         self.hidden = nn.Linear(input_size, hidden_size)
         self.output = nn.Linear(hidden_size, 1)
         self.hidden_size = hidden_size
@@ -91,26 +99,6 @@ class GRNN(nn.Module):
     def forward(self, x):
         x = torch.exp(-torch.cdist(x, self.hidden.weight.data)**2 / 2)
         x = self.output(x)
-        return x
-
-class FFNN(nn.Module):
-    def __init__(self, input_size, hidden_sizes):
-        super().__init__()
-        self.hidden_layers = nn.ModuleList()
-        self.activations = activations if activations is not None else []
-
-        self.hidden_layers.append(nn.Linear(input_size, hidden_sizes[0]))
-        for i in range(len(hidden_sizes) - 1):
-            self.hidden_layers.append(nn.Linear(hidden_sizes[i], hidden_sizes[i + 1]))
-        self.hidden_layers.append(nn.Linear(hidden_sizes[-1], 1))
-
-    def forward(self, x):
-        for i, layer in enumerate(self.hidden_layers):
-            x = layer(x)
-            act = self.activations[-1]
-            if i < len(self.activations) and self.activations[i] is not None:
-                act = self.activations[i]
-            x = act(x)
         return x
 
 class CNN(nn.Module):
@@ -138,7 +126,6 @@ class CNN(nn.Module):
         return out
 
 ######################################################
-
 class VNN(nn.Module):
     def __init__(self, input_size, hidden_sizes):
         super().__init__()
@@ -182,6 +169,10 @@ class Linear1HiddenLayer(nn.Module):
         self.input_to_hidden1 = nn.Linear(input_size, hidden_sizes[0])
         self.hidden1_to_output = nn.Linear(hidden_sizes[0], 1)
 
+        self.hidden_layers = nn.ModuleList()
+        self.hidden_layers.append(self.input_to_hidden1)
+        self.hidden_layers.append(self.hidden1_to_output)
+
     def forward(self, x):
         # order of computation
         x = self.input_to_hidden1(x)
@@ -207,6 +198,11 @@ class Linear2HiddenLayer(nn.Module):
         self.input_to_hidden1 = nn.Linear(input_size, hidden_sizes[0])
         self.hidden1_to_hidden2 = nn.Linear(hidden_sizes[0], hidden_sizes[1])
         self.hidden2_to_output = nn.Linear(hidden_sizes[1], 1)
+
+        self.hidden_layers = nn.ModuleList()
+        self.hidden_layers.append(self.input_to_hidden1)
+        self.hidden_layers.append(self.hidden1_to_hidden2)
+        self.hidden_layers.append(self.hidden2_to_output)
 
     def forward(self, x):
         # order of computation
@@ -250,8 +246,9 @@ def normalize(data, normalization_type):
 
 # Function to apply model on data and generate predictions
 # Return predictions, MSE and R-Squared
+import torch.nn.init as init
+
 def fit_model(model_class, X_train, X_test, y_train, y_test, num_epochs, hidden_sizes, display_steps=False):
-   # Fix scales
     scaler = StandardScaler()
     X_train = torch.tensor(scaler.fit_transform(X_train), dtype=torch.float32)
     X_test = torch.tensor(scaler.transform(X_test), dtype=torch.float32)
@@ -259,50 +256,72 @@ def fit_model(model_class, X_train, X_test, y_train, y_test, num_epochs, hidden_
     y_test = torch.tensor(y_test.values, dtype=torch.float32).view(-1, 1)
 
    # Normalize inputs and targets to zero mean and unity standard deviation
-    
     X_train_normalized = normalize(X_train, normalization_type)
     X_test_normalized = normalize(X_test, normalization_type)
     y_train_normalized = normalize(y_train, normalization_type)
     y_test_normalized = normalize(y_test, normalization_type)
 
-
-
     input_size = X_train.shape[1]
-    # Instantiate the model and define loss function and optimizer
+
     model = model_class(input_size, hidden_sizes)
+
+    # Initialize weights
+    def weights_init(m):
+        if isinstance(m, nn.Linear):
+            init.kaiming_uniform_(m.weight.data)
+            if m.bias is not None:
+                init.constant_(m.bias.data, 0)
+
+    model.apply(weights_init)
+
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-    # Train the model
     for epoch in range(num_epochs):
         model.train()
         optimizer.zero_grad()
         outputs = model(X_train_normalized)
+        
+        # Check for NaN in outputs
+        if torch.isnan(outputs).any():
+            print(f"NaN detected in outputs at epoch {epoch + 1}")
+            return None, None, None
+
         loss = criterion(outputs, y_train_normalized)
+        
+        # Check for NaN in loss
+        if torch.isnan(loss).any():
+            print(f"NaN detected in loss at epoch {epoch + 1}")
+            return None, None, None
+
         loss.backward()
+        
+        # Gradient clipping
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
         optimizer.step()
 
         if (epoch + 1) % 10 == 0 and display_steps:
-            print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item()}')
+            print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item()}')
 
-    # Evaluate the model on the test set
     model.eval()
     with torch.no_grad():
         predictions = model(X_test_normalized)
-    
+        
+        # Check for NaN in predictions
+        if torch.isnan(predictions).any():
+            print(f"NaN detected in predictions")
+            return None, None, None
+
     mse = nn.MSELoss()(predictions, y_test_normalized)
     mae = nn.L1Loss()(predictions, y_test_normalized)
-    # Denormalize the predictions and y_test
     predictions_denormalized = predictions * y_test.std() + y_test.mean()
 
-    # Convert predictions and y_test to NumPy arrays
-    predictions_np = predictions_denormalized.numpy()
-    y_test_np = y_test.numpy()
+    predictions_np = predictions_denormalized.numpy().flatten()  # Ensure predictions are 1D array
+    y_test_np = y_test.numpy().flatten()  # Ensure y_test is 1D array
 
-    # Calculate R-squared
     r2 = r2_score(y_test_np, predictions_np)
-    # Return predictions, MSE and R-Squared
-    return predictions_np, mse, r2
+    return predictions_np, mse, r2, model
 
 ############################## Plot Resuts #######################
 def plot_results(predictions_np, y_test, title, file_name, show_plot=False):
@@ -345,12 +364,12 @@ def generate_latax_table(table, caption="table", label=""):
 
 def node_deletion_sensitivity_analysis(model_class, data, inputs, output):
     y = data[output]
-    base_model_r2, _, _, _, _ = repeat_fit_model(num_repeats, data[inputs], y, num_epochs, hidden_sizes)
+    base_model_r2, _, _, _, _, _ = repeat_fit_model(num_repeats, data[inputs], y, num_epochs, hidden_sizes)
     sensitivities = {}
     
     for input_feature in inputs:
         reduced_inputs = [f for f in inputs if f != input_feature]
-        reduced_r2, _, _, _, _ = repeat_fit_model(num_repeats, data[reduced_inputs], y, num_epochs, hidden_sizes)
+        reduced_r2, _, _, _, _, _ = repeat_fit_model(num_repeats, data[reduced_inputs], y, num_epochs, hidden_sizes)
         sensitivity = base_model_r2 - reduced_r2
         sensitivities[input_feature] = sensitivity
     
@@ -361,8 +380,10 @@ def weight_analysis(model_class, data, inputs, output):
     y = data[output]
     X_train, X_test, y_train, y_test = train_test_split(data[inputs], y, test_size=0.2, random_state=data_seed)
     input_size = X_train.shape[1]
-    model = model_class(input_size, hidden_sizes)
-    fit_model(model_class, X_train, X_test, y_train, y_test, num_epochs, hidden_sizes, activations)
+    _num_epochs = input("Enter number of epochs:")
+    _num_epochs = int(_num_epochs)
+    _,_,r2, model = fit_model(model_class, X_train, X_test, y_train, y_test, _num_epochs, hidden_sizes, activations)
+    print("R2:", r2)
 
     weight_importances = {}
     with torch.no_grad():
@@ -373,21 +394,30 @@ def weight_analysis(model_class, data, inputs, output):
     weight_table = pd.DataFrame(list(weight_importances.items()), columns=['Feature', 'Weight Importance'])
     return weight_table
 
+
 def jackknife_sensitivity_analysis(model_class, data, inputs, output):
     y = data[output]
-    base_model_r2, _, _, _, _ = repeat_fit_model(num_repeats, data[inputs], y, num_epochs, hidden_sizes)
+    base_model_r2, _, _, _, _, _ = repeat_fit_model(num_repeats, data[inputs], y, num_epochs, hidden_sizes)
     sensitivities = {}
+    variances = []
+    _num_repeats = input("Number of repeat:")
+    _num_repeats = int(_num_repeats)
 
     for input_feature in inputs:
         reduced_inputs = [f for f in inputs if f != input_feature]
-        reduced_r2, _, _, _, _ = repeat_fit_model(num_repeats, data[reduced_inputs], y, num_epochs, hidden_sizes)
-        sensitivity = base_model_r2 - reduced_r2
+        reduced_r2_list = []
+        for _ in range(_num_repeats):
+            reduced_r2, _, _, _, _, _ = repeat_fit_model(1, data[reduced_inputs], y, num_epochs, hidden_sizes)
+            reduced_r2_list.append(reduced_r2)
+        reduced_r2_mean = np.mean(reduced_r2_list)
+        sensitivity = base_model_r2 - reduced_r2_mean
+        variance = np.var(reduced_r2_list)
         sensitivities[input_feature] = sensitivity
+        variances.append(variance)
 
     sensitivity_table = pd.DataFrame(list(sensitivities.items()), columns=['Feature', 'Sensitivity'])
+    sensitivity_table['Variance'] = variances
     return sensitivity_table
-
-
 
 def backward_feature_elimination(model_class, data, inputs, output):
     y = data[output] 
@@ -448,7 +478,6 @@ def backward_feature_elimination(model_class, data, inputs, output):
 # Finds the combinaiton of features that best predict y
 # This method add features one by one
 # Search about Forward Feature Selction
-
 def forward_feature_selection(model_class, data, inputs, output):
     y = data[output] 
     # Remove extra columns
@@ -467,6 +496,8 @@ def forward_feature_selection(model_class, data, inputs, output):
 
             X = data[features]
             mean_r2, _, _, _,_,_ = repeat_fit_model(num_repeats, X, y, num_epochs, hidden_sizes)
+            if mean_r2 is None:
+                continue
             results[feature] = mean_r2
             print("--------------------------------")
             print("Adding feature ", feature)
@@ -510,9 +541,11 @@ def repeat_fit_model(num_repeats, X, y, num_epochs, hidden_sizes, display_steps=
     max_r2 = 0
     best_preds = None
     for i in range(num_repeats):
-        predictions, mse, r2 = fit_model(model_class, 
+        predictions, mse, r2, model = fit_model(model_class, 
                 X_train, X_test, y_train, y_test, num_epochs, hidden_sizes, 
                 display_steps=display_steps)
+        if r2 is None:
+            continue
 
         if r2 > max_r2:
             max_r2 = r2
@@ -524,10 +557,10 @@ def repeat_fit_model(num_repeats, X, y, num_epochs, hidden_sizes, display_steps=
     if display_steps:
         print(r2_list)
 
-    mean_r2 = np.mean(r2_list) 
-    mean_mse = np.mean(mse_list)
-    std_r2 = np.std(r2_list)
-    std_mse = np.std(mse_list)
+    mean_r2 = np.mean(r2_list) if r2_list else None
+    mean_mse = np.mean(mse_list) if mse_list else None
+    std_r2 = np.std(r2_list) if r2_list else None
+    std_mse = np.std(mse_list) if mse_list else None
 
     return mean_r2, std_r2, mean_mse, best_preds, max_r2*100, r2_list
 
@@ -541,17 +574,15 @@ models = [
             Relu1HiddenLayer,
             Relu2HiddenLayer,
             VNN,
-            MLP,
             RBFN,
             GRNN,
-            FFNN,
             CNN
          ]
 
 model_names=[model.__name__ for model in models]
 # User input for selecting the model and number of epochs
 answer = input("\n".join([str(i) + ")" + name for i,name in enumerate(model_names)]) \
-        + "\nSelect the model (enter to select all models) [all]:")
+        + "\nSelect one or several models (separated with space) [all]:")
 
 if not answer:
     answer = "all"
@@ -559,11 +590,14 @@ if not answer:
 if answer.lower() == "all":
     selected_models = range(len(models)) # choose the index of all models
 else:
-    model_index = int(answer)
-    if model_index > len(models):
-        print("Invalid model selection. Please enter all or 1 to ", len(models) - 1)
-        exit()
-    selected_models = [model_index]
+    indexes = answer.split()
+    selected_models = []
+    for ind in indexes:
+        model_index = int(ind)
+        if model_index > len(models):
+            print("Invalid model selection. Please enter all or 1 to ", len(models) - 1)
+            exit()
+        selected_models.append(model_index)
 
 print("Selected Models:", [model_names[i] for i in selected_models])
 answer = input(f"Enter the number of epochs [{list_epochs}]:")
@@ -595,9 +629,9 @@ X = data[inputs]
 y = data[output] 
 
 best_model_index = -1
-best_mean_r2 = 0
-best_mse = 0
-best_r2 = 0
+best_mean_r2 = -1000
+best_mse = -1000
+best_r2 = -1000
 results = []
 model_best_predictions = {}
 # for all models
@@ -625,14 +659,14 @@ for model_index in selected_models:
             total_nodes = sum(hidden_sizes)
 
             result = {
-                    "hidden sizes": hidden_sizes,
-                    "total hs": total_nodes,
-                    "epochs": num_epochs,
                     "model":model_name, 
                     "R2": round(mean_r2,1), 
                     "MSE": round(mean_mse,2),
                     "R2 std": round(std_r2, 1),
-                    "R2 List:": [round(x, 1) for x in r2_list]
+                    "R2 List:": [round(x, 1) for x in r2_list],
+                    "hidden sizes": hidden_sizes,
+                    "total hs": total_nodes,
+                    "epochs": num_epochs,
                     }
             results.append(result)
 
@@ -675,7 +709,7 @@ else:
 # Save results of predicitons in a file named results.csv
 results_df = pd.DataFrame(columns=["HTC", "Predictions"])
 results_df["HTC"] = y_test
-pred_list = [round(x[0]) for x in best_predictions]
+pred_list = [round(x,2) for x in best_predictions]
 results_df["Predictions"] = pred_list # pd.Series(pred_list)
 results_df.to_csv("results.csv", index=False)
 print("Predictions of best model were saved in results.csv")
@@ -683,16 +717,15 @@ answer = input("Do you want to see them? [y]:")
 if answer == "y" or answer == "yes":
    print("======= Predictions of best model:", best_model_name)
    print(results_df)
-print("\n\n")
-print("\n\n")
 
 while True:
-    print("\nPlease select a feature selection or sensitivity analysis method:")
+    print("\n\n")
+    print("============================= Feature Selection =============")
+    print("\nPlease select a feature selection or sensitivity analysis method:\n")
     print("1. Backward Feature Elimination")
     print("2. Forward Feature Selection")
-    print("3. Node Deletion Sensitivity Analysis")
-    print("4. Weight Analysis")
-    print("5. Jackknife Sensitivity Analysis")
+    print("3. Weight Analysis")
+    print("4. Jackknife Sensitivity Analysis (Node Deletion Sensitivity)")
     print("q. Quit")
 
     answer = input("Enter the number of the method you want to run (or 'q' to quit): ").strip().lower()
@@ -713,36 +746,45 @@ while True:
         print("\n")
         print("------------ forward feature selection ---------------")
         print(forward_table)
-        forward_table_latex = generate_latex_table(forward_table, caption="Results of Forward Feature Selection for different features", label="forward")
+        forward_table_latex = generate_latax_table(forward_table, caption="Results of Forward Feature Selection for different features", label="forward")
         with open(os.path.join("tables", "forward_table_latex.txt"), 'w') as f:
             print(forward_table_latex, file=f)
 
     elif answer == '3':
-        print("============================= Node Deletion Sensitivity Analysis =============")
-        node_deletion_table = node_deletion_sensitivity_analysis(best_model, data, inputs, output)
-        print("------------ node deletion sensitivity analysis ---------------")
-        print(node_deletion_table)
-        node_deletion_table_latex = generate_latex_table(node_deletion_table, caption="Results of Node Deletion Sensitivity Analysis", label="node_deletion")
-        with open(os.path.join("tables", "node_deletion_table_latex.txt"), 'w') as f:
-            print(node_deletion_table_latex, file=f)
-
-    elif answer == '4':
         print("============================= Weight Analysis =============")
         weight_table = weight_analysis(best_model, data, inputs, output)
         print("------------ weight analysis ---------------")
         print(weight_table)
-        weight_table_latex = generate_latex_table(weight_table, caption="Results of Weight Analysis", label="weight_analysis")
+        weight_table_latex = generate_latax_table(weight_table, caption="Results of Weight Analysis", label="weight_analysis")
         with open(os.path.join("tables", "weight_table_latex.txt"), 'w') as f:
             print(weight_table_latex, file=f)
+        # Identify the most important features
+        most_important_features = weight_table.sort_values(by='Weight Importance', 
+                ascending=False)
+        print("Most important features:")
+        print(most_important_features)
 
-    elif answer == '5':
+    elif answer == '4':
         print("============================= Jackknife Sensitivity Analysis =============")
         jackknife_table = jackknife_sensitivity_analysis(best_model, data, inputs, output)
         print("------------ jackknife sensitivity analysis ---------------")
+        # Sort and display the most sensitive features
+        jackknife_table = jackknife_table.sort_values(by='Sensitivity', ascending=False)
         print(jackknife_table)
-        jackknife_table_latex = generate_latex_table(jackknife_table, caption="Results of Jackknife Sensitivity Analysis", label="jackknife")
+        jackknife_table_latex = generate_latax_table(jackknife_table, caption="Results of Jackknife Sensitivity Analysis", label="jackknife")
         with open(os.path.join("tables", "jackknife_table_latex.txt"), 'w') as f:
             print(jackknife_table_latex, file=f)
+
+        # Focus on the top 5 most important features
+        important_features = jackknife_table.head(5)['Feature'].tolist()
+        print("\nTop 5 important features to focus on:")
+        print(important_features)
+
+        # Investigate features with negative sensitivity
+        negative_sensitivity_features = jackknife_table[jackknife_table['Sensitivity'] < 0]
+        print("\nFeatures with negative sensitivity (potentially redundant or harmful):")
+        print(negative_sensitivity_features)
+        input("Press any key to return to main menu ...")
 
     elif answer == 'q':
         print("Exiting the feature selection and sensitivity analysis loop. Goodbye!")

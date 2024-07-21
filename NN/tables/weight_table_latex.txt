@@ -1,0 +1,23 @@
+
+        \begin{table*}
+            \centering
+            \begin{tabular}{lr}
+\hline
+ Feature    &   Weight Importance \\
+\hline
+ flow_rate1 &            0.44752  \\
+ conc_nano1 &            0.379227 \\
+ Kfluid1    &            0.368279 \\
+ heat_flux1 &            0.215316 \\
+ X_D1       &            0.373539 \\
+ flow_rate2 &            0.269051 \\
+ conc_nano2 &            0.567972 \\
+ Kfluid2    &            0.702558 \\
+ heat_flux2 &            0.690524 \\
+ X_D2       &            0.610573 \\
+\hline
+\end{tabular}
+            \caption{Results of Weight Analysis}
+            \label{table-weight_analysis}
+        \end{table*}
+        
