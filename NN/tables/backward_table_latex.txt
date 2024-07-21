@@ -3,14 +3,28 @@
             \centering
             \begin{tabular}{lr}
 \hline
- features                                                 &    R2 \\
+ features                                                                                                           &    R2 \\
 \hline
- ['flow_rate', 'conc_nano', 'Kfluid', 'heat_flux', 'X_D'] & 94.84 \\
- ['conc_nano', 'Kfluid', 'heat_flux', 'X_D']              & 30.44 \\
- ['flow_rate', 'Kfluid', 'heat_flux', 'X_D']              & 72.26 \\
- ['flow_rate', 'conc_nano', 'heat_flux', 'X_D']           & 79.29 \\
- ['flow_rate', 'conc_nano', 'Kfluid', 'X_D']              & 84.95 \\
- ['flow_rate', 'conc_nano', 'Kfluid', 'heat_flux']        & 64.31 \\
+ ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2']       & 52.9  \\
+ ['conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1', 'flow_rate2', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2']       & 55.34 \\
+ ['flow_rate1', 'Kfluid1', 'heat_flux1', 'X_D1', 'flow_rate2', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2']       & 54.74 \\
+ ['flow_rate1', 'conc_nano1', 'heat_flux1', 'X_D1', 'flow_rate2', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2']    & 45.03 \\
+ ['flow_rate1', 'conc_nano1', 'Kfluid1', 'X_D1', 'flow_rate2', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2']       & 62.91 \\
+ ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'flow_rate2', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2'] & 57.73 \\
+ ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2']       & 65.16 \\
+ ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1', 'flow_rate2', 'Kfluid2', 'heat_flux2', 'X_D2']       & 58.28 \\
+ ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1', 'flow_rate2', 'conc_nano2', 'heat_flux2', 'X_D2']    & 45.93 \\
+ ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1', 'flow_rate2', 'conc_nano2', 'Kfluid2', 'X_D2']       & 52.04 \\
+ ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1', 'flow_rate2', 'conc_nano2', 'Kfluid2', 'heat_flux2'] & 59.05 \\
+ ['conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2']                     & 57.05 \\
+ ['flow_rate1', 'Kfluid1', 'heat_flux1', 'X_D1', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2']                     & 61.91 \\
+ ['flow_rate1', 'conc_nano1', 'heat_flux1', 'X_D1', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2']                  & 54.96 \\
+ ['flow_rate1', 'conc_nano1', 'Kfluid1', 'X_D1', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2']                     & 56.21 \\
+ ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2']               & 56.27 \\
+ ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1', 'Kfluid2', 'heat_flux2', 'X_D2']                     & 56.33 \\
+ ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1', 'conc_nano2', 'heat_flux2', 'X_D2']                  & 22.8  \\
+ ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1', 'conc_nano2', 'Kfluid2', 'X_D2']                     & 45.82 \\
+ ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1', 'conc_nano2', 'Kfluid2', 'heat_flux2']               & 54.82 \\
 \hline
 \end{tabular}
             \caption{Results of Backward Feature Elimination}

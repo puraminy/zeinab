@@ -703,7 +703,7 @@ while True:
         print("------------ backward feature elimination ---------------")
         print(backward_table)
 
-        backward_table_latex = generate_latex_table(backward_table, caption="Results of Backward Feature Elimination", label="backward")
+        backward_table_latex = generate_latax_table(backward_table, caption="Results of Backward Feature Elimination", label="backward")
         with open(os.path.join("tables", "backward_table_latex.txt"), 'w') as f:
             print(backward_table_latex, file=f)
 
