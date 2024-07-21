@@ -252,6 +252,54 @@ def generate_latax_table(table, caption="table", label=""):
 ############################ Feature Selection ####################
 # Selects the best combination of features by removing features one by one
 # Search about Backward Feature Elimination 
+# Sensitivity Analysis Functions
+
+def node_deletion_sensitivity_analysis(model_class, data, inputs, output):
+    y = data[output]
+    base_model_r2, _, _, _, _ = repeat_fit_model(num_repeats, data[inputs], y, num_epochs, hidden_sizes)
+    sensitivities = {}
+    
+    for input_feature in inputs:
+        reduced_inputs = [f for f in inputs if f != input_feature]
+        reduced_r2, _, _, _, _ = repeat_fit_model(num_repeats, data[reduced_inputs], y, num_epochs, hidden_sizes)
+        sensitivity = base_model_r2 - reduced_r2
+        sensitivities[input_feature] = sensitivity
+    
+    sensitivity_table = pd.DataFrame(list(sensitivities.items()), columns=['Feature', 'Sensitivity'])
+    return sensitivity_table
+
+def weight_analysis(model_class, data, inputs, output):
+    y = data[output]
+    X_train, X_test, y_train, y_test = train_test_split(data[inputs], y, test_size=0.2, random_state=data_seed)
+    input_size = X_train.shape[1]
+    model = model_class(input_size, hidden_sizes)
+    fit_model(model_class, X_train, X_test, y_train, y_test, num_epochs, hidden_sizes, activations)
+
+    weight_importances = {}
+    with torch.no_grad():
+        for i, feature in enumerate(inputs):
+            importance = np.abs(model.hidden_layers[0].weight[:, i].numpy()).mean()
+            weight_importances[feature] = importance
+    
+    weight_table = pd.DataFrame(list(weight_importances.items()), columns=['Feature', 'Weight Importance'])
+    return weight_table
+
+def jackknife_sensitivity_analysis(model_class, data, inputs, output):
+    y = data[output]
+    base_model_r2, _, _, _, _ = repeat_fit_model(num_repeats, data[inputs], y, num_epochs, hidden_sizes)
+    sensitivities = {}
+
+    for input_feature in inputs:
+        reduced_inputs = [f for f in inputs if f != input_feature]
+        reduced_r2, _, _, _, _ = repeat_fit_model(num_repeats, data[reduced_inputs], y, num_epochs, hidden_sizes)
+        sensitivity = base_model_r2 - reduced_r2
+        sensitivities[input_feature] = sensitivity
+
+    sensitivity_table = pd.DataFrame(list(sensitivities.items()), columns=['Feature', 'Sensitivity'])
+    return sensitivity_table
+
+
+
 def backward_feature_elimination(model_class, data, inputs, output):
     y = data[output] 
     # Remove extra columns
@@ -541,31 +589,74 @@ if answer == "y" or answer == "yes":
    print("======= Predictions of best model:", best_model_name)
    print(results_df)
 print("\n\n")
-answer = input("Do you want to run backward feature selections? [y/n]:")
-if answer.lower() == "y" or answer.lower() == "yes":
- # Apply model to combination of inputs and select the best
-    print("============================= Backward Feature Elimination =============")
-    backward_table = backward_feature_elimination(best_model, data, inputs, output)
-    print("------------ backward freature elimination ---------------")
-    print(backward_table)
-
-    backward_table_latex = generate_latax_table(backward_table, caption="Results of Backward Feature Elimination", label="backward")
-    with open(os.path.join("tables", "backward_table_latex.txt"), 'w') as f:
-        print(backward_table_latex, file=f)
-
-answer = input("Do you want to run forward feature selections? [y/n]:")
-if answer.lower() == "y" or answer.lower() == "yes":
-    print("============================= Forward Feature Selection ================")
-    forward_table = forward_feature_selection(best_model, data, inputs, output)
-    print("\n")
-    print("------------ forward feature selection ---------------")
-    print(forward_table)
-    forward_table_latex = generate_latax_table(forward_table, caption="Results of Forward Feature Selection for different features", label="forward")
-    with open(os.path.join("tables", "forward_table_latex.txt"), 'w') as f:
-        print(forward_table_latex, file=f)
-
-
 print("\n\n")
+
+while True:
+    print("\nPlease select a feature selection or sensitivity analysis method:")
+    print("1. Backward Feature Elimination")
+    print("2. Forward Feature Selection")
+    print("3. Node Deletion Sensitivity Analysis")
+    print("4. Weight Analysis")
+    print("5. Jackknife Sensitivity Analysis")
+    print("q. Quit")
+
+    answer = input("Enter the number of the method you want to run (or 'q' to quit): ").strip().lower()
+
+    if answer == '1':
+        print("============================= Backward Feature Elimination =============")
+        backward_table = backward_feature_elimination(best_model, data, inputs, output)
+        print("------------ backward feature elimination ---------------")
+        print(backward_table)
+
+        backward_table_latex = generate_latex_table(backward_table, caption="Results of Backward Feature Elimination", label="backward")
+        with open(os.path.join("tables", "backward_table_latex.txt"), 'w') as f:
+            print(backward_table_latex, file=f)
+
+    elif answer == '2':
+        print("============================= Forward Feature Selection ================")
+        forward_table = forward_feature_selection(best_model, data, inputs, output)
+        print("\n")
+        print("------------ forward feature selection ---------------")
+        print(forward_table)
+        forward_table_latex = generate_latex_table(forward_table, caption="Results of Forward Feature Selection for different features", label="forward")
+        with open(os.path.join("tables", "forward_table_latex.txt"), 'w') as f:
+            print(forward_table_latex, file=f)
+
+    elif answer == '3':
+        print("============================= Node Deletion Sensitivity Analysis =============")
+        node_deletion_table = node_deletion_sensitivity_analysis(best_model, data, inputs, output)
+        print("------------ node deletion sensitivity analysis ---------------")
+        print(node_deletion_table)
+        node_deletion_table_latex = generate_latex_table(node_deletion_table, caption="Results of Node Deletion Sensitivity Analysis", label="node_deletion")
+        with open(os.path.join("tables", "node_deletion_table_latex.txt"), 'w') as f:
+            print(node_deletion_table_latex, file=f)
+
+    elif answer == '4':
+        print("============================= Weight Analysis =============")
+        weight_table = weight_analysis(best_model, data, inputs, output)
+        print("------------ weight analysis ---------------")
+        print(weight_table)
+        weight_table_latex = generate_latex_table(weight_table, caption="Results of Weight Analysis", label="weight_analysis")
+        with open(os.path.join("tables", "weight_table_latex.txt"), 'w') as f:
+            print(weight_table_latex, file=f)
+
+    elif answer == '5':
+        print("============================= Jackknife Sensitivity Analysis =============")
+        jackknife_table = jackknife_sensitivity_analysis(best_model, data, inputs, output)
+        print("------------ jackknife sensitivity analysis ---------------")
+        print(jackknife_table)
+        jackknife_table_latex = generate_latex_table(jackknife_table, caption="Results of Jackknife Sensitivity Analysis", label="jackknife")
+        with open(os.path.join("tables", "jackknife_table_latex.txt"), 'w') as f:
+            print(jackknife_table_latex, file=f)
+
+    elif answer == 'q':
+        print("Exiting the feature selection and sensitivity analysis loop. Goodbye!")
+        break
+    else:
+        print("Invalid choice, please try again.")
+
+
+
 print("----------------------Important! READ -------------------")
 print("images are saved in images folder")
 print("latex code for tables are saved in tables folder")
