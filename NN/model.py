@@ -46,9 +46,98 @@ hidden_sizes = [15, 10, 3 ]
 activations = [nn.ReLU(), nn.ReLU(), nn.Tanh()]  # Specify activations for hidden layers
 
 list_hidden_sizes = [[15, 10, 3], [8, 8, 2], [5, 4, 2]]
-
-
 normalization_type = "z_score"
+
+##################### New Models
+class MLP(nn.Module):
+    def __init__(self, input_size, hidden_sizes):
+        super().__init__()
+        self.hidden_layers = nn.ModuleList()
+        self.activations = activations if activations is not None else []
+
+        self.hidden_layers.append(nn.Linear(input_size, hidden_sizes[0]))
+        for i in range(len(hidden_sizes) - 1):
+            self.hidden_layers.append(nn.Linear(hidden_sizes[i], hidden_sizes[i + 1]))
+        self.hidden_layers.append(nn.Linear(hidden_sizes[-1], 1))
+
+    def forward(self, x):
+        for i, layer in enumerate(self.hidden_layers):
+            x = layer(x)
+            act = self.activations[-1]
+            if i < len(self.activations) and self.activations[i] is not None:
+                act = self.activations[i]
+            x = act(x)
+        return x
+
+class RBFN(nn.Module):
+    def __init__(self, input_size, hidden_size):
+        super().__init__()
+        self.hidden = nn.Linear(input_size, hidden_size)
+        self.output = nn.Linear(hidden_size, 1)
+        self.hidden_size = hidden_size
+
+    def forward(self, x):
+        x = torch.exp(-torch.cdist(x, self.hidden.weight.data)**2 / 2)
+        x = self.output(x)
+        return x
+
+class GRNN(nn.Module):
+    def __init__(self, input_size, hidden_size):
+        super().__init__()
+        self.hidden = nn.Linear(input_size, hidden_size)
+        self.output = nn.Linear(hidden_size, 1)
+        self.hidden_size = hidden_size
+
+    def forward(self, x):
+        x = torch.exp(-torch.cdist(x, self.hidden.weight.data)**2 / 2)
+        x = self.output(x)
+        return x
+
+class FFNN(nn.Module):
+    def __init__(self, input_size, hidden_sizes):
+        super().__init__()
+        self.hidden_layers = nn.ModuleList()
+        self.activations = activations if activations is not None else []
+
+        self.hidden_layers.append(nn.Linear(input_size, hidden_sizes[0]))
+        for i in range(len(hidden_sizes) - 1):
+            self.hidden_layers.append(nn.Linear(hidden_sizes[i], hidden_sizes[i + 1]))
+        self.hidden_layers.append(nn.Linear(hidden_sizes[-1], 1))
+
+    def forward(self, x):
+        for i, layer in enumerate(self.hidden_layers):
+            x = layer(x)
+            act = self.activations[-1]
+            if i < len(self.activations) and self.activations[i] is not None:
+                act = self.activations[i]
+            x = act(x)
+        return x
+
+class CNN(nn.Module):
+    def __init__(self, input_channels, num_classes):
+        super(CNN, self).__init__()
+        self.layer1 = nn.Sequential(
+            nn.Conv2d(input_channels, 16, kernel_size=5, stride=1, padding=2),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2))
+        self.layer2 = nn.Sequential(
+            nn.Conv2d(16, 32, kernel_size=5, stride=1, padding=2),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2))
+        self.fc1 = nn.Linear(32 * 7 * 7, 1000)
+        self.fc2 = nn.Linear(1000, num_classes)
+
+    def forward(self, x):
+        out = self.layer1(x)
+        out = self.layer2(out)
+        out = out.view(out.size(0), -1)
+        out = self.fc1(out)
+        out = self.fc2(out)
+        return out
+
+######################################################
 
 class VNN(nn.Module):
     def __init__(self, input_size, hidden_sizes):
@@ -451,8 +540,14 @@ models = [
             Tanh2HiddenLayer,
             Relu1HiddenLayer,
             Relu2HiddenLayer,
-            VNN
+            VNN,
+            MLP,
+            RBFN,
+            GRNN,
+            FFNN,
+            CNN
          ]
+
 model_names=[model.__name__ for model in models]
 # User input for selecting the model and number of epochs
 answer = input("\n".join([str(i) + ")" + name for i,name in enumerate(model_names)]) \
