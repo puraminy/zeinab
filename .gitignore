@@ -43,3 +43,7 @@ __pycache__/
 # Miscellaneous
 .DS_Store
 Thumbs.db
+
+#Others
+*.png
+*.zip
