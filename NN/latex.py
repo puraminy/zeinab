@@ -32,7 +32,7 @@ def generate_latex_table(table, caption="table", label=""):
                     multirow_model_col[-(row_span+1)] = f"\\hline\n\\multirow{{{row_span+1}}}{{*}}{{{previous_model}}}"
                     row_spans.append(i)
                 row_span = 0
-                multirow_model_col.append(model)
+                multirow_model_col.append("\\hline\n" + model)
             previous_model = model
 
         if row_span > 0:
