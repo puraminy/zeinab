@@ -650,7 +650,7 @@ if answer != "0":
     # Create and save latex code for table
     latex_table["R2"] = latex_table.apply(lambda row: f"{row['R2']} ± {row['R2 std']}", axis=1)
     latex_table = latex_table.drop(columns=["R2 List","R2 std"])
-    results_table_latex = generate_latax_table(latex_table, 
+    results_table_latex = generate_latex_table(latex_table, 
             caption="Results of different models", label="models")
     with open(os.path.join("tables", "results.tex"), 'w') as f:
         print(results_table_latex, file=f)
@@ -718,7 +718,7 @@ while True:
         print("------------ backward feature elimination ---------------")
         print(backward_table)
 
-        backward_table_latex = generate_latax_table(backward_table, caption="Results of Backward Feature Elimination", label="backward")
+        backward_table_latex = generate_latex_table(backward_table, caption="Results of Backward Feature Elimination", label="backward")
         with open(os.path.join("tables", "backward.tex"), 'w') as f:
             print(backward_table_latex, file=f)
 
@@ -728,7 +728,7 @@ while True:
         print("\n")
         print("------------ forward feature selection ---------------")
         print(forward_table)
-        forward_table_latex = generate_latax_table(forward_table, caption="Results of Forward Feature Selection for different features", label="forward")
+        forward_table_latex = generate_latex_table(forward_table, caption="Results of Forward Feature Selection for different features", label="forward")
         with open(os.path.join("tables", "forward.tex"), 'w') as f:
             print(forward_table_latex, file=f)
 
@@ -740,7 +740,7 @@ while True:
                 ascending=False)
         print("Most important features:")
         print(weight_table)
-        weight_table_latex = generate_latax_table(weight_table, caption="Results of Weight Analysis", label="weight_analysis")
+        weight_table_latex = generate_latex_table(weight_table, caption="Results of Weight Analysis", label="weight_analysis")
         with open(os.path.join("tables", "weight-analysis.tex"), 'w') as f:
             print(weight_table_latex, file=f)
 
@@ -752,7 +752,7 @@ while True:
         # Sort and display the most sensitive features
         jackknife_table = jackknife_table.sort_values(by='Sensitivity', ascending=False)
         print(jackknife_table)
-        jackknife_table_latex = generate_latax_table(jackknife_table, caption="Results of Jackknife Sensitivity Analysis", label="jackknife")
+        jackknife_table_latex = generate_latex_table(jackknife_table, caption="Results of Jackknife Sensitivity Analysis", label="jackknife")
         with open(os.path.join("tables", "jackknife.tex"), 'w') as f:
             print(jackknife_table_latex, file=f)
 
