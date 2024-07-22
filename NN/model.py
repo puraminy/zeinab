@@ -11,12 +11,10 @@ from sklearn.metrics import r2_score
 from tabulate import tabulate
 import os
 
-# num_epochs = 500 
-list_epochs = [10, 20 , 30, 40]
-
+list_epochs = [200, 100, 50 , 20]
+best_epochs = 100 
 
 exp_df = pd.DataFrame()
-#num_epochs = 300 
 
 num_repeats = 5
 # num_repeats shows the number of times to repeat the experiment to get its average values
@@ -45,61 +43,50 @@ hidden_sizes = [15, 10, 3 ]
 # nn.ReLU(), nn.Tanh(), nn.Identity()
 activations = [nn.ReLU(), nn.ReLU(), nn.Tanh()]  # Specify activations for hidden layers
 
-list_hidden_sizes = [[15, 10, 3], [8, 8, 2], [5, 4, 2]]
+list_hidden_sizes = [[15, 10, 3], [8, 4], [15, 5]]
 normalization_type = "z_score"
 
 ##################### New Models
-class RBFNSimple(nn.Module):
-    def __init__(self, input_size, hidden_sizes):
-        super().__init__()
+class RBFN(nn.Module):
+    def __init__(self, input_size, hidden_size):
+        super(RBFN, self).__init__()
         hidden_size = hidden_sizes[0]
         self.hidden = nn.Linear(input_size, hidden_size)
         self.output = nn.Linear(hidden_size, 1)
         self.hidden_size = hidden_size
 
-    def forward(self, x):
-        # Using radial basis function
-        x = torch.exp(-torch.cdist(x, self.hidden.weight.data)**2 / 2)
-        x = self.output(x)
-        return x
-
-
-class RBFN(nn.Module):
-    def __init__(self, input_size, hidden_sizes):
-        super().__init__()
-        hidden_size1 = hidden_sizes[0]
-        hidden_size2 = hidden_sizes[1] if len(hidden_sizes) > 1 else hidden_size1
-
-        self.hidden1 = nn.Linear(input_size, hidden_size1)
-        self.hidden2 = nn.Linear(hidden_size1, hidden_size2)
-        self.output = nn.Linear(hidden_size2, 1)
-
-        self.activation = nn.ReLU()
+        self.hidden_layers = nn.ModuleList()
+        self.hidden_layers.append(self.hidden)
+        self.hidden_layers.append(self.output)
 
     def forward(self, x):
-        # First hidden layer with radial basis function
-        x = torch.exp(-torch.cdist(x, self.hidden1.weight.data)**2 / 2)
-        x = self.activation(x)
-        
-        # Second hidden layer with radial basis function
-        x = torch.exp(-torch.cdist(x, self.hidden2.weight.data)**2 / 2)
-        x = self.activation(x)
-        
-        x = self.output(x)
-        return x
+        # Compute the distances from input to centers
+        distances = torch.cdist(x, self.hidden.weight, p=2)
+        # Apply Gaussian function
+        basis_functions = torch.exp(-distances**2)
+        output = self.output(basis_functions)
+        return output
 
 class GRNN(nn.Module):
-    def __init__(self, input_size, hidden_sizes):
-        super().__init__()
-        hidden_size = hidden_sizes[0]
-        self.hidden = nn.Linear(input_size, hidden_size)
-        self.output = nn.Linear(hidden_size, 1)
-        self.hidden_size = hidden_size
+    def __init__(self, input_size, sigma=1.0):
+        super(GRNN, self).__init__()
+        self.pattern_layer = nn.Linear(input_size, input_size, bias=False)
+        self.sigma = sigma
+
+        self.hidden_layers = nn.ModuleList()
+        self.hidden_layers.append(self.pattern_layer)
 
     def forward(self, x):
-        x = torch.exp(-torch.cdist(x, self.hidden.weight.data)**2 / 2)
-        x = self.output(x)
-        return x
+        # Compute the distances from input to pattern layer
+        distances = torch.cdist(x, self.pattern_layer.weight.t())
+        # Apply Gaussian function
+        basis_functions = torch.exp(-distances**2 / (2 * self.sigma**2))
+        # Summation layer
+        summation_layer = basis_functions.sum(dim=1, keepdim=True)
+        # Output layer
+        output = (basis_functions @ self.pattern_layer.weight).sum(dim=1, keepdim=True) / summation_layer
+        return output
+
 
 class CNN(nn.Module):
     def __init__(self, input_channels, num_classes):
@@ -126,7 +113,7 @@ class CNN(nn.Module):
         return out
 
 ######################################################
-class VNN(nn.Module):
+class FFNN(nn.Module):
     def __init__(self, input_size, hidden_sizes):
         super().__init__()
         self.hidden_layers = nn.ModuleList()
@@ -263,7 +250,10 @@ def fit_model(model_class, X_train, X_test, y_train, y_test, num_epochs, hidden_
 
     input_size = X_train.shape[1]
 
-    model = model_class(input_size, hidden_sizes)
+    if model_class == GRNN:
+        model = model_class(input_size)
+    else:
+        model = model_class(input_size, hidden_sizes)
 
     # Initialize weights
     def weights_init(m):
@@ -285,14 +275,14 @@ def fit_model(model_class, X_train, X_test, y_train, y_test, num_epochs, hidden_
         # Check for NaN in outputs
         if torch.isnan(outputs).any():
             print(f"NaN detected in outputs at epoch {epoch + 1}")
-            return None, None, None
+            return None, None, None, model
 
         loss = criterion(outputs, y_train_normalized)
         
         # Check for NaN in loss
         if torch.isnan(loss).any():
             print(f"NaN detected in loss at epoch {epoch + 1}")
-            return None, None, None
+            return None, None, None, model
 
         loss.backward()
         
@@ -311,7 +301,7 @@ def fit_model(model_class, X_train, X_test, y_train, y_test, num_epochs, hidden_
         # Check for NaN in predictions
         if torch.isnan(predictions).any():
             print(f"NaN detected in predictions")
-            return None, None, None
+            return None, None, None, model
 
     mse = nn.MSELoss()(predictions, y_test_normalized)
     mae = nn.L1Loss()(predictions, y_test_normalized)
@@ -362,27 +352,11 @@ def generate_latax_table(table, caption="table", label=""):
 # Search about Backward Feature Elimination 
 # Sensitivity Analysis Functions
 
-def node_deletion_sensitivity_analysis(model_class, data, inputs, output):
-    y = data[output]
-    base_model_r2, _, _, _, _, _ = repeat_fit_model(num_repeats, data[inputs], y, num_epochs, hidden_sizes)
-    sensitivities = {}
-    
-    for input_feature in inputs:
-        reduced_inputs = [f for f in inputs if f != input_feature]
-        reduced_r2, _, _, _, _, _ = repeat_fit_model(num_repeats, data[reduced_inputs], y, num_epochs, hidden_sizes)
-        sensitivity = base_model_r2 - reduced_r2
-        sensitivities[input_feature] = sensitivity
-    
-    sensitivity_table = pd.DataFrame(list(sensitivities.items()), columns=['Feature', 'Sensitivity'])
-    return sensitivity_table
-
-def weight_analysis(model_class, data, inputs, output):
+def weight_analysis(model_class, data, inputs, output, num_epochs):
     y = data[output]
     X_train, X_test, y_train, y_test = train_test_split(data[inputs], y, test_size=0.2, random_state=data_seed)
     input_size = X_train.shape[1]
-    _num_epochs = input("Enter number of epochs:")
-    _num_epochs = int(_num_epochs)
-    _,_,r2, model = fit_model(model_class, X_train, X_test, y_train, y_test, _num_epochs, hidden_sizes, activations)
+    _,_,r2, model = fit_model(model_class, X_train, X_test, y_train, y_test, num_epochs, hidden_sizes, activations)
     print("R2:", r2)
 
     weight_importances = {}
@@ -395,19 +369,21 @@ def weight_analysis(model_class, data, inputs, output):
     return weight_table
 
 
-def jackknife_sensitivity_analysis(model_class, data, inputs, output):
+def jackknife_sensitivity_analysis(model_class, data, inputs, output, num_epochs):
     y = data[output]
-    base_model_r2, _, _, _, _, _ = repeat_fit_model(num_repeats, data[inputs], y, num_epochs, hidden_sizes)
+    base_model_r2, _, _, _, _, _ = repeat_fit_model(model_class, 
+            num_repeats, data[inputs], y, num_epochs, hidden_sizes)
     sensitivities = {}
     variances = []
-    _num_repeats = input("Number of repeat:")
-    _num_repeats = int(_num_repeats)
+    _num_repeats = input("Number of repeat [10]:")
+    _num_repeats = int(_num_repeats) if _num_repeats else 10
 
     for input_feature in inputs:
         reduced_inputs = [f for f in inputs if f != input_feature]
         reduced_r2_list = []
         for _ in range(_num_repeats):
-            reduced_r2, _, _, _, _, _ = repeat_fit_model(1, data[reduced_inputs], y, num_epochs, hidden_sizes)
+            reduced_r2, _, _, _, _, _ = repeat_fit_model(model_class,
+                    1, data[reduced_inputs], y, num_epochs, hidden_sizes)
             reduced_r2_list.append(reduced_r2)
         reduced_r2_mean = np.mean(reduced_r2_list)
         sensitivity = base_model_r2 - reduced_r2_mean
@@ -419,7 +395,7 @@ def jackknife_sensitivity_analysis(model_class, data, inputs, output):
     sensitivity_table['Variance'] = variances
     return sensitivity_table
 
-def backward_feature_elimination(model_class, data, inputs, output):
+def backward_feature_elimination(model_class, data, inputs, output, num_epochs):
     y = data[output] 
     # Remove extra columns
     # data = data.drop([output, 'HTC_ANN1', 'HTC_ANN2'], axis=1).copy()
@@ -427,7 +403,8 @@ def backward_feature_elimination(model_class, data, inputs, output):
     X = data[inputs]
     # it uses num_repeats, num_epochs and model_seed as global variables
     # use _ for output of repeat_fit_model, which you don't need to use here
-    mean_r2, _, _, _, _,_ = repeat_fit_model(num_repeats, X, y, num_epochs, hidden_sizes)
+    mean_r2, _, _, _, _,_ = repeat_fit_model(model_class,
+            num_repeats, X, y, num_epochs, hidden_sizes)
     best_r2 = mean_r2
     print("Using all features")
     print("Features:", inputs)
@@ -441,7 +418,8 @@ def backward_feature_elimination(model_class, data, inputs, output):
             # Selet other features except for current feature
             features = [f for f in candidates if f != feature]
             X = data[features]
-            mean_r2, _, _, _,_,_ = repeat_fit_model(num_repeats, X, y, num_epochs, hidden_sizes)
+            mean_r2, _, _, _,_,_ = repeat_fit_model(model_class, 
+                    num_repeats, X, y, num_epochs, hidden_sizes)
             results[feature] = mean_r2
             print("---------------------------------------")
             # Results of removing the feature
@@ -478,7 +456,7 @@ def backward_feature_elimination(model_class, data, inputs, output):
 # Finds the combinaiton of features that best predict y
 # This method add features one by one
 # Search about Forward Feature Selction
-def forward_feature_selection(model_class, data, inputs, output):
+def forward_feature_selection(model_class, data, inputs, output, num_epochs):
     y = data[output] 
     # Remove extra columns
     data = data.drop([output, 'm'], axis=1).copy()
@@ -495,7 +473,8 @@ def forward_feature_selection(model_class, data, inputs, output):
                 features = [feature] + candidates 
 
             X = data[features]
-            mean_r2, _, _, _,_,_ = repeat_fit_model(num_repeats, X, y, num_epochs, hidden_sizes)
+            mean_r2, _, _, _,_,_ = repeat_fit_model(model_class, 
+                    num_repeats, X, y, num_epochs, hidden_sizes)
             if mean_r2 is None:
                 continue
             results[feature] = mean_r2
@@ -532,7 +511,8 @@ def forward_feature_selection(model_class, data, inputs, output):
 
 
 # Repeats an fit_model to get average of results
-def repeat_fit_model(num_repeats, X, y, num_epochs, hidden_sizes, display_steps=False):
+def repeat_fit_model(model_class, num_repeats, 
+        X, y, num_epochs, hidden_sizes, display_steps=False):
     X_train, X_test, y_train, y_test = train_test_split(X, y, 
         test_size=0.2, 
         random_state=data_seed) 
@@ -565,6 +545,16 @@ def repeat_fit_model(num_repeats, X, y, num_epochs, hidden_sizes, display_steps=
     return mean_r2, std_r2, mean_mse, best_preds, max_r2*100, r2_list
 
 ############################### Start of Program ###################
+# Load data from data CSV file in data folder
+data = pd.read_csv(os.path.join('data','data.csv'))
+
+# Input features and output 
+#inputs = ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1','flow_rate2', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2']
+inputs = ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1','flow_rate2', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2']
+output = 'HTC'
+# Read data into X and y
+X = data[inputs]
+y = data[output] 
 
 models = [
             Linear1HiddenLayer, 
@@ -573,10 +563,9 @@ models = [
             Tanh2HiddenLayer,
             Relu1HiddenLayer,
             Relu2HiddenLayer,
-            VNN,
+            FFNN,
             RBFN,
-            GRNN,
-            CNN
+            GRNN
          ]
 
 model_names=[model.__name__ for model in models]
@@ -600,127 +589,128 @@ else:
         selected_models.append(model_index)
 
 print("Selected Models:", [model_names[i] for i in selected_models])
-answer = input(f"Enter the number of epochs [{list_epochs}]:")
-if answer: 
-   list_epochs = [int(a) for a in answer.split()]
+best_model_index = selected_models[0]
 
-answer = input(f"Enter the hidden sizes [{list_hidden_sizes}]:")
-if answer: 
-   list_hidden_sizes = []
-   hs = answer.split("#")
-   for ans in hs:
-      ans = ans.strip()
-      h = [int(a) for a in ans.split()]
-      list_hidden_sizes.append(h)
+answer = input(f"Enter the number of epochs [{list_epochs}] (0 to skip training):")
+if answer != "0":
+    if answer: 
+       list_epochs = [int(a) for a in answer.split()]
 
-answer = input(f"Enter the number of repeating predictions [{num_repeats}]:")
-if answer: 
-   num_repeats = int(answer)
+    answer = input(f"Enter the hidden sizes [{list_hidden_sizes}]:")
+    if answer: 
+       list_hidden_sizes = []
+       hs = answer.split("#")
+       for ans in hs:
+          ans = ans.strip()
+          h = [int(a) for a in ans.split()]
+          list_hidden_sizes.append(h)
 
-# Load data from data CSV file in data folder
-data = pd.read_csv(os.path.join('data','data.csv'))
+    answer = input(f"Enter the number of repeating predictions [{num_repeats}]:")
+    if answer: 
+       num_repeats = int(answer)
 
-# Input features and output 
-#inputs = ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1','flow_rate2', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2']
-inputs = ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1','flow_rate2', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2']
-output = 'HTC'
-# Read data into X and y
-X = data[inputs]
-y = data[output] 
 
-best_model_index = -1
-best_mean_r2 = -1000
-best_mse = -1000
-best_r2 = -1000
-results = []
-model_best_predictions = {}
-# for all models
-for model_index in selected_models:
-    for num_epochs in list_epochs:
-        for hidden_sizes in list_hidden_sizes:
-            # Instantiate the selected model
-            model_class = models[model_index]
-            model_name = model_names[model_index]
-            # Apply model on data for 3 times and get predictions, mse and r2
-            mean_r2, std_r2, mean_mse, model_best_preds, max_r2, r2_list = repeat_fit_model(
-                    num_repeats, X, y, num_epochs, hidden_sizes, display_steps=True)
+    best_mean_r2 = -1000
+    best_mse = -1000
+    best_r2 = -1000
+    best_epochs = -1
+    results = []
+    model_best_predictions = {}
+    # for all models
+    for model_index in selected_models:
+        for num_epochs in list_epochs:
+            for hidden_sizes in list_hidden_sizes:
+                # Instantiate the selected model
+                model_class = models[model_index]
+                model_name = model_names[model_index]
+                # Apply model on data for 3 times and get predictions, mse and r2
+                mean_r2, std_r2, mean_mse, model_best_preds, max_r2, r2_list = repeat_fit_model(
+                        model_class,
+                        num_repeats, X, y, num_epochs, hidden_sizes, display_steps=True)
 
-            # Keep best seed to generate the same predictions later
-            model_best_predictions[model_name] = model_best_preds
+                # Keep best seed to generate the same predictions later
+                model_best_predictions[model_name] = model_best_preds
 
-            if max_r2 > best_r2:
-                best_r2 = max_r2
+                if max_r2 > best_r2:
+                    best_r2 = max_r2
 
-            if mean_r2 > best_mean_r2:
-                best_mean_r2 = mean_r2
-                best_mse = mean_mse
-                best_model_index = model_index
-            
-            total_nodes = sum(hidden_sizes)
+                if mean_r2 > best_mean_r2:
+                    best_mean_r2 = mean_r2
+                    best_mse = mean_mse
+                    best_model_index = model_index
+                    best_epochs = num_epochs
+                
+                total_nodes = sum(hidden_sizes)
 
-            result = {
-                    "model":model_name, 
-                    "R2": round(mean_r2,1), 
-                    "MSE": round(mean_mse,2),
-                    "R2 std": round(std_r2, 1),
-                    "R2 List:": [round(x, 1) for x in r2_list],
-                    "hidden sizes": hidden_sizes,
-                    "total hs": total_nodes,
-                    "epochs": num_epochs,
-                    }
-            results.append(result)
+                result = {
+                        "model":model_name, 
+                        "R2": round(mean_r2,1), 
+                        "MSE": round(mean_mse,2),
+                        "R2 std": round(std_r2, 1),
+                        "R2 List:": [round(x, 1) for x in r2_list],
+                        "hidden sizes": hidden_sizes,
+                        "total hs": total_nodes,
+                        "epochs": num_epochs,
+                        }
+                results.append(result)
 
-# Creata a Table for results
-results_table = pd.DataFrame(data=results)
-# Create and save latex code for table
-results_table_latex = generate_latax_table(results_table, caption="Results of different models", label="models")
-with open(os.path.join("tables", "results_table_latex.txt"), 'w') as f:
-    print(results_table_latex, file=f)
+    # Creata a Table for results
+    results_table = pd.DataFrame(data=results)
+    # Sort methods by R2
+    results_table = results_table.sort_values(by = "R2", ascending=False)
+    # Create and save latex code for table
+    results_table_latex = generate_latax_table(results_table, 
+            caption="Results of different models", label="models")
+    with open(os.path.join("tables", "results.tex"), 'w') as f:
+        print(results_table_latex, file=f)
+
+    best_model = models[best_model_index]
+    best_model_name = model_names[best_model_index]
+    # Show results
+    print("============ Results for models =========================")
+    print(results_table)
+    print("=========================================================")
+    print("Best R-Squred:", best_r2)
+    print("Best Mean R-Squred:", best_mean_r2)
+    print("Best model with better mean R-Squred:", best_model_name) 
+
+    results_table.to_csv("exp.csv")
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, 
+        test_size=0.2, 
+        random_state=data_seed) 
+
+    # Show and save the plot for best results
+    best_predictions = model_best_predictions[best_model_name] 
+    title = "Prediction of " + output + " using " + " ".join(inputs)+" with " + best_model_name 
+    file_name = f"R2-{best_r2:.2f}-" + best_model_name + "-" + output + "-using-".join(inputs) + ".png"
+
+    print("\n\n")
+    print("Plot was saved in images folder")
+    answer = input("Do you want to see them? [y]:") 
+    if answer == "y" or answer == "yes":
+        plot_results(best_predictions, y_test, title, file_name, show_plot=True)
+    else:
+        plot_results(best_predictions, y_test, title, file_name, show_plot=False)
+
+    # Save results of predicitons in a file named results.csv
+    results_df = pd.DataFrame(columns=["HTC", "predictions"])
+    results_df["HTC"] = y_test
+    results_df.rename(columns={"HTC": "actual"}, inplace=True)
+    pred_list = [round(x,2) for x in best_predictions]
+    results_df["predictions"] = pred_list # pd.Series(pred_list)
+    results_df.to_csv("results.csv", index=False)
+    print("Predictions of best model were saved in results.csv")
+    answer = input("Do you want to see them? [y]:") 
+    if answer == "y" or answer == "yes":
+       print("======= Predictions of best model:", best_model_name)
+       print(results_df)
 
 best_model = models[best_model_index]
 best_model_name = model_names[best_model_index]
-# Show results
-print("============ Results for models =========================")
-print(results_table)
-print("=========================================================")
-print("Best R-Squred:", best_r2)
-print("Best Mean R-Squred:", best_mean_r2)
-print("Best model with better mean R-Squred:", best_model_name) 
-
-results_table.to_csv("exp.csv")
-
-X_train, X_test, y_train, y_test = train_test_split(X, y, 
-    test_size=0.2, 
-    random_state=data_seed) 
-
-# Show and save the plot for best results
-best_predictions = model_best_predictions[best_model_name] 
-title = "Prediction of " + output + " using " + " ".join(inputs)+" with " + best_model_name 
-file_name = f"R2-{best_r2:.2f}-" + best_model_name + "-" + output + "-using-".join(inputs) + ".png"
-
-print("\n\n")
-print("Plot was saved in images folder")
-answer = input("Do you want to see them? [y]:") 
-if answer == "y" or answer == "yes":
-    plot_results(best_predictions, y_test, title, file_name, show_plot=True)
-else:
-    plot_results(best_predictions, y_test, title, file_name, show_plot=False)
-
-# Save results of predicitons in a file named results.csv
-results_df = pd.DataFrame(columns=["HTC", "Predictions"])
-results_df["HTC"] = y_test
-pred_list = [round(x,2) for x in best_predictions]
-results_df["Predictions"] = pred_list # pd.Series(pred_list)
-results_df.to_csv("results.csv", index=False)
-print("Predictions of best model were saved in results.csv")
-answer = input("Do you want to see them? [y]:") 
-if answer == "y" or answer == "yes":
-   print("======= Predictions of best model:", best_model_name)
-   print(results_df)
-
 while True:
     print("\n\n")
-    print("============================= Feature Selection =============")
+    print(f"================= Feature Selection ({best_model_name}:{best_epochs} epochs) ======")
     print("\nPlease select a feature selection or sensitivity analysis method:\n")
     print("1. Backward Feature Elimination")
     print("2. Forward Feature Selection")
@@ -732,47 +722,47 @@ while True:
 
     if answer == '1':
         print("============================= Backward Feature Elimination =============")
-        backward_table = backward_feature_elimination(best_model, data, inputs, output)
+        backward_table = backward_feature_elimination(best_model, data, 
+                inputs, output, best_epochs)
         print("------------ backward feature elimination ---------------")
         print(backward_table)
 
         backward_table_latex = generate_latax_table(backward_table, caption="Results of Backward Feature Elimination", label="backward")
-        with open(os.path.join("tables", "backward_table_latex.txt"), 'w') as f:
+        with open(os.path.join("tables", "backward.tex"), 'w') as f:
             print(backward_table_latex, file=f)
 
     elif answer == '2':
         print("============================= Forward Feature Selection ================")
-        forward_table = forward_feature_selection(best_model, data, inputs, output)
+        forward_table = forward_feature_selection(best_model, data, inputs, output, best_epochs)
         print("\n")
         print("------------ forward feature selection ---------------")
         print(forward_table)
         forward_table_latex = generate_latax_table(forward_table, caption="Results of Forward Feature Selection for different features", label="forward")
-        with open(os.path.join("tables", "forward_table_latex.txt"), 'w') as f:
+        with open(os.path.join("tables", "forward.tex"), 'w') as f:
             print(forward_table_latex, file=f)
 
     elif answer == '3':
         print("============================= Weight Analysis =============")
-        weight_table = weight_analysis(best_model, data, inputs, output)
+        weight_table = weight_analysis(best_model, data, inputs, output, best_epochs)
         print("------------ weight analysis ---------------")
-        print(weight_table)
-        weight_table_latex = generate_latax_table(weight_table, caption="Results of Weight Analysis", label="weight_analysis")
-        with open(os.path.join("tables", "weight_table_latex.txt"), 'w') as f:
-            print(weight_table_latex, file=f)
-        # Identify the most important features
-        most_important_features = weight_table.sort_values(by='Weight Importance', 
+        weight_table = weight_table.sort_values(by='Weight Importance', 
                 ascending=False)
         print("Most important features:")
-        print(most_important_features)
+        print(weight_table)
+        weight_table_latex = generate_latax_table(weight_table, caption="Results of Weight Analysis", label="weight_analysis")
+        with open(os.path.join("tables", "weight-analysis.tex"), 'w') as f:
+            print(weight_table_latex, file=f)
 
     elif answer == '4':
         print("============================= Jackknife Sensitivity Analysis =============")
-        jackknife_table = jackknife_sensitivity_analysis(best_model, data, inputs, output)
+        jackknife_table = jackknife_sensitivity_analysis(best_model, 
+                data, inputs, output, best_epochs)
         print("------------ jackknife sensitivity analysis ---------------")
         # Sort and display the most sensitive features
         jackknife_table = jackknife_table.sort_values(by='Sensitivity', ascending=False)
         print(jackknife_table)
         jackknife_table_latex = generate_latax_table(jackknife_table, caption="Results of Jackknife Sensitivity Analysis", label="jackknife")
-        with open(os.path.join("tables", "jackknife_table_latex.txt"), 'w') as f:
+        with open(os.path.join("tables", "jackknife.tex"), 'w') as f:
             print(jackknife_table_latex, file=f)
 
         # Focus on the top 5 most important features
@@ -784,13 +774,14 @@ while True:
         negative_sensitivity_features = jackknife_table[jackknife_table['Sensitivity'] < 0]
         print("\nFeatures with negative sensitivity (potentially redundant or harmful):")
         print(negative_sensitivity_features)
-        input("Press any key to return to main menu ...")
 
     elif answer == 'q':
         print("Exiting the feature selection and sensitivity analysis loop. Goodbye!")
         break
     else:
         print("Invalid choice, please try again.")
+    print("\n----------------------------------------------------------")
+    input("Press any key to return to main menu ...")
 
 
 
