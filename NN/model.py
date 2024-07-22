@@ -335,6 +335,11 @@ def plot_results(predictions_np, y_test, title, file_name, show_plot=False):
 
 ################ Generate Latex Tables
 def generate_latax_table(table, caption="table", label=""):
+    def escape_latex_special_chars(text):
+        return text.replace('_', '\\_')
+
+    table = table.applymap(escape_latex_special_chars)
+
     latex_table=tabulate(table, headers='keys', 
             tablefmt='latex_raw', showindex=False)
     table_env = f"""
