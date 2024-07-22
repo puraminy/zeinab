@@ -4,6 +4,8 @@
 \usepackage{makecell}
 \usepackage{booktabs}
 \usepackage{caption}
+\usepackage{graphicx}  % Package for including graphics
+\usepackage{float}  % Package to fix the placement of figures
 
 \begin{document}
 \section{Results}
@@ -17,4 +19,10 @@
 \input{tables/weight-analysis}
 \subsection{Jackknife Sensitivity Analysis}
 \input{tables/jackknife}
+
+\subsection{Predictions Plots}
+\input{plots_preds_latex}
+\subsection{Performance Plots}
+\input{plots_latex}  % Include the generated LaTeX code for plots
+
 \end{document}
