@@ -646,8 +646,10 @@ if answer != "0":
     results_table = pd.DataFrame(data=results)
     # Sort methods by R2
     results_table = results_table.sort_values(by = "R2", ascending=False)
+    latex_table = results_table.copy()
     # Create and save latex code for table
-    latex_table = results_table.drop(columns=["R2 List"])
+    latex_table["R2 mean"] = latex_table.apply(lambda row: f"{row['R2']} ± {row['R2 std']}", axis=1)
+    latex_table = latex_table.drop(columns=["R2 List"])
     results_table_latex = generate_latax_table(latex_table, 
             caption="Results of different models", label="models")
     with open(os.path.join("tables", "results.tex"), 'w') as f:
