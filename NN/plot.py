@@ -58,7 +58,7 @@ def plot_model_performance(results_table, latex_filename='plots_latex.tex'):
 
 def plot_results(predictions_np, y_test, title, file_name, latex_filename='plots_preds_latex.tex', show_plot=False):
     # Ensure the "plots" directory exists
-    os.makedirs('plots', exist_ok=True)
+    os.makedirs('plots_preds', exist_ok=True)
     
     # Convert predictions and y_test to NumPy arrays
     y_test_np = y_test.to_numpy()
@@ -76,7 +76,7 @@ def plot_results(predictions_np, y_test, title, file_name, latex_filename='plots
     if show_plot is True:
         plt.show()
     # Save the image of plot in plots folder
-    image_path = os.path.join("plots", file_name)
+    image_path = os.path.join("plots_preds", file_name)
     fig.savefig(image_path, format="png")
     plt.close()
 

@@ -481,8 +481,8 @@ if answer != "0":
 
     # Show and save the plot for best results
     best_predictions = model_best_predictions[best_model_name] 
-    title = "Prediction of " + output + " using " + " ".join(inputs)+" with " + best_model_name 
-    file_name = f"R2-{best_r2:.2f}-" + best_model_name + "-" + output + "-using-".join(inputs) + ".png"
+    title = "Prediction of " + output + " with " + best_model_name 
+    file_name = f"R2-{best_r2:.2f}-" + best_model_name + "-" + output + ".png"
 
     print("\n\n")
     print("Plot was saved in plots folder")
