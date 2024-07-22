@@ -337,21 +337,17 @@ def plot_results(predictions_np, y_test, title, file_name, show_plot=False):
 def generate_latax_table(table, caption="table", label=""):
     def escape_latex_special_chars(text):
         text = str(text)
-        return text.replace('_', '\\_')
+        return (text.replace('_', '\\_')
+                .replace('[', '\\[')
+                .replace(']', '\\]'))
 
     table = table.map(escape_latex_special_chars)
 
     latex_table=tabulate(table, headers='keys', 
             tablefmt='latex_raw', showindex=False)
 
-    column_format = "p{12cm}r"  # Adjust width as needed
-    # Replace the default column format with the desired one
-    latex_table = latex_table.replace('tabular}{l', f'tabular}}{{{column_format}}}')
-
     # Add \hline correctly
     latex_table_lines = latex_table.splitlines()
-    latex_table_lines.insert(1, '\\hline')
-    latex_table_lines.append('\\hline')
     latex_table = '\n'.join(latex_table_lines)
    
     table_env = f"""
@@ -501,7 +497,7 @@ def forward_feature_selection(model_class, data, inputs, output, num_epochs):
             print("Adding feature ", feature)
             print("Features:", features)
             print("R2:", mean_r2)
-            rows.append({"features": features, "R2": round(mean_r2,2)})
+            rows.append({"features": ",".join(features), "R2": round(mean_r2,2)})
 
         max_results =  max(results.values())
         max_results_key = max(results, key=results.get)
@@ -666,7 +662,7 @@ if answer != "0":
                         "R2": round(mean_r2,1), 
                         "MSE": round(mean_mse,2),
                         "R2 std": round(std_r2, 1),
-                        "R2 List:": [round(x, 1) for x in r2_list],
+                        "R2 List": [round(x, 1) for x in r2_list],
                         "hidden sizes": hidden_sizes,
                         "total hs": total_nodes,
                         "epochs": num_epochs,
@@ -678,7 +674,8 @@ if answer != "0":
     # Sort methods by R2
     results_table = results_table.sort_values(by = "R2", ascending=False)
     # Create and save latex code for table
-    results_table_latex = generate_latax_table(results_table, 
+    latex_table = results_table.drop(columns=["R2 List"])
+    results_table_latex = generate_latax_table(latex_table, 
             caption="Results of different models", label="models")
     with open(os.path.join("tables", "results.tex"), 'w') as f:
         print(results_table_latex, file=f)
