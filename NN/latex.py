@@ -13,7 +13,7 @@ def generate_latax_table(table, caption="table", label=""):
                     .replace('}', '\\}'))
 
     # Apply the escaping function to all elements in the DataFrame
-    escaped_table = results_table.applymap(lambda x: escape_latex_special_chars(str(x)) if isinstance(x, str) else x)
+    escaped_table = table.applymap(lambda x: escape_latex_special_chars(str(x)) if isinstance(x, str) else x)
 
     # Process the first column for multirow
     if "model" in escaped_table:

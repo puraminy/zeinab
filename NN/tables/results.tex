@@ -3,20 +3,20 @@
         \centering
         \begin{tabular}{lrrrlrr}
 \hline
- model            &   R2 &   MSE &   R2 std & hidden sizes   &   total hs &   epochs \\
+ model                              &   R2 &   MSE &   R2 std & hidden sizes   &   total hs &   epochs \\
 \hline
- Relu2HiddenLayer & 90.6 &  0.08 &      9.9 & [15, 10, 3]    &         28 &       50 \\
- Relu2HiddenLayer & 86.3 &  0.12 &      6.4 & [15, 10, 3]    &         28 &      200 \\
- Relu2HiddenLayer & 85.8 &  0.12 &      4.9 & [15, 10, 3]    &         28 &      100 \\
- Relu2HiddenLayer & 84.3 &  0.14 &     10.5 & [8, 4]         &         12 &      200 \\
- Relu2HiddenLayer & 83.6 &  0.14 &      5.1 & [15, 5]        &         20 &      200 \\
- Relu2HiddenLayer & 81.7 &  0.16 &     11.5 & [15, 5]        &         20 &      100 \\
- Relu2HiddenLayer & 78.5 &  0.19 &     14.6 & [8, 4]         &         12 &       20 \\
- Relu2HiddenLayer & 77.2 &  0.2  &     15.2 & [15, 10, 3]    &         28 &       20 \\
- Relu2HiddenLayer & 73.6 &  0.23 &     29.8 & [15, 5]        &         20 &       50 \\
- Relu2HiddenLayer & 68.5 &  0.28 &     22.6 & [15, 5]        &         20 &       20 \\
- Relu2HiddenLayer & 67.9 &  0.28 &     34.1 & [8, 4]         &         12 &       50 \\
- Relu2HiddenLayer & 67.1 &  0.29 &     23.4 & [8, 4]         &         12 &      100 \\
+ \multirow{12}{*}{Relu2HiddenLayer} & 96.2 &  0.03 &      1.6 & [15, 5]        &         20 &      100 \\
+                                    & 94   &  0.05 &      4.7 & [8, 4]         &         12 &       50 \\
+                                    & 91.7 &  0.07 &      5.1 & [8, 4]         &         12 &       20 \\
+                                    & 91.4 &  0.07 &      1.9 & [8, 4]         &         12 &      200 \\
+                                    & 90.1 &  0.09 &      0.9 & [15, 10, 3]    &         28 &       20 \\
+                                    & 87.5 &  0.11 &      8.3 & [15, 10, 3]    &         28 &      200 \\
+                                    & 84.8 &  0.13 &      2   & [15, 5]        &         20 &       50 \\
+                                    & 81.9 &  0.16 &      4.9 & [15, 10, 3]    &         28 &       50 \\
+                                    & 81.2 &  0.16 &      6.6 & [15, 5]        &         20 &      200 \\
+                                    & 80.7 &  0.17 &      0.3 & [15, 10, 3]    &         28 &      100 \\
+                                    & 68.7 &  0.27 &      2.3 & [8, 4]         &         12 &      100 \\
+                                    & 65.3 &  0.3  &      3.4 & [15, 5]        &         20 &       20 \\
 \hline
 \end{tabular}
         \caption{Results of different models}

@@ -334,8 +334,6 @@ def plot_results(predictions_np, y_test, title, file_name, show_plot=False):
     # Save the image of plot in images folder
     fig.savefig(os.path.join("images", file_name), format="png")
 
-    return table_env
-
 ############################ Feature Selection ####################
 # Selects the best combination of features by removing features one by one
 # Search about Backward Feature Elimination 
