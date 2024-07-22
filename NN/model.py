@@ -337,9 +337,7 @@ def plot_results(predictions_np, y_test, title, file_name, show_plot=False):
 def generate_latax_table(table, caption="table", label=""):
     def escape_latex_special_chars(text):
         text = str(text)
-        return (text.replace('_', '\\_')
-                .replace('[', '\\[')
-                .replace(']', '\\]'))
+        return text.replace('_', '\\_')
 
     table = table.map(escape_latex_special_chars)
 
@@ -427,7 +425,7 @@ def backward_feature_elimination(model_class, data, inputs, output, num_epochs):
     candidates = inputs
     results = {}
     rows = [] # Rows of a table to show the features and the result
-    rows.append({"features": ",".join(inputs), "R2": round(mean_r2,2)})
+    rows.append({"features": ", ".join(inputs), "R2": round(mean_r2,2)})
     while(True):
         for feature in candidates:
             # Selet other features except for current feature
@@ -441,7 +439,7 @@ def backward_feature_elimination(model_class, data, inputs, output, num_epochs):
             print("Removing:", feature)
             print("Features:", features)
             print("R2:", mean_r2)
-            rows.append({"features": ",".join(features), "R2": round(mean_r2,2)})
+            rows.append({"features": ", ".join(features), "R2": round(mean_r2,2)})
 
         max_results =  max(results.values())
         max_results_key = max(results, key=results.get)
@@ -497,7 +495,7 @@ def forward_feature_selection(model_class, data, inputs, output, num_epochs):
             print("Adding feature ", feature)
             print("Features:", features)
             print("R2:", mean_r2)
-            rows.append({"features": ",".join(features), "R2": round(mean_r2,2)})
+            rows.append({"features": ", ".join(features), "R2": round(mean_r2,2)})
 
         max_results =  max(results.values())
         max_results_key = max(results, key=results.get)
