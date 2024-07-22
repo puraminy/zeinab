@@ -44,7 +44,7 @@ def generate_latex_table(table, caption="table", label=""):
     latex_table = tabulate(escaped_table, headers='keys', tablefmt='latex_raw', showindex=False)
 
     table_env = f"""
-    \\begin{{table*}}
+    \\begin{{table*}}[h]
         \\centering
         {latex_table}
         \\caption{{{caption}}}
