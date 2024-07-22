@@ -91,7 +91,7 @@ def plot_results(predictions_np, y_test, title, file_name, latex_filename='plots
 """
 
     # Append LaTeX code to the existing file
-    with open(latex_filename, 'a') as f:
+    with open(latex_filename, 'w') as f:
         f.write(latex_code)
 
 
