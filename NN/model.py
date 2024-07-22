@@ -346,7 +346,7 @@ def generate_latax_table(table, caption="table", label=""):
 
     column_format = "p{12cm}r"  # Adjust width as needed
     # Replace the default column format with the desired one
-    latex_table = latex_table.replace('tabular}{l', f'tabular}}{{{column_format}}')
+    latex_table = latex_table.replace('tabular}{l', f'tabular}}{{{column_format}}}')
 
     # Add \hline correctly
     latex_table_lines = latex_table.splitlines()
@@ -358,8 +358,8 @@ def generate_latax_table(table, caption="table", label=""):
     \\begin{{table*}}
         \\centering
         {latex_table}
-        \\caption{{caption}}
-        \\label{{label}}
+        \\caption{{{caption}}}
+        \\label{{{label}}}
     \\end{{table*}}
     """
 
@@ -395,6 +395,7 @@ def jackknife_sensitivity_analysis(model_class, data, inputs, output, num_epochs
     variances = []
     _num_repeats = input("Number of repeat [10]:")
     _num_repeats = int(_num_repeats) if _num_repeats else 10
+    print("Please wait ...")
 
     for input_feature in inputs:
         reduced_inputs = [f for f in inputs if f != input_feature]
