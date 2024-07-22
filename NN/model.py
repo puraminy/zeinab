@@ -343,14 +343,26 @@ def generate_latax_table(table, caption="table", label=""):
 
     latex_table=tabulate(table, headers='keys', 
             tablefmt='latex_raw', showindex=False)
+
+    column_format = "p{12cm}r"  # Adjust width as needed
+    # Replace the default column format with the desired one
+    latex_table = latex_table.replace('tabular}{l', f'tabular}}{{{column_format}}')
+
+    # Add \hline correctly
+    latex_table_lines = latex_table.splitlines()
+    latex_table_lines.insert(1, '\\hline')
+    latex_table_lines.append('\\hline')
+    latex_table = '\n'.join(latex_table_lines)
+   
     table_env = f"""
-        \\begin{{table*}}
-            \centering
-            {latex_table}
-            \caption{{{caption}}}
-            \label{{table-{label}}}
-        \end{{table*}}
-        """
+    \\begin{{table*}}
+        \\centering
+        {latex_table}
+        \\caption{{caption}}
+        \\label{{label}}
+    \\end{{table*}}
+    """
+
     return table_env
 
 ############################ Feature Selection ####################
