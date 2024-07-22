@@ -10,6 +10,7 @@ import torch.nn as nn
 from sklearn.metrics import r2_score
 from tabulate import tabulate
 import os
+from latex import *
 
 list_epochs = [200, 100, 50 , 20]
 best_epochs = 100 
@@ -332,30 +333,6 @@ def plot_results(predictions_np, y_test, title, file_name, show_plot=False):
         plt.show()
     # Save the image of plot in images folder
     fig.savefig(os.path.join("images", file_name), format="png")
-
-################ Generate Latex Tables
-def generate_latax_table(table, caption="table", label=""):
-    def escape_latex_special_chars(text):
-        text = str(text)
-        return text.replace('_', '\\_')
-
-    table = table.map(escape_latex_special_chars)
-
-    latex_table=tabulate(table, headers='keys', 
-            tablefmt='latex_raw', showindex=False)
-
-    # Add \hline correctly
-    latex_table_lines = latex_table.splitlines()
-    latex_table = '\n'.join(latex_table_lines)
-   
-    table_env = f"""
-    \\begin{{table*}}
-        \\centering
-        {latex_table}
-        \\caption{{{caption}}}
-        \\label{{{label}}}
-    \\end{{table*}}
-    """
 
     return table_env
 
