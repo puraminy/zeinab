@@ -1,32 +1,6 @@
 import torch
 import torch.nn as nn
 
-activations = [nn.ReLU(), nn.ReLU(), nn.ReLU()]  # Specify activations for hidden layers
-class FFNN(nn.Module):
-    def __init__(self, input_size, hidden_sizes):
-        super().__init__()
-        self.hidden_layers = nn.ModuleList()
-        self.activations = activations if activations is not None else []
-
-        # Input to first hidden layer
-        self.hidden_layers.append(nn.Linear(input_size, hidden_sizes[0]))
-
-        # Intermediate hidden layers
-        for i in range(len(hidden_sizes) - 1):
-            self.hidden_layers.append(nn.Linear(hidden_sizes[i], hidden_sizes[i + 1]))
-
-        # Last hidden layer to output
-        self.hidden_layers.append(nn.Linear(hidden_sizes[-1], 1))
-
-    def forward(self, x):
-        for i, layer in enumerate(self.hidden_layers):
-            x = layer(x)
-            act = self.activations[-1]
-            if i < len(self.activations) and self.activations[i] is not None:
-                act = self.activations[i]
-            x = act(x)
-        return x
-
 ##################### New Models
 class RBFN(nn.Module):
     def __init__(self, input_size, hidden_sizes):
@@ -38,7 +12,7 @@ class RBFN(nn.Module):
 
         self.hidden_layers = nn.ModuleList()
         self.hidden_layers.append(self.hidden)
-        self.hidden_layers.append(self.output)
+        # self.hidden_layers.append(self.output)
 
     def forward(self, x):
         # Compute the distances from input to centers
@@ -113,7 +87,7 @@ class Linear1HiddenLayer(nn.Module):
 
         self.hidden_layers = nn.ModuleList()
         self.hidden_layers.append(self.input_to_hidden1)
-        self.hidden_layers.append(self.hidden1_to_output)
+        # self.hidden_layers.append(self.hidden1_to_output)
 
     def forward(self, x):
         # order of computation
@@ -138,13 +112,13 @@ class Linear2HiddenLayer(nn.Module):
         #  input(5 features)     hidden1           hidden2        output 
         #                       10 neurons         5 neurons
         self.input_to_hidden1 = nn.Linear(input_size, hidden_sizes[0])
-        self.hidden1_to_hidden2 = nn.Linear(hidden_sizes[0], hidden_sizes[1])
-        self.hidden2_to_output = nn.Linear(hidden_sizes[1], 1)
+        self.hidden1_to_hidden2 = nn.Linear(hidden_sizes[0], hidden_sizes[-1])
+        self.hidden2_to_output = nn.Linear(hidden_sizes[-1], 1)
 
         self.hidden_layers = nn.ModuleList()
         self.hidden_layers.append(self.input_to_hidden1)
         self.hidden_layers.append(self.hidden1_to_hidden2)
-        self.hidden_layers.append(self.hidden2_to_output)
+        # self.hidden_layers.append(self.hidden2_to_output)
 
     def forward(self, x):
         # order of computation
@@ -156,6 +130,34 @@ class Linear2HiddenLayer(nn.Module):
             x = self.activation2(x)
         x = self.hidden2_to_output(x)
         return x
+
+class FFNN(nn.Module):
+    activations = [nn.ReLU(), nn.ReLU(), nn.ReLU()]  # Specify activations for hidden layers
+    def __init__(self, input_size, hidden_sizes):
+        super().__init__()
+        self.hidden_layers = nn.ModuleList()
+        # self.activations = activations if activations is not None else []
+
+        # Input to first hidden layer
+        self.hidden_layers.append(nn.Linear(input_size, hidden_sizes[0]))
+
+        # Intermediate hidden layers
+        for i in range(len(hidden_sizes) - 1):
+            self.hidden_layers.append(nn.Linear(hidden_sizes[i], hidden_sizes[i + 1]))
+
+        # Last hidden layer to output
+        self.output_layer = nn.Linear(hidden_sizes[-1], 1)
+
+    def forward(self, x):
+        for i, layer in enumerate(self.hidden_layers):
+            x = layer(x)
+            act = self.activations[-1]
+            if i < len(self.activations) and self.activations[i] is not None:
+                act = self.activations[i]
+            x = act(x)
+        x = self.output_layer(x)
+        return x
+
 
 # NonLinear Model with 1 hidden layer with Tanjant Hyperbolic function as nonlinear function
 # (Note it inherits from 2 hidden layer class above

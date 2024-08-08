@@ -50,7 +50,7 @@ def plot_model_performance(results_table, latex_filename='plots_latex.tex'):
             plt.legend()
             file_name = f'{model_name}_R2_vs_Num_of_Epochs_HiddenSize_{hidden_size}.png'
             file_name = escape_latex_special_chars(file_name)
-            plot_filename = os.path.join('plots', file_name)
+            plot_filename = "plots/" + file_name # os.path.join('plots', file_name)
                     
             plt.savefig(plot_filename)
             plt.close()
@@ -83,6 +83,13 @@ def plot_results(predictions_np, y_test, title, file_name, latex_filename='plots
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.scatter(y_test_np, y_test_np, color='green', label='Actual', alpha=0.5)
     ax.scatter(y_test_np, predictions_np, color='blue', label='Predicted', alpha=0.5)
+
+    # Plot the 45-degree line where x = y
+    min_val = min(np.min(y_test_np), np.min(predictions_np))
+    max_val = max(np.max(y_test_np), np.max(predictions_np))
+    ax.plot([min_val, max_val], [min_val, max_val], color='red', linestyle='--', label='45-Degree Line')
+
+
     ax.set_title(title + ' ' +  f' R-Squared:{r2:.2f}')
     ax.set_xlabel('Actual Values')
     ax.set_ylabel('Predicted Values')
@@ -91,7 +98,7 @@ def plot_results(predictions_np, y_test, title, file_name, latex_filename='plots
     if show_plot is True:
         plt.show()
     # Save the image of plot in plots folder
-    image_path = os.path.join("plots_preds", file_name)
+    image_path = "plots_preds/" + file_name # os.path.join("plots_preds", file_name)
     fig.savefig(image_path, format="png")
     plt.close()
 

@@ -46,7 +46,7 @@ hidden_size2 = 10
 hidden_sizes = [15, 10, 3 ]
 # nn.ReLU(), nn.Tanh(), nn.Identity()
 
-list_hidden_sizes = [[15, 10, 3], [8, 4], [15, 5]]
+list_hidden_sizes = [[10], [15, 10, 3], [8, 4], [15, 5]]
 normalization_type = "z_score"
 
 # Define the normalization function
@@ -166,7 +166,7 @@ def weight_analysis(model_class, data, inputs, output, num_epochs):
 
 def jackknife_sensitivity_analysis(model_class, data, inputs, output, num_epochs):
     y = data[output]
-    base_model_r2, _, _, _, _, _ = repeat_fit_model(model_class, 
+    base_model_r2, _, _, _, _, _, run = repeat_fit_model(model_class, 
             num_repeats, data[inputs], y, num_epochs, hidden_sizes)
     sensitivities = {}
     variances = []
@@ -178,7 +178,7 @@ def jackknife_sensitivity_analysis(model_class, data, inputs, output, num_epochs
         reduced_inputs = [f for f in inputs if f != input_feature]
         reduced_r2_list = []
         for _ in range(_num_repeats):
-            reduced_r2, _, _, _, _, _ = repeat_fit_model(model_class,
+            reduced_r2, _, _, _, _, _, _run = repeat_fit_model(model_class,
                     1, data[reduced_inputs], y, num_epochs, hidden_sizes)
             reduced_r2_list.append(reduced_r2)
         reduced_r2_mean = np.mean(reduced_r2_list)
@@ -199,7 +199,7 @@ def backward_feature_elimination(model_class, data, inputs, output, num_epochs):
     X = data[inputs]
     # it uses num_repeats, num_epochs and model_seed as global variables
     # use _ for output of repeat_fit_model, which you don't need to use here
-    mean_r2, _, _, _, _,_ = repeat_fit_model(model_class,
+    mean_r2, _, _, _, _,_, _run = repeat_fit_model(model_class,
             num_repeats, X, y, num_epochs, hidden_sizes)
     best_r2 = mean_r2
     print("Using all features")
@@ -214,7 +214,7 @@ def backward_feature_elimination(model_class, data, inputs, output, num_epochs):
             # Selet other features except for current feature
             features = [f for f in candidates if f != feature]
             X = data[features]
-            mean_r2, _, _, _,_,_ = repeat_fit_model(model_class, 
+            mean_r2, _, _, _,_,_, _run = repeat_fit_model(model_class, 
                     num_repeats, X, y, num_epochs, hidden_sizes)
             results[feature] = mean_r2
             print("---------------------------------------")
@@ -269,7 +269,7 @@ def forward_feature_selection(model_class, data, inputs, output, num_epochs):
                 features = [feature] + candidates 
 
             X = data[features]
-            mean_r2, _, _, _,_,_ = repeat_fit_model(model_class, 
+            mean_r2, _, _, _,_,_, _run = repeat_fit_model(model_class, 
                     num_repeats, X, y, num_epochs, hidden_sizes)
             if mean_r2 is None:
                 continue
@@ -315,15 +315,14 @@ def repeat_fit_model(model_class, num_repeats,
     r2_list = []
     mse_list = []
     max_r2 = 0
+    max_run = 0
     best_preds = None
     input_size = X_train.shape[1]
     if model_class == GRNN:
         model = model_class(input_size)
     else:
         model = model_class(input_size, hidden_sizes)
-    if len(hidden_sizes) > len(model.hidden_layers) - 1:
-        pass
-    else:
+    if len(hidden_sizes) == len(model.hidden_layers):
         for i in range(num_repeats):
             predictions, mse, r2, model = fit_model(model, 
                     X_train, X_test, y_train, y_test, num_epochs, 
@@ -333,6 +332,7 @@ def repeat_fit_model(model_class, num_repeats,
 
             if r2 > max_r2:
                 max_r2 = r2
+                max_run = i
                 best_preds = predictions
 
             r2_list.append(r2*100)
@@ -346,7 +346,7 @@ def repeat_fit_model(model_class, num_repeats,
     std_r2 = np.std(r2_list) if r2_list else None
     std_mse = np.std(mse_list) if mse_list else None
 
-    return mean_r2, std_r2, mean_mse, best_preds, max_r2*100, r2_list
+    return mean_r2, std_r2, mean_mse, best_preds, max_r2*100, r2_list, max_run
 
 ############################### Start of Program ###################
 # Load data from data CSV file in data folder
@@ -380,7 +380,7 @@ models = [
             Tanh2HiddenLayer,
             Relu1HiddenLayer,
             Relu2HiddenLayer,
-            FFNN,
+           # FFNN,
             RBFN,
             GRNN
          ]
@@ -430,6 +430,7 @@ if answer != "0":
     best_mean_r2 = -1000
     best_mse = -1000
     best_r2 = -1000
+    best_run = 0
     best_epochs = -1
     results = []
     model_best_predictions = {}
@@ -441,7 +442,7 @@ if answer != "0":
                 model_class = models[model_index]
                 model_name = model_names[model_index]
                 # Apply model on data for 3 times and get predictions, mse and r2
-                mean_r2, std_r2, mean_mse, model_best_preds, max_r2, r2_list = repeat_fit_model(
+                mean_r2, std_r2, mean_mse, model_best_preds, max_r2, r2_list, max_run = repeat_fit_model(
                         model_class,
                         num_repeats, X, y, num_epochs, hidden_sizes, display_steps=True)
 
@@ -452,6 +453,7 @@ if answer != "0":
 
                 if max_r2 > best_r2:
                     best_r2 = max_r2
+                    best_run = max_run
 
                 if mean_r2 > best_mean_r2:
                     best_mean_r2 = mean_r2
