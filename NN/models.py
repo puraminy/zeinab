@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-activations = [nn.ReLU(), nn.ReLU(), nn.Tanh()]  # Specify activations for hidden layers
+activations = [nn.ReLU(), nn.ReLU(), nn.ReLU()]  # Specify activations for hidden layers
 class FFNN(nn.Module):
     def __init__(self, input_size, hidden_sizes):
         super().__init__()

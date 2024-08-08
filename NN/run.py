@@ -28,8 +28,10 @@ model_seed = 123 # it is used for random_state of models
 data_seed = 123 # it is used for random_state of splitting data into source and train sets
 # changing it creates different source and train sets.
 # Since the number of data is low changing it can largely affect the results
-torch.manual_seed(model_seed)
-np.random.seed(model_seed)
+def set_model_seed(model_seed):
+    torch.manual_seed(model_seed)
+    np.random.seed(model_seed)
+
 learning_rate = 0.05
 # The learnign rate used in ANN
 #hidden_size1 = 10
@@ -60,7 +62,10 @@ def normalize(data, normalization_type):
 # Return predictions, MSE and R-Squared
 import torch.nn.init as init
 
-def fit_model(model_class, X_train, X_test, y_train, y_test, num_epochs, hidden_sizes, display_steps=False):
+def fit_model(model_class, X_train, X_test, y_train, y_test, 
+        num_epochs, hidden_sizes, display_steps=False):
+
+    set_model_seed(model_seed)
     scaler = StandardScaler()
     X_train = torch.tensor(scaler.fit_transform(X_train), dtype=torch.float32)
     X_test = torch.tensor(scaler.transform(X_test), dtype=torch.float32)
