@@ -380,7 +380,9 @@ models = [
             Tanh2HiddenLayer,
             Relu1HiddenLayer,
             Relu2HiddenLayer,
-           # FFNN,
+            ReluFFNN,
+            TanhFFNN,
+            LinearFFNN,
             RBFN,
             GRNN
          ]

@@ -153,11 +153,20 @@ class FFNN(nn.Module):
             x = layer(x)
             act = self.activations[-1]
             if i < len(self.activations) and self.activations[i] is not None:
-                act = self.activations[i]
-            x = act(x)
+               act = self.activations[i]
+            if act is not None:
+               x = act(x)
         x = self.output_layer(x)
         return x
 
+class ReluFFNN(FFNN):
+      activations = [nn.ReLU()]  # Specify activations for hidden layers
+
+class LinearFFNN(FFNN):
+      activations = [None]  # Specify activations for hidden layers
+
+class TanhFFNN(FFNN):
+      activations = [nn.Tanh()]  # Specify activations for hidden layers
 
 # NonLinear Model with 1 hidden layer with Tanjant Hyperbolic function as nonlinear function
 # (Note it inherits from 2 hidden layer class above
