@@ -4,6 +4,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.metrics import r2_score
 
+def escape_latex_special_chars(text):
+    return (text.replace('_', '-')
+                .replace(' ', '-')
+                .replace('%', '\\%')
+                .replace('$', '\\$')
+                .replace('&', '\\&')
+                .replace('#', '\\#')
+                .replace('{', '\\{')
+                .replace('}', '\\}'))
+
 def plot_model_performance(results_table, latex_filename='plots_latex.tex'):
     # Ensure the "plots" directory exists
     os.makedirs('plots', exist_ok=True)
@@ -38,7 +48,10 @@ def plot_model_performance(results_table, latex_filename='plots_latex.tex'):
             plt.ylabel('R2')
             plt.grid(True)
             plt.legend()
-            plot_filename = f'plots/{model_name}_R2_vs_Num_of_Epochs_HiddenSize_{hidden_size}.png'
+            file_name = f'{model_name}_R2_vs_Num_of_Epochs_HiddenSize_{hidden_size}.png'
+            file_name = escape_latex_special_chars(file_name)
+            plot_filename = os.path.join('plots', file_name)
+                    
             plt.savefig(plot_filename)
             plt.close()
 
@@ -52,13 +65,15 @@ def plot_model_performance(results_table, latex_filename='plots_latex.tex'):
 \\end{{figure}}
 """
     # Save LaTeX code to a file
-    with open(latex_filename, 'w') as f:
+    with open(latex_filename, 'w', encoding='utf-8') as f:
         f.write(latex_code)
+
 
 
 def plot_results(predictions_np, y_test, title, file_name, latex_filename='plots_preds_latex.tex', show_plot=False):
     # Ensure the "plots" directory exists
     os.makedirs('plots_preds', exist_ok=True)
+    file_name = escape_latex_special_chars(file_name)
     
     # Convert predictions and y_test to NumPy arrays
     y_test_np = y_test.to_numpy()

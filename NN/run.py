@@ -62,8 +62,8 @@ def normalize(data, normalization_type):
 # Return predictions, MSE and R-Squared
 import torch.nn.init as init
 
-def fit_model(model_class, X_train, X_test, y_train, y_test, 
-        num_epochs, hidden_sizes, display_steps=False, run=0):
+def fit_model(model, X_train, X_test, y_train, y_test, 
+        num_epochs, display_steps=False, run=0):
 
     set_model_seed(model_seed + run)
     scaler = StandardScaler()
@@ -78,12 +78,6 @@ def fit_model(model_class, X_train, X_test, y_train, y_test,
     y_train_normalized = normalize(y_train, normalization_type)
     y_test_normalized = normalize(y_test, normalization_type)
 
-    input_size = X_train.shape[1]
-
-    if model_class == GRNN:
-        model = model_class(input_size)
-    else:
-        model = model_class(input_size, hidden_sizes)
 
     # Initialize weights
     def weights_init(m):
@@ -152,7 +146,12 @@ def weight_analysis(model_class, data, inputs, output, num_epochs):
     y = data[output]
     X_train, X_test, y_train, y_test = train_test_split(data[inputs], y, test_size=0.2, random_state=data_seed)
     input_size = X_train.shape[1]
-    _,_,r2, model = fit_model(model_class, X_train, X_test, y_train, y_test, num_epochs, hidden_sizes)
+
+    if model_class == GRNN:
+        model = model_class(input_size)
+    else:
+        model = model_class(input_size, hidden_sizes)
+    _,_,r2, model = fit_model(model, X_train, X_test, y_train, y_test, num_epochs)
     print("R2:", r2)
 
     weight_importances = {}
@@ -317,22 +316,30 @@ def repeat_fit_model(model_class, num_repeats,
     mse_list = []
     max_r2 = 0
     best_preds = None
-    for i in range(num_repeats):
-        predictions, mse, r2, model = fit_model(model_class, 
-                X_train, X_test, y_train, y_test, num_epochs, hidden_sizes, 
-                display_steps=display_steps, run=i)
-        if r2 is None:
-            continue
+    input_size = X_train.shape[1]
+    if model_class == GRNN:
+        model = model_class(input_size)
+    else:
+        model = model_class(input_size, hidden_sizes)
+    if len(hidden_sizes) > len(model.hidden_layers) - 1:
+        pass
+    else:
+        for i in range(num_repeats):
+            predictions, mse, r2, model = fit_model(model, 
+                    X_train, X_test, y_train, y_test, num_epochs, 
+                    display_steps=display_steps, run=i)
+            if r2 is None:
+                continue
 
-        if r2 > max_r2:
-            max_r2 = r2
-            best_preds = predictions
+            if r2 > max_r2:
+                max_r2 = r2
+                best_preds = predictions
 
-        r2_list.append(r2*100)
-        mse_list.append(mse)
+            r2_list.append(r2*100)
+            mse_list.append(mse)
 
-    if display_steps:
-        print(r2_list)
+        if display_steps:
+            print(r2_list)
 
     mean_r2 = np.mean(r2_list) if r2_list else None
     mean_mse = np.mean(mse_list) if mse_list else None
@@ -439,6 +446,8 @@ if answer != "0":
                         num_repeats, X, y, num_epochs, hidden_sizes, display_steps=True)
 
                 # Keep best seed to generate the same predictions later
+                if mean_r2 is None:
+                    continue
                 model_best_predictions[model_name] = model_best_preds
 
                 if max_r2 > best_r2:
@@ -474,7 +483,7 @@ if answer != "0":
     latex_table = latex_table.drop(columns=["R2 List","R2 std"])
     results_table_latex = generate_latex_table(latex_table, 
             caption="Results of different models", label="models")
-    with open(os.path.join("tables", "results.tex"), 'w') as f:
+    with open(os.path.join("tables", "results.tex"), 'w', encoding='utf-8') as f:
         print(results_table_latex, file=f)
 
     # Plot the performance of models across different parameters
@@ -545,7 +554,7 @@ while True:
         print(backward_table)
 
         backward_table_latex = generate_latex_table(backward_table, caption="Results of Backward Feature Elimination", label="backward")
-        with open(os.path.join("tables", "backward.tex"), 'w') as f:
+        with open(os.path.join("tables", "backward.tex"), 'w', encoding='utf-8') as f:
             print(backward_table_latex, file=f)
 
     elif answer == '2':
@@ -555,7 +564,7 @@ while True:
         print("------------ forward feature selection ---------------")
         print(forward_table)
         forward_table_latex = generate_latex_table(forward_table, caption="Results of Forward Feature Selection for different features", label="forward")
-        with open(os.path.join("tables", "forward.tex"), 'w') as f:
+        with open(os.path.join("tables", "forward.tex"), 'w', encoding='utf-8') as f:
             print(forward_table_latex, file=f)
 
     elif answer == '3':
@@ -567,7 +576,7 @@ while True:
         print("Most important features:")
         print(weight_table)
         weight_table_latex = generate_latex_table(weight_table, caption="Results of Weight Analysis", label="weight_analysis")
-        with open(os.path.join("tables", "weight-analysis.tex"), 'w') as f:
+        with open(os.path.join("tables", "weight-analysis.tex"), 'w', encoding='utf-8') as f:
             print(weight_table_latex, file=f)
 
     elif answer == '4':
@@ -579,7 +588,7 @@ while True:
         jackknife_table = jackknife_table.sort_values(by='Sensitivity', ascending=False)
         print(jackknife_table)
         jackknife_table_latex = generate_latex_table(jackknife_table, caption="Results of Jackknife Sensitivity Analysis", label="jackknife")
-        with open(os.path.join("tables", "jackknife.tex"), 'w') as f:
+        with open(os.path.join("tables", "jackknife.tex"), 'w', encoding='utf-8') as f:
             print(jackknife_table_latex, file=f)
 
         # Focus on the top 5 most important features
