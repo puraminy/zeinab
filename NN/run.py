@@ -348,7 +348,20 @@ data = pd.read_csv(os.path.join('data','data.csv'))
 # Input features and output 
 #inputs = ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1','flow_rate2', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2']
 inputs = ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1','flow_rate2', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2']
-output = 'HTC'
+inputs = [
+    "SG Coating",
+    "Temp Alk Sol",
+    "NaOH Wt%",
+    "Dip Time Alk (min)",
+    "pH Sol",
+    "Hydro Time (h)",
+    "Dip Time Sol (s)",
+    "Clay Conc",
+    "Cure Time (min)",
+    "Cure Temp"
+]
+
+output = 'Impedance module'
 # Read data into X and y
 X = data[inputs]
 y = data[output] 
@@ -498,9 +511,9 @@ if answer != "0":
         plot_results(best_predictions, y_test, title, file_name, show_plot=False)
 
     # Save results of predicitons in a file named results.csv
-    results_df = pd.DataFrame(columns=["HTC", "predictions"])
-    results_df["HTC"] = y_test
-    results_df.rename(columns={"HTC": "actual"}, inplace=True)
+    results_df = pd.DataFrame(columns=[output, "predictions"])
+    results_df[output] = y_test
+    results_df.rename(columns={output: "actual"}, inplace=True)
     pred_list = [round(x,2) for x in best_predictions]
     results_df["predictions"] = pred_list # pd.Series(pred_list)
     results_df.to_csv("results.csv", index=False)

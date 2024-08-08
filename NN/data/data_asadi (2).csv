@@ -1,4 +1,4 @@
-Impedance module,SG Coating,Temp Alk Sol,NaOH Wt%,Dip Time Alk (min),pH Sol,Hydro Time (h),Dip Time Sol (s),Clay Conc,Cure Time (min),Cure Temp,m
+HTC,flow_rate1,conc_nano1,Kfluid1,heat_flux1,X_D1,flow_rate2,conc_nano2,Kfluid2,heat_flux2,X_D2,m
 0.647398844,1,50,2.5,2,4,24,120,0,30,150,2280
 0.969869942,1,50,2.5,2,4,24,120,0,30,150,2726.3
 1.793858382,1,50,2.5,5,4,24,120,0,30,150,3866.7
