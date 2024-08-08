@@ -27,6 +27,7 @@ __pycache__/
 # Compiled LaTeX
 *.dvi
 *.synctex.gz
+*.synctex.*
 *.synctex.gz(busy)
 
 # Temporary files

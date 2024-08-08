@@ -63,9 +63,9 @@ def normalize(data, normalization_type):
 import torch.nn.init as init
 
 def fit_model(model_class, X_train, X_test, y_train, y_test, 
-        num_epochs, hidden_sizes, display_steps=False):
+        num_epochs, hidden_sizes, display_steps=False, run=0):
 
-    set_model_seed(model_seed)
+    set_model_seed(model_seed + run)
     scaler = StandardScaler()
     X_train = torch.tensor(scaler.fit_transform(X_train), dtype=torch.float32)
     X_test = torch.tensor(scaler.transform(X_test), dtype=torch.float32)
@@ -320,7 +320,7 @@ def repeat_fit_model(model_class, num_repeats,
     for i in range(num_repeats):
         predictions, mse, r2, model = fit_model(model_class, 
                 X_train, X_test, y_train, y_test, num_epochs, hidden_sizes, 
-                display_steps=display_steps)
+                display_steps=display_steps, run=i)
         if r2 is None:
             continue
 
