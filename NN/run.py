@@ -380,6 +380,9 @@ models = [
             Tanh2HiddenLayer,
             Relu1HiddenLayer,
             Relu2HiddenLayer,
+            TanhReluFFNN,
+            TanhLinFFNN,
+            ReluTanhFFNN,
             ReluFFNN,
             TanhFFNN,
             LinearFFNN,
@@ -409,11 +412,14 @@ else:
 
 print("Selected Models:", [model_names[i] for i in selected_models])
 best_model_index = selected_models[0]
+max_model_index = best_model_index
 
 answer = input(f"Enter the number of epochs [{list_epochs}] (0 to skip training):")
 if answer != "0":
     if answer: 
-       list_epochs = [int(a) for a in answer.split()]
+       list_epochs = [int(a) for a in answer.split() if a.isnumeric()]
+    
+    print(list_epochs)
 
     answer = input(f"Enter the hidden sizes [{list_hidden_sizes}]:")
     if answer: 
@@ -434,6 +440,8 @@ if answer != "0":
     best_hidden_sizes = []
     best_r2 = -1000
     best_run = 0
+    max_epochs = -1
+    max_hidden_sizes = []
     best_epochs = -1
     results = []
     model_best_predictions = {}
@@ -456,6 +464,9 @@ if answer != "0":
                 if max_r2 > best_r2:
                     best_r2 = max_r2
                     model_best_predictions[model_name] = model_best_preds
+                    max_model_index = model_index
+                    max_epochs = num_epochs
+                    max_hidden_sizes = hidden_sizes
                     best_run = max_run
 
                 if mean_r2 > best_mean_r2:
@@ -499,15 +510,21 @@ if answer != "0":
     best_model = models[best_model_index]
     best_model_name = model_names[best_model_index]
     # Show results
+    max_model_name = model_names[max_model_index]
+
     print("============ Results for models =========================")
     print(results_table)
-    print("=========================================================")
-    print("Best R-Squred:", best_r2)
+    print("========================== Best Mean Model ===============================")
     print("Best Mean R-Squred:", best_mean_r2)
     print("Best model with better mean R-Squred:", best_model_name) 
     print("Best Hidden sizes:", best_hidden_sizes) 
     print("Best epochs:", best_epochs) 
-
+    print("=========================== Max Model ================================")
+    print("Best model with better max R-Squred:", max_model_name) 
+    print("Best Hidden sizes:", max_hidden_sizes) 
+    print("Best epochs:", max_epochs) 
+    print("Max R-Squred:", best_r2)
+ 
     results_table.to_csv("exp.csv")
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, 
@@ -515,9 +532,9 @@ if answer != "0":
         random_state=data_seed) 
 
     # Show and save the plot for best results
-    best_predictions = model_best_predictions[best_model_name] 
-    title = "Prediction of " + output + " with " + best_model_name + " epochs:" + str(best_epochs)
-    file_name = f"R2-{best_r2:.2f}-" + best_model_name + "-" + output + ".png"
+    best_predictions = model_best_predictions[max_model_name] 
+    title = "Prediction of " + output + " with " + max_model_name + " epochs:" + str(max_epochs)
+    file_name = f"R2-{best_r2:.2f}-" + max_model_name + "-" + output + ".png"
 
     print("\n\n")
     print("Plot was saved in plots folder")

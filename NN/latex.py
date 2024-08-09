@@ -42,7 +42,10 @@ def generate_latex_table(table, caption="table", label=""):
 
     # Convert to LaTeX table using tabulate
     latex_table = tabulate(escaped_table, headers='keys', tablefmt='latex_raw', showindex=False)
-
+    # Replace the table environment with longtable
+    longtable_code = latex_table.replace('\\begin{tabular}', '\\begin{longtable}')
+    longtable_code = longtable_code.replace('\\end{tabular}', '\\end{longtable}')
+ 
     table_env = f"""
     \\begin{{table*}}[h]
         \\centering
@@ -52,7 +55,7 @@ def generate_latex_table(table, caption="table", label=""):
     \\end{{table*}}
     """
 
-    return table_env
+    return longtable_code
 
 # Example usage with a sample DataFrame
 results = [

@@ -168,6 +168,15 @@ class LinearFFNN(FFNN):
 class TanhFFNN(FFNN):
       activations = [nn.Tanh()]  # Specify activations for hidden layers
 
+class TanhReluFFNN(FFNN):
+      activations = [nn.Tanh(), nn.ReLU()]  # Specify activations for hidden layers
+
+class ReluTanhFFNN(FFNN):
+      activations = [nn.ReLU(), nn.Tanh()]  # Specify activations for hidden layers
+
+class TanhLinFFNN(FFNN):
+      activations = [nn.Tanh(), nn.Identity()]  # Specify activations for hidden layers
+
 # NonLinear Model with 1 hidden layer with Tanjant Hyperbolic function as nonlinear function
 # (Note it inherits from 2 hidden layer class above
 class Tanh1HiddenLayer(Linear1HiddenLayer):
