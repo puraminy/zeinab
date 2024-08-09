@@ -142,7 +142,7 @@ def fit_model(model, X_train, X_test, y_train, y_test,
 # Search about Backward Feature Elimination 
 # Sensitivity Analysis Functions
 
-def weight_analysis(model_class, data, inputs, output, num_epochs):
+def weight_analysis(model_class, data, inputs, output, num_epochs, hidden_sizes):
     y = data[output]
     X_train, X_test, y_train, y_test = train_test_split(data[inputs], y, test_size=0.2, random_state=data_seed)
     input_size = X_train.shape[1]
@@ -164,7 +164,7 @@ def weight_analysis(model_class, data, inputs, output, num_epochs):
     return weight_table
 
 
-def jackknife_sensitivity_analysis(model_class, data, inputs, output, num_epochs):
+def jackknife_sensitivity_analysis(model_class, data, inputs, output, num_epochs, hidden_sizes):
     y = data[output]
     base_model_r2, _, _, _, _, _, run = repeat_fit_model(model_class, 
             num_repeats, data[inputs], y, num_epochs, hidden_sizes)
@@ -191,7 +191,7 @@ def jackknife_sensitivity_analysis(model_class, data, inputs, output, num_epochs
     sensitivity_table['Variance'] = variances
     return sensitivity_table
 
-def backward_feature_elimination(model_class, data, inputs, output, num_epochs):
+def backward_feature_elimination(model_class, data, inputs, output, num_epochs, hidden_sizes):
     y = data[output] 
     # Remove extra columns
     # data = data.drop([output, 'HTC_ANN1', 'HTC_ANN2'], axis=1).copy()
@@ -252,7 +252,7 @@ def backward_feature_elimination(model_class, data, inputs, output, num_epochs):
 # Finds the combinaiton of features that best predict y
 # This method add features one by one
 # Search about Forward Feature Selction
-def forward_feature_selection(model_class, data, inputs, output, num_epochs):
+def forward_feature_selection(model_class, data, inputs, output, num_epochs, hidden_sizes):
     y = data[output] 
     # Remove extra columns
     data = data.drop([output, 'm'], axis=1).copy()
@@ -356,16 +356,16 @@ data = pd.read_csv(os.path.join('data','data.csv'))
 #inputs = ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1','flow_rate2', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2']
 inputs = ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1','flow_rate2', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2']
 inputs = [
-    "SG Coating",
-    "Temp Alk Sol",
-    "NaOH Wt%",
-    "Dip Time Alk (min)",
-    "pH Sol",
-    "Hydro Time (h)",
-    "Dip Time Sol (s)",
-    "Clay Conc",
-    "Cure Time (min)",
-    "Cure Temp"
+    'SG Coating',
+    'Temp Alk Sol',
+    'NaOH Wt%',
+    'Dip Time Alk (min)',
+    'pH Sol',
+    'Hydro Time (h)',
+    'Dip Time Sol (s)',
+    'Clay Conc',
+    'Cure Time (min)',
+    'Cure Temp'
 ]
 
 output = 'Impedance module'
@@ -431,6 +431,7 @@ if answer != "0":
 
     best_mean_r2 = -1000
     best_mse = -1000
+    best_hidden_sizes = []
     best_r2 = -1000
     best_run = 0
     best_epochs = -1
@@ -451,10 +452,10 @@ if answer != "0":
                 # Keep best seed to generate the same predictions later
                 if mean_r2 is None:
                     continue
-                model_best_predictions[model_name] = model_best_preds
 
                 if max_r2 > best_r2:
                     best_r2 = max_r2
+                    model_best_predictions[model_name] = model_best_preds
                     best_run = max_run
 
                 if mean_r2 > best_mean_r2:
@@ -462,6 +463,7 @@ if answer != "0":
                     best_mse = mean_mse
                     best_model_index = model_index
                     best_epochs = num_epochs
+                    best_hidden_sizes = hidden_sizes
                 
                 total_nodes = sum(hidden_sizes)
 
@@ -503,6 +505,8 @@ if answer != "0":
     print("Best R-Squred:", best_r2)
     print("Best Mean R-Squred:", best_mean_r2)
     print("Best model with better mean R-Squred:", best_model_name) 
+    print("Best Hidden sizes:", best_hidden_sizes) 
+    print("Best epochs:", best_epochs) 
 
     results_table.to_csv("exp.csv")
 
@@ -512,7 +516,7 @@ if answer != "0":
 
     # Show and save the plot for best results
     best_predictions = model_best_predictions[best_model_name] 
-    title = "Prediction of " + output + " with " + best_model_name 
+    title = "Prediction of " + output + " with " + best_model_name + " epochs:" + str(best_epochs)
     file_name = f"R2-{best_r2:.2f}-" + best_model_name + "-" + output + ".png"
 
     print("\n\n")
@@ -540,7 +544,7 @@ best_model = models[best_model_index]
 best_model_name = model_names[best_model_index]
 while True:
     print("\n\n")
-    print(f"================= Feature Selection ({best_model_name}:{best_epochs} epochs) ======")
+    print(f"================= Feature Selection ({best_model_name}:{best_epochs} epochs, {best_hidden_sizes}) ======")
     print("\nPlease select a feature selection or sensitivity analysis method:\n")
     print("1. Backward Feature Elimination")
     print("2. Forward Feature Selection")
@@ -553,7 +557,7 @@ while True:
     if answer == '1':
         print("============================= Backward Feature Elimination =============")
         backward_table = backward_feature_elimination(best_model, data, 
-                inputs, output, best_epochs)
+                inputs, output, best_epochs, best_hidden_sizes)
         print("------------ backward feature elimination ---------------")
         print(backward_table)
 
@@ -563,7 +567,8 @@ while True:
 
     elif answer == '2':
         print("============================= Forward Feature Selection ================")
-        forward_table = forward_feature_selection(best_model, data, inputs, output, best_epochs)
+        forward_table = forward_feature_selection(best_model, data, inputs, output, 
+                                                  best_epochs, best_hidden_sizes)
         print("\n")
         print("------------ forward feature selection ---------------")
         print(forward_table)
@@ -573,7 +578,7 @@ while True:
 
     elif answer == '3':
         print("============================= Weight Analysis =============")
-        weight_table = weight_analysis(best_model, data, inputs, output, best_epochs)
+        weight_table = weight_analysis(best_model, data, inputs, output, best_epochs, best_hidden_sizes)
         print("------------ weight analysis ---------------")
         weight_table = weight_table.sort_values(by='Weight Importance', 
                 ascending=False)
@@ -586,7 +591,7 @@ while True:
     elif answer == '4':
         print("============================= Jackknife Sensitivity Analysis =============")
         jackknife_table = jackknife_sensitivity_analysis(best_model, 
-                data, inputs, output, best_epochs)
+                data, inputs, output, best_epochs, best_hidden_sizes)
         print("------------ jackknife sensitivity analysis ---------------")
         # Sort and display the most sensitive features
         jackknife_table = jackknife_table.sort_values(by='Sensitivity', ascending=False)
