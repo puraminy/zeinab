@@ -521,8 +521,9 @@ if answer != "0":
 
     # Show and save the plot for best results
     best_predictions = model_best_predictions[max_model_name] 
-    title = "Prediction of " + output + " with " + max_model_name + " epochs:" + str(max_epochs)
-    file_name = f"R2-{best_r2:.2f}-" + max_model_name + "-" + output + ".png"
+    _output = "-".join(output) if type(output) == list else str
+    title = "Prediction of " + _output + " with " + max_model_name + " epochs:" + str(max_epochs)
+    file_name = f"R2-{best_r2:.2f}-" + max_model_name + "-" + _output + ".png"
 
     print("\n\n")
     print("Plot was saved in plots folder")
@@ -533,9 +534,11 @@ if answer != "0":
         plot_results(best_predictions, y_test, title, file_name, show_plot=False)
 
     # Save results of predicitons in a file named results.csv
-    results_df = pd.DataFrame(columns=[output, "predictions"])
-    results_df[output] = y_test
-    results_df.rename(columns={output: "actual"}, inplace=True)
+    out_cols = output if type(output) == list else [output]
+    out_cols.append("predictions")
+    results_df = pd.DataFrame(columns=out_cols)
+    results_df["actual"] = y_test
+    # results_df.rename(columns={output: "actual"}, inplace=True)
     pred_list = [round(x,2) for x in best_predictions]
     results_df["predictions"] = pred_list # pd.Series(pred_list)
     results_df.to_csv("results.csv", index=False)
@@ -558,6 +561,8 @@ while True:
     print("q. Quit")
 
     answer = input("Enter the number of the method you want to run (or 'q' to quit): ").strip().lower()
+    if type(output) == list:
+        output= output[0] 
 
     if answer == '1':
         print("============================= Backward Feature Elimination =============")

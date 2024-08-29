@@ -196,4 +196,32 @@ class Relu2HiddenLayer(Linear2HiddenLayer):
     activation1 = nn.ReLU()
     activation2 = nn.ReLU()
 
+# LSTM Model (Still included for comparison)
+class LSTM(nn.Module):
+    def __init__(self, input_size, hidden_sizes): # in ezafeh shod va ziri hazf shod
+    # def __init__(self, input_size, hidden_size, num_layers, output_size, transfer_function):
+        super(LSTM, self).__init__()
+        # be jaaye parametrhaye dadeh shode inha estefadeh shod
+        num_layers = 2
+        hidden_size = hidden_sizes[0]
+        output_size = hidden_sizes[1] if len(hidden_sizes) > 1 else 1
+        transfer_function = nn.ReLU
+
+        ###########  
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+        self.fc = nn.Linear(hidden_size, output_size)
+
+        # hame modelha in hidden_layers ro daran
+        self.hidden_layers = [self.lstm, self.fc]
+
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.transfer_function = transfer_function
+    
+    def forward(self, x):
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
+        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
+        out, _ = self.lstm(x, (h0, c0))
+        out = self.fc(out[:, -1, :])
+        return self.transfer_function(out)
 
