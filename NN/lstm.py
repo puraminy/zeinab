@@ -114,7 +114,7 @@ hidden_dim = 48
 num_layers = 2
 output_dim = 1
 num_epochs = 1000
-learning_rate = 0.001
+learning_rate = 0.0001
 
 model = LSTMModel(input_dim, hidden_dim, num_layers, output_dim).to(device)
 loss_fn = nn.MSELoss()
