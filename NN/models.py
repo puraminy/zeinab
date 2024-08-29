@@ -217,11 +217,17 @@ class LSTM(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.transfer_function = transfer_function
-    
+
     def forward(self, x):
+        print("Input shape:", x.shape)
         h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
         c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
-        out, _ = self.lstm(x, (h0, c0))
-        out = self.fc(out[:, -1, :])
-        return self.transfer_function(out)
 
+        out, _ = self.lstm(x, (h0, c0))
+        print("LSTM output shape:", out.shape)
+        out = self.fc(out[:, -1, :])
+        print("FC output shape:", out.shape)
+
+        if out.numel() > 0:
+            out = self.transfer_function()(out)
+        return out
