@@ -110,11 +110,11 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Initialize model, loss function, optimizer
 input_dim = 4  # time, flowrate, temp, init conc
-hidden_dim = 48
-num_layers = 2
+hidden_dim = 100
+num_layers = 1
 output_dim = 1
 num_epochs = 1000
-learning_rate = 0.0001
+learning_rate = 0.006
 
 model = LSTMModel(input_dim, hidden_dim, num_layers, output_dim).to(device)
 loss_fn = nn.MSELoss()
