@@ -105,7 +105,6 @@ class LSTM(nn.Module):
         last_output = output[idx, lengths - 1]
 
         out = self.fc(last_output)
-        out = nn.Tanh(out)
         out = self.transform_func(out)
         return out
 
@@ -115,11 +114,11 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Initialize model, loss function, optimizer
 
 input_dim = 4
-hidden_dim = 100
+hidden_dim = 120
 num_layers = 2  # Increased number of layers
 output_dim = 1
-num_epochs = 80
-learning_rate = 0.001  # Adjusted learning rate
+num_epochs = 100
+learning_rate = 0.0005  # Adjusted learning rate
 
 # Train the model
 # Function to train and evaluate the model multiple times
@@ -127,6 +126,7 @@ def train_and_evaluate_model(n_runs=5):
     r2_scores = []
     
     for run in range(n_runs):
+        set_model_seed(model_seed + run)
         model = LSTM(input_dim, hidden_dim, num_layers, output_dim, dropout=0.2).to(device)
         loss_fn = nn.MSELoss()
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -134,7 +134,6 @@ def train_and_evaluate_model(n_runs=5):
         # Move data to the device
         X_train, y_train = X.to(device), y.to(device)
  
-        set_model_seed(model_seed + run)
         print("========================== Run:", run+1)
         for epoch in range(num_epochs):
             model.train()
