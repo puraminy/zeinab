@@ -78,16 +78,16 @@ def set_model_seed(model_seed):
     torch.manual_seed(model_seed)
     np.random.seed(model_seed)
 
-class ImprovedLSTMModel(nn.Module):
+class LSTM(nn.Module):
     def __init__(self, input_dim, hidden_dim, num_layers, output_dim, dropout=0.2):
-        super(ImprovedLSTMModel, self).__init__()
+        super(LSTM, self).__init__()
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
-        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, 
-                            batch_first=True, 
+        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers,
+                            batch_first=True,
                             dropout=dropout, bidirectional=True)
         self.fc = nn.Linear(hidden_dim * 2, output_dim)  # Multiply by 2 for bidirectional
-        self.transform_func = nn.Tanh()
+        self.transform_func = nn.RReLU()
 
     def forward(self, x, lengths):
         h0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_dim).to(x.device)  # Multiply by 2 for bidirectional
@@ -97,14 +97,16 @@ class ImprovedLSTMModel(nn.Module):
         packed_output, (hn, cn) = self.lstm(packed_input, (h0, c0))
         output, _ = rnn_utils.pad_packed_sequence(packed_output, batch_first=True)
 
-        out = self.fc(output)
+        # Convert lengths to a tensor
+        lengths = torch.tensor(lengths).to(x.device)
+
+        # Use the output at the last time step for each sequence
+        idx = torch.arange(0, output.size(0)).to(x.device)
+        last_output = output[idx, lengths - 1]
+
+        out = self.fc(last_output)
         out = self.transform_func(out)
         return out
-
-# Example usage:
-# Assume `inputs` is your padded input tensor and `lengths` is the list of sequence lengths.
-# model = LSTMModel(input_dim, hidden_dim, num_layers, output_dim)
-# outputs = model(inputs, lengths)
 
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -113,57 +115,70 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 input_dim = 4
 hidden_dim = 100
-num_layers = 3  # Increased number of layers
+num_layers = 2  # Increased number of layers
 output_dim = 1
-num_epochs = 500
+num_epochs = 80
 learning_rate = 0.001  # Adjusted learning rate
-run = 0
 
-set_model_seed(model_seed + run)
-model = ImprovedLSTMModel(input_dim, hidden_dim, num_layers, output_dim, dropout=0.3).to(device)
-loss_fn = nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
-# Move data to the device
-X, y = X.to(device), y.to(device)
- 
 # Train the model
-for epoch in range(num_epochs):
-    model.train()
-    output = model(X, train_lengths)
-    loss = loss_fn(output, y)
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
-    if (epoch + 1) % 10 == 0:
-        print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item():.4f}')
+# Function to train and evaluate the model multiple times
+def train_and_evaluate_model(n_runs=5):
+    r2_scores = []
+    
+    for run in range(n_runs):
+        model = LSTM(input_dim, hidden_dim, num_layers, output_dim, dropout=0.2).to(device)
+        loss_fn = nn.MSELoss()
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-# Evaluate the model
-model.eval()
-with torch.no_grad():
-    # Ensure X_test_new is correctly shaped
-    X_test_new = X_test_new.to(device)
-    predictions = model(X_test_new, test_lengths).cpu().numpy()
-    y_test_new_np = y_test_new.cpu().numpy()
+        # Move data to the device
+        X_train, y_train = X.to(device), y.to(device)
+ 
+        set_model_seed(model_seed + run)
+        print("========================== Run:", run+1)
+        for epoch in range(num_epochs):
+            model.train()
+            output = model(X_train, train_lengths)
+            loss = loss_fn(output, y_train)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            if (epoch + 1) % 10 == 0:
+                print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item():.4f}')
 
-    # Calculate metrics
-    test_loss = mean_squared_error(y_test_new_np, predictions)
-    r2 = r2_score(y_test_new_np, predictions)
+        # Evaluate the model
+        model.eval()
+        with torch.no_grad():
+            # Ensure X_test_new is correctly shaped
+            X_test = X_test_new.to(device)
+            predictions = model(X_test, test_lengths).cpu().numpy()
+            y_test_new_np = y_test_new.cpu().numpy()
 
-    print(f'Test Loss: {test_loss:.4f}')
-    print(f'R² Score: {r2:.4f}')
+            # Calculate metrics
+            test_loss = mean_squared_error(y_test_new_np, predictions)
+            r2 = r2_score(y_test_new_np, predictions)
+            r2_scores.append(r2)
 
-    # Prepare DataFrame for output
-    results = pd.DataFrame({
-        'Actual': y_test_new_np.flatten(),
-        'Predicted': predictions.flatten()
-    })
+            print(f'Test Loss: {test_loss:.4f}')
+            print(f'R² Score: {r2:.4f}')
 
-    # Save the results to a CSV file
-    results.to_csv('test_predictions.csv', index=False)
-    print(results)
-    print(f'Test Loss: {test_loss:.4f}')
-    print(f'R² Score: {r2:.4f}')
+            # Prepare DataFrame for output
+            results = pd.DataFrame({
+                'Actual': y_test_new_np.flatten(),
+                'Predicted': predictions.flatten()
+            })
 
-print('Test results saved to test_predictions.csv')
+            # Save the results to a CSV file
+            results.to_csv(f'test_predictions_{run+1}.csv', index=False)
+            print(results)
+            print(f'Test results for run {run+1} saved to test_predictions_{run+1}.csv')
+            print(f'Test Loss: {test_loss:.4f}')
+            print(f'R² Score: {r2:.4f}')
+
+    best_r2 = max(r2_scores)
+    mean_r2 = np.mean(r2_scores)
+
+    print(f'\nBest R² Score: {best_r2:.4f}')
+    print(f'Mean R² Score over {n_runs} runs: {mean_r2:.4f}')
+
+train_and_evaluate_model(n_runs=3)
 
