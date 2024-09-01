@@ -105,6 +105,7 @@ class LSTM(nn.Module):
         last_output = output[idx, lengths - 1]
 
         out = self.fc(last_output)
+        out = nn.Tanh(out)
         out = self.transform_func(out)
         return out
 
