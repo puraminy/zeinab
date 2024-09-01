@@ -72,32 +72,33 @@ test_data[['flowrate', 'temp', 'init conc', 'conc']] = scaler.transform(test_dat
 
 X_test_new, y_test_new, test_lengths = create_sequences(test_data[['time','flowrate', 'temp', 'init conc', 'conc']])
 
-class LSTMModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layers, output_dim):
-        super(LSTMModel, self).__init__()
+model_seed = 123 # it is used for random_state of models
+data_seed = 123 # it is used for random_state of splitting data into source and train sets
+def set_model_seed(model_seed):
+    torch.manual_seed(model_seed)
+    np.random.seed(model_seed)
+
+class ImprovedLSTMModel(nn.Module):
+    def __init__(self, input_dim, hidden_dim, num_layers, output_dim, dropout=0.2):
+        super(ImprovedLSTMModel, self).__init__()
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
-        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_dim, output_dim)
+        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, 
+                            batch_first=True, 
+                            dropout=dropout, bidirectional=True)
+        self.fc = nn.Linear(hidden_dim * 2, output_dim)  # Multiply by 2 for bidirectional
         self.transform_func = nn.Tanh()
 
     def forward(self, x, lengths):
-        # Initialize hidden state and cell state
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
-        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
+        h0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_dim).to(x.device)  # Multiply by 2 for bidirectional
+        c0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_dim).to(x.device)
 
-        # Pack the padded sequence
         packed_input = rnn_utils.pack_padded_sequence(x, lengths, batch_first=True, enforce_sorted=False)
-
-        # Pass the packed sequence to the LSTM
         packed_output, (hn, cn) = self.lstm(packed_input, (h0, c0))
-
-        # Unpack the sequence
         output, _ = rnn_utils.pad_packed_sequence(packed_output, batch_first=True)
 
-        # Pass through the fully connected layer and apply non-linear transformation
-        out = self.fc(output[:, -1, :])  # We use the last output for prediction
-        out = self.transform_func(out)  # Apply non-linear transformation function
+        out = self.fc(output)
+        out = self.transform_func(out)
         return out
 
 # Example usage:
@@ -109,14 +110,17 @@ class LSTMModel(nn.Module):
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Initialize model, loss function, optimizer
-input_dim = 4  # time, flowrate, temp, init conc
-hidden_dim = 100
-num_layers = 1
-output_dim = 1
-num_epochs = 1000
-learning_rate = 0.006
 
-model = LSTMModel(input_dim, hidden_dim, num_layers, output_dim).to(device)
+input_dim = 4
+hidden_dim = 100
+num_layers = 3  # Increased number of layers
+output_dim = 1
+num_epochs = 500
+learning_rate = 0.001  # Adjusted learning rate
+run = 0
+
+set_model_seed(model_seed + run)
+model = ImprovedLSTMModel(input_dim, hidden_dim, num_layers, output_dim, dropout=0.3).to(device)
 loss_fn = nn.MSELoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 

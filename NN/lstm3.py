@@ -83,7 +83,8 @@ class ImprovedLSTMModel(nn.Module):
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, 
-                            batch_first=True, dropout=dropout, bidirectional=True)
+                            batch_first=True, 
+                            dropout=dropout, bidirectional=True)
         self.fc = nn.Linear(hidden_dim * 2, output_dim)  # Multiply by 2 for bidirectional
         self.transform_func = nn.Tanh()
 
@@ -141,27 +142,32 @@ def train_and_evaluate_model(n_runs=5):
             predictions = model(X_test_new_device, test_lengths).cpu().numpy()
             y_test_new_np = y_test_new.cpu().numpy()
 
-            # Ensure lengths match
-            min_len = min(predictions.shape[0], y_test_new_np.shape[0])
-            print("min len:", min_len)
-            predictions = predictions[:min_len]
-            y_test_new_np = y_test_new_np[:min_len]
+            # Trim predictions and actual values to match their original lengths
+            trimmed_predictions = []
+            trimmed_actuals = []
+            
+            for i, length in enumerate(test_lengths):
+                trimmed_predictions.append(predictions[i][:length])
+                trimmed_actuals.append(y_test_new_np[i][:length])
 
-            test_loss = mean_squared_error(y_test_new_np.flatten(), predictions.flatten())
-            r2 = r2_score(y_test_new_np.flatten(), predictions.flatten())
+            trimmed_predictions = np.concatenate(trimmed_predictions)
+            trimmed_actuals = np.concatenate(trimmed_actuals)
+
+            test_loss = mean_squared_error(trimmed_actuals.flatten(), trimmed_predictions.flatten())
+            r2 = r2_score(trimmed_actuals.flatten(), trimmed_predictions.flatten())
 
             r2_scores.append(r2)
             print(f'Run {run + 1}/{n_runs}, Test Loss: {test_loss:.4f}, R² Score: {r2:.4f}')
             
             # Save the predictions and actual values to CSV
             results = pd.DataFrame({
-                'Actual': y_test_new.flatten(),
-                'Predicted': predictions.flatten()
+                'Actual': trimmed_actuals.flatten(),
+                'Predicted': trimmed_predictions.flatten()
             })
             results.to_csv(f'test_predictions_output_run_{run+1}.csv', index=False)
             print(results)
             print(f'Test results for run {run+1} saved to test_predictions_output_run_{run+1}.csv')
-    
+
     best_r2 = max(r2_scores)
     mean_r2 = np.mean(r2_scores)
 
