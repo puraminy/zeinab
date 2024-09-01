@@ -117,7 +117,7 @@ input_dim = 4
 hidden_dim = 120
 num_layers = 2  # Increased number of layers
 output_dim = 1
-num_epochs = 100
+num_epochs = 50
 learning_rate = 0.0005  # Adjusted learning rate
 
 # Train the model
