@@ -204,7 +204,7 @@ def train_and_evaluate_model(n_runs=5,
 
 r2_list = []
 var_list = []
-for var in [200,150,130,120]: # range(14): # [10,20,30]:
+for var in  [""]:# [200,150,130,120]: # range(14): # [10,20,30]:
     print("-"*50, "var:", var)
     r2 = train_and_evaluate_model(n_runs=2, 
             max_seq_len=0, 
@@ -212,7 +212,7 @@ for var in [200,150,130,120]: # range(14): # [10,20,30]:
             num_epochs=num_epochs,
             num_layers=num_layers,
             dropout=dropout,
-            hidden_dim=var)
+            hidden_dim=hidden_dim)
     r2_list.append(r2)
     var_list.append(var)
 
