@@ -11,6 +11,7 @@ train_data = pd.read_csv('data/data_nn.csv')
 scaler = MinMaxScaler()
 train_data[['flowrate', 'temp', 'init conc', 'conc']] = scaler.fit_transform(train_data[['flowrate', 'temp', 'init conc', 'conc']])
 
+
 def pad_sequences_to_longest(sequences, padding_value=0.0):
     max_time_steps = max(seq.shape[0] for seq in sequences)  # Maximum length across sequences
     max_features = max(seq.shape[1] for seq in sequences)    # Maximum number of features
@@ -29,6 +30,7 @@ def pad_sequences_to_longest(sequences, padding_value=0.0):
     return padded_sequences
 
 
+MAX_SEQ_LEN=0
 def create_sequences(data):
     xs, ys = [], []
     start_idx = 0
@@ -42,12 +44,14 @@ def create_sequences(data):
             idx = start_idx
             continue
 
-        if data.iloc[idx, -1] == 0:
+        if idx < len(data) and data.iloc[idx, -1] == 0:
             seq_length += 1
             idx += 1
             continue
 
         # Create the sequence
+        if MAX_SEQ_LEN > 0:
+            seq_length = min(seq_length, MAX_SEQ_LEN)
         x = data.iloc[start_idx:(start_idx + seq_length), :-1].values
         y = data.iloc[start_idx + seq_length, -1]
         xs.append(x)
@@ -117,7 +121,7 @@ input_dim = 4
 hidden_dim = 120
 num_layers = 2  # Increased number of layers
 output_dim = 1
-num_epochs = 150
+num_epochs = 100
 learning_rate = 0.0005  # Adjusted learning rate
 
 # Train the model
