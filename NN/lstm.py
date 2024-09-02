@@ -11,7 +11,6 @@ train_data = pd.read_csv('data/data_nn.csv')
 scaler = MinMaxScaler()
 train_data[['flowrate', 'temp', 'init conc', 'conc']] = scaler.fit_transform(train_data[['flowrate', 'temp', 'init conc', 'conc']])
 
-
 def pad_sequences_to_longest(sequences, padding_value=0.0):
     max_time_steps = max(seq.shape[0] for seq in sequences)  # Maximum length across sequences
     max_features = max(seq.shape[1] for seq in sequences)    # Maximum number of features
@@ -87,13 +86,14 @@ class LSTM(nn.Module):
                             batch_first=True,
                             dropout=dropout, bidirectional=True)
         self.fc = nn.Linear(hidden_dim * 2, output_dim)  # Multiply by 2 for bidirectional
-        self.transform_func = nn.RReLU()
+        self.transform_func = nn.LeakyReLU(negative_slope=0.01) 
 
     def forward(self, x, lengths):
         h0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_dim).to(x.device)  # Multiply by 2 for bidirectional
         c0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_dim).to(x.device)
 
-        packed_input = rnn_utils.pack_padded_sequence(x, lengths, batch_first=True, enforce_sorted=False)
+        packed_input = rnn_utils.pack_padded_sequence(x, lengths, 
+                batch_first=True, enforce_sorted=False)
         packed_output, (hn, cn) = self.lstm(packed_input, (h0, c0))
         output, _ = rnn_utils.pad_packed_sequence(packed_output, batch_first=True)
 
@@ -117,7 +117,7 @@ input_dim = 4
 hidden_dim = 120
 num_layers = 2  # Increased number of layers
 output_dim = 1
-num_epochs = 100
+num_epochs = 150
 learning_rate = 0.0005  # Adjusted learning rate
 
 # Train the model
@@ -141,6 +141,7 @@ def train_and_evaluate_model(n_runs=5):
             loss = loss_fn(output, y_train)
             optimizer.zero_grad()
             loss.backward()
+            # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             if (epoch + 1) % 10 == 0:
                 print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item():.4f}')
