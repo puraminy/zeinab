@@ -42,24 +42,22 @@ def pad_sequences_to_longest(sequences, padding_value=0.0):
 def create_sequences(data, max_seq_len=0):
     xs, ys = [], []
     start_idx = 0
-    seq_length = 0
+    seq_length = max_seq_len
     actual_lengths = []
     idx = 0
     while start_idx + seq_length < len(data):
         if data.iloc[start_idx + seq_length, 0] < seq_length and idx > 0:
             start_idx += seq_length # Skip rest 
-            seq_length = 0
+            seq_length = max_seq_len
             idx = start_idx
             continue
 
-        if idx < len(data) and data.iloc[idx][output_feature] == 0:
-            seq_length += 1
-            idx += 1
-            continue
+        if max_seq_len <= 0:
+            if idx < len(data) and data.iloc[idx][output_feature] == 0:
+                seq_length += 1
+                idx += 1
+                continue
 
-        # Create the sequence
-        if max_seq_len > 0:
-            seq_length = min(seq_length, max_seq_len)
         x = data.iloc[start_idx:(start_idx + seq_length)][input_features].values
         y = data.iloc[start_idx + seq_length][output_feature]
         xs.append(x)
@@ -194,7 +192,7 @@ def train_and_evaluate_model(n_runs=5,
                 })
 
                 # Save the results to a CSV file
-                results.to_csv(os.path.join('lstm_preds',f'predictions_{r2:.4f}.csv'), 
+                results.to_csv(os.path.join('lstm_preds',f'{max_seq_len}-pr-{r2:.4f}.csv'), 
                         index=False)
                 title = f"R2-{r2:.4f}"
                 file_name = os.path.join("lstm_plots", title + ".png")
@@ -205,7 +203,7 @@ def train_and_evaluate_model(n_runs=5,
                         file_name, show_plot=False)
                 if step_print:
                     print(results)
-                print(f'Test results for run {run+1} saved to lstm_preds/predictions_{r2}.csv')
+                print(f'Test results for run {run+1} saved')
             print(f'Test Loss: {test_loss:.4f}')
             print(f'R² Score: {r2:.4f}')
 
@@ -218,10 +216,10 @@ def train_and_evaluate_model(n_runs=5,
 
 r2_list = []
 var_list = []
-for var in  [""]:# [200,150,130,120]: # range(14): # [10,20,30]:
+for var in  range(15): #[""]:# [200,150,130,120]: # range(14): # [10,20,30]:
     print("-"*50, "var:", var)
     r2 = train_and_evaluate_model(n_runs=2, 
-            max_seq_len=0, 
+            max_seq_len=var, 
             step_print=False,
             num_epochs=num_epochs,
             num_layers=num_layers,
