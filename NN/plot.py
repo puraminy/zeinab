@@ -68,6 +68,18 @@ def plot_model_performance(results_table, latex_filename='plots_latex.tex'):
     with open(latex_filename, 'w', encoding='utf-8') as f:
         f.write(latex_code)
 
+import torch
+import pandas as pd
+
+def to_numpy_array(data):
+    if isinstance(data, torch.Tensor):
+        # Convert tensor to NumPy array
+        return data.cpu().detach().numpy()
+    elif isinstance(data, pd.Series):
+        # Convert pandas Series to NumPy array
+        return data.to_numpy()
+    else:
+        raise TypeError("Unsupported type. Only Tensor or Series objects are supported.")
 
 
 def plot_results(predictions_np, y_test, title, file_name, latex_filename='plots_preds_latex.tex', show_plot=False):
@@ -76,7 +88,7 @@ def plot_results(predictions_np, y_test, title, file_name, latex_filename='plots
     file_name = escape_latex_special_chars(file_name)
     
     # Convert predictions and y_test to NumPy arrays
-    y_test_np = y_test.numpy()
+    y_test_np = to_numpy_array(y_test)
     # Calculate R-squared
     r2 = r2_score(y_test_np, predictions_np)
 
