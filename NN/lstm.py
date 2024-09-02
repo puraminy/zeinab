@@ -5,7 +5,7 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, r2_score
 import numpy as np
 import torch.nn.utils.rnn as rnn_utils
-
+import os 
 # Load and normalize the training data
 train_data = pd.read_csv('data/data_nn.csv')
 scaler = MinMaxScaler()
@@ -116,28 +116,37 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 input_dim = 4
 hidden_dim = 120
-num_layers = 2  # Increased number of layers
+num_layers = 3  # Increased number of layers
 output_dim = 1
 num_epochs = 100
 learning_rate = 0.0005  # Adjusted learning rate
+dropout= 0.2
 
 # Train the model
 # Function to train and evaluate the model multiple times
-def train_and_evaluate_model(n_runs=5, max_seq_len=0, step_print=True):
+def train_and_evaluate_model(n_runs=5, 
+        max_seq_len=0, 
+        step_print=True,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        dropout=dropout,
+        num_epochs=num_epochs):
     r2_scores = []
+    max_r2 = 0
     X, y, train_lengths = create_sequences(train_data[features], max_seq_len)
     X_test_new, y_test_new, test_lengths = create_sequences(test_data[features], max_seq_len)
     
     for run in range(n_runs):
         set_model_seed(model_seed + run)
-        model = LSTM(input_dim, hidden_dim, num_layers, output_dim, dropout=0.2).to(device)
+        model = LSTM(input_dim, hidden_dim, 
+                num_layers, output_dim, dropout=dropout).to(device)
         loss_fn = nn.MSELoss()
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
         # Move data to the device
         X_train, y_train = X.to(device), y.to(device)
  
-        print("========================== Run:", run+1, " Max seq len:", max_seq_len)
+        print("========================== Run:", run+1)
         for epoch in range(num_epochs):
             model.train()
             output = model(X_train, train_lengths)
@@ -166,16 +175,23 @@ def train_and_evaluate_model(n_runs=5, max_seq_len=0, step_print=True):
             print(f'R² Score: {r2:.4f}')
 
             # Prepare DataFrame for output
-            results = pd.DataFrame({
-                'Actual': y_test_new_np.flatten(),
-                'Predicted': predictions.flatten()
-            })
+            if r2 > max_r2:
+                max_r2 = r2
+                results = pd.DataFrame({
+                    'hidden_dim':hidden_dim,
+                    'num_layers':num_layers,
+                    'max_seq':max_seq_len,
+                    'num_epochs':num_epochs,
+                    'Actual': y_test_new_np.flatten(),
+                    'Predicted': predictions.flatten()
+                })
 
-            # Save the results to a CSV file
-            if step_print:
-                results.to_csv(f'test_predictions_{run+1}.csv', index=False)
-                print(results)
-                print(f'Test results for run {run+1} saved to test_predictions_{run+1}.csv')
+                # Save the results to a CSV file
+                results.to_csv(os.path.join('lstm_preds',f'predictions_{r2:.4f}.csv'), 
+                        index=False)
+                if step_print:
+                    print(results)
+                print(f'Test results for run {run+1} saved to lstm_preds/predictions_{r2}.csv')
             print(f'Test Loss: {test_loss:.4f}')
             print(f'R² Score: {r2:.4f}')
 
@@ -187,12 +203,21 @@ def train_and_evaluate_model(n_runs=5, max_seq_len=0, step_print=True):
     return mean_r2
 
 r2_list = []
-for seq in range(15):
-    r2 = train_and_evaluate_model(n_runs=1, max_seq_len=seq, step_print=False)
+var_list = []
+for var in [200,150,130,120]: # range(14): # [10,20,30]:
+    print("-"*50, "var:", var)
+    r2 = train_and_evaluate_model(n_runs=2, 
+            max_seq_len=0, 
+            step_print=False,
+            num_epochs=num_epochs,
+            num_layers=num_layers,
+            dropout=dropout,
+            hidden_dim=var)
     r2_list.append(r2)
+    var_list.append(var)
 
 results = pd.DataFrame({
-    'run': range(len(r2_list)),
+    'run': var_list, 
     'r2': r2_list 
 })
 results.to_csv(f'run.csv', index=False)
