@@ -42,21 +42,23 @@ def pad_sequences_to_longest(sequences, padding_value=0.0):
 def create_sequences(data, max_seq_len=0):
     xs, ys = [], []
     start_idx = 0
-    seq_length = max_seq_len
+    seq_length = 0
     actual_lengths = []
     idx = 0
     while start_idx + seq_length < len(data):
         if data.iloc[start_idx + seq_length, 0] < seq_length and idx > 0:
             start_idx += seq_length # Skip rest 
-            seq_length = max_seq_len
+            seq_length = 0 
             idx = start_idx
             continue
 
-        if max_seq_len <= 0:
-            if idx < len(data) and data.iloc[idx][output_feature] == 0:
-                seq_length += 1
-                idx += 1
-                continue
+        if idx < len(data) and data.iloc[idx][output_feature] == 0:
+            seq_length += 1
+            idx += 1
+            continue
+
+        if max_seq_len > 0:
+            seq_length = min(seq_length, max_seq_len)
 
         x = data.iloc[start_idx:(start_idx + seq_length)][input_features].values
         y = data.iloc[start_idx + seq_length][output_feature]
