@@ -184,7 +184,18 @@ def train_and_evaluate_model(n_runs=5, max_seq_len=0, step_print=True):
 
     print(f'\nBest R² Score: {best_r2:.4f}')
     print(f'Mean R² Score over {n_runs} runs: {mean_r2:.4f}')
+    return mean_r2
 
+r2_list = []
 for seq in range(15):
-    train_and_evaluate_model(n_runs=1, max_seq_len=seq, step_print=False)
+    r2 = train_and_evaluate_model(n_runs=1, max_seq_len=seq, step_print=False)
+    r2_list.append(r2)
+
+results = pd.DataFrame({
+    'run': range(len(r2_list)),
+    'r2': r2_list 
+})
+results.to_csv(f'run.csv', index=False)
+print(results)
+print(f'Results saved to run.csv')
 
