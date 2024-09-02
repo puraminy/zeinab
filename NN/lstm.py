@@ -30,8 +30,7 @@ def pad_sequences_to_longest(sequences, padding_value=0.0):
     return padded_sequences
 
 
-MAX_SEQ_LEN=0
-def create_sequences(data):
+def create_sequences(data, max_seq_len=0):
     xs, ys = [], []
     start_idx = 0
     seq_length = 0
@@ -50,8 +49,8 @@ def create_sequences(data):
             continue
 
         # Create the sequence
-        if MAX_SEQ_LEN > 0:
-            seq_length = min(seq_length, MAX_SEQ_LEN)
+        if max_seq_len > 0:
+            seq_length = min(seq_length, max_seq_len)
         x = data.iloc[start_idx:(start_idx + seq_length), :-1].values
         y = data.iloc[start_idx + seq_length, -1]
         xs.append(x)
@@ -66,14 +65,12 @@ def create_sequences(data):
     y_tensor = torch.tensor(ys, dtype=torch.float32).unsqueeze(-1)
     return  X_tensor, y_tensor, actual_lengths
 
-features = train_data[['time','flowrate', 'temp', 'init conc', 'conc']]
-X, y, train_lengths = create_sequences(features)
+features = ['time','flowrate', 'temp', 'init conc', 'conc']
 
 # Load and prepare the test data
 test_data = pd.read_csv('data/data_test_nn.csv')
 test_data[['flowrate', 'temp', 'init conc', 'conc']] = scaler.transform(test_data[['flowrate', 'temp', 'init conc', 'conc']])
 
-X_test_new, y_test_new, test_lengths = create_sequences(test_data[['time','flowrate', 'temp', 'init conc', 'conc']])
 
 model_seed = 123 # it is used for random_state of models
 data_seed = 123 # it is used for random_state of splitting data into source and train sets
@@ -126,8 +123,10 @@ learning_rate = 0.0005  # Adjusted learning rate
 
 # Train the model
 # Function to train and evaluate the model multiple times
-def train_and_evaluate_model(n_runs=5):
+def train_and_evaluate_model(n_runs=5, max_seq_len=0, step_print=True):
     r2_scores = []
+    X, y, train_lengths = create_sequences(train_data[features], max_seq_len)
+    X_test_new, y_test_new, test_lengths = create_sequences(test_data[features], max_seq_len)
     
     for run in range(n_runs):
         set_model_seed(model_seed + run)
@@ -138,7 +137,7 @@ def train_and_evaluate_model(n_runs=5):
         # Move data to the device
         X_train, y_train = X.to(device), y.to(device)
  
-        print("========================== Run:", run+1)
+        print("========================== Run:", run+1, " Max seq len:", max_seq_len)
         for epoch in range(num_epochs):
             model.train()
             output = model(X_train, train_lengths)
@@ -147,7 +146,7 @@ def train_and_evaluate_model(n_runs=5):
             loss.backward()
             # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            if (epoch + 1) % 10 == 0:
+            if (epoch + 1) % 10 == 0 and step_print:
                 print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item():.4f}')
 
         # Evaluate the model
@@ -173,9 +172,10 @@ def train_and_evaluate_model(n_runs=5):
             })
 
             # Save the results to a CSV file
-            results.to_csv(f'test_predictions_{run+1}.csv', index=False)
-            print(results)
-            print(f'Test results for run {run+1} saved to test_predictions_{run+1}.csv')
+            if step_print:
+                results.to_csv(f'test_predictions_{run+1}.csv', index=False)
+                print(results)
+                print(f'Test results for run {run+1} saved to test_predictions_{run+1}.csv')
             print(f'Test Loss: {test_loss:.4f}')
             print(f'R² Score: {r2:.4f}')
 
@@ -185,5 +185,6 @@ def train_and_evaluate_model(n_runs=5):
     print(f'\nBest R² Score: {best_r2:.4f}')
     print(f'Mean R² Score over {n_runs} runs: {mean_r2:.4f}')
 
-train_and_evaluate_model(n_runs=3)
+for seq in range(15):
+    train_and_evaluate_model(n_runs=1, max_seq_len=seq, step_print=False)
 
