@@ -4,6 +4,8 @@ import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, r2_score
 import numpy as np
+from latex import *
+from plot import *
 import torch.nn.utils.rnn as rnn_utils
 import os 
 # Load and normalize the training data
@@ -189,6 +191,13 @@ def train_and_evaluate_model(n_runs=5,
                 # Save the results to a CSV file
                 results.to_csv(os.path.join('lstm_preds',f'predictions_{r2:.4f}.csv'), 
                         index=False)
+                title = f"R2-{r2:.4f}"
+                file_name = os.path.join("lstm_plots", title + ".png")
+
+                print("\n\n")
+                print("Plot was saved in lstm_plots folder")
+                plot_results(predictions, y_test_new.cpu(), title, 
+                        file_name, show_plot=False)
                 if step_print:
                     print(results)
                 print(f'Test results for run {run+1} saved to lstm_preds/predictions_{r2}.csv')

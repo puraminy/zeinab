@@ -76,7 +76,7 @@ def plot_results(predictions_np, y_test, title, file_name, latex_filename='plots
     file_name = escape_latex_special_chars(file_name)
     
     # Convert predictions and y_test to NumPy arrays
-    y_test_np = y_test.to_numpy()
+    y_test_np = y_test.numpy()
     # Calculate R-squared
     r2 = r2_score(y_test_np, predictions_np)
 
