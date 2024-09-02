@@ -11,7 +11,14 @@ import os
 # Load and normalize the training data
 train_data = pd.read_csv('data/data_nn.csv')
 scaler = MinMaxScaler()
-train_data[['flowrate', 'temp', 'init conc', 'conc']] = scaler.fit_transform(train_data[['flowrate', 'temp', 'init conc', 'conc']])
+# Define input and output features explicitly
+features = ['time','flowrate', 'temp', 'init conc', 'conc']
+scale_features = ['flowrate', 'temp', 'init conc', 'conc']
+input_features = ['time', 'flowrate', 'temp', 'init conc']
+output_feature = 'conc'
+
+
+train_data[scale_features] = scaler.fit_transform(train_data[scale_features])
 
 
 def pad_sequences_to_longest(sequences, padding_value=0.0):
@@ -45,7 +52,7 @@ def create_sequences(data, max_seq_len=0):
             idx = start_idx
             continue
 
-        if idx < len(data) and data.iloc[idx, -1] == 0:
+        if idx < len(data) and data.iloc[idx][output_feature] == 0:
             seq_length += 1
             idx += 1
             continue
@@ -53,8 +60,8 @@ def create_sequences(data, max_seq_len=0):
         # Create the sequence
         if max_seq_len > 0:
             seq_length = min(seq_length, max_seq_len)
-        x = data.iloc[start_idx:(start_idx + seq_length), :-1].values
-        y = data.iloc[start_idx + seq_length, -1]
+        x = data.iloc[start_idx:(start_idx + seq_length)][input_features].values
+        y = data.iloc[start_idx + seq_length][output_feature]
         xs.append(x)
         ys.append(y)
 
@@ -67,12 +74,10 @@ def create_sequences(data, max_seq_len=0):
     y_tensor = torch.tensor(ys, dtype=torch.float32).unsqueeze(-1)
     return  X_tensor, y_tensor, actual_lengths
 
-features = ['time','flowrate', 'temp', 'init conc', 'conc']
 
 # Load and prepare the test data
 test_data = pd.read_csv('data/data_test_nn.csv')
-test_data[['flowrate', 'temp', 'init conc', 'conc']] = scaler.transform(test_data[['flowrate', 'temp', 'init conc', 'conc']])
-
+test_data[scale_features] = scaler.transform(test_data[scale_features])
 
 model_seed = 123 # it is used for random_state of models
 data_seed = 123 # it is used for random_state of splitting data into source and train sets

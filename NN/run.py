@@ -21,13 +21,13 @@ exp_df = pd.DataFrame()
 
 num_repeats = 5
 # num_repeats shows the number of times to repeat the experiment to get its average values
-model_seed = 123 # it is used for random_state of models
 # changing model_seed generates different results for each run for each model
 # The same model_seed produces the same results in each run which is good for reporducability of experiments
 # Dont change it if you want to reproduce the same results
 data_seed = 123 # it is used for random_state of splitting data into source and train sets
 # changing it creates different source and train sets.
 # Since the number of data is low changing it can largely affect the results
+model_seed = 123 # it is used for random_state of models
 def set_model_seed(model_seed):
     torch.manual_seed(model_seed)
     np.random.seed(model_seed)
