@@ -3,28 +3,183 @@
  model                                      & R2          &   MSE & hidden sizes   &   total hs &   epochs \\
 \hline
  \hline
-Linear1HiddenLayer                  & 51.5 ± 1.5  &  0.4  & [10]           &         10 &       20 \\
+Sig2HiddenLayer                     & 79.1 ± 5.6  &  0.17 & [15, 5]        &         20 &       20 \\
  \hline
-\multirow{3}{*}{Linear2HiddenLayer} & 51.1 ± 5.8  &  0.41 & [8, 4]         &         12 &       20 \\
-                                            & 45.1 ± 1.8  &  0.46 & [15, 5]        &         20 &       50 \\
-                                            & 43.7 ± 3.2  &  0.47 & [8, 4]         &         12 &       50 \\
+Tanh2HiddenLayer                    & 79.1 ± 13.8 &  0.17 & [8, 4]         &         12 &       50 \\
  \hline
-Sig1HiddenLayer                     & 43.1 ± 12.9 &  0.47 & [10]           &         10 &       50 \\
+TanhFFNN                            & 77.1 ± 6.2  &  0.19 & [8, 4]         &         12 &       50 \\
  \hline
-\multirow{3}{*}{Linear1HiddenLayer} & 43.0 ± 3.9  &  0.48 & [10]           &         10 &       50 \\
-                                            & 42.9 ± 0.3  &  0.48 & [10]           &         10 &      100 \\
-                                            & 42.8 ± 0.0  &  0.48 & [10]           &         10 &      200 \\
+TanhLinFFNN                         & 76.7 ± 4.3  &  0.19 & [15, 5]        &         20 &       50 \\
  \hline
-\multirow{4}{*}{Linear2HiddenLayer} & 42.8 ± 0.2  &  0.48 & [15, 5]        &         20 &      100 \\
-                                            & 42.8 ± 0.0  &  0.48 & [8, 4]         &         12 &      200 \\
-                                            & 42.8 ± 0.0  &  0.48 & [15, 5]        &         20 &      200 \\
-                                            & 42.7 ± 0.4  &  0.48 & [8, 4]         &         12 &      100 \\
+TanhReluFFNN                        & 74.3 ± 3.0  &  0.21 & [10]           &         10 &       50 \\
  \hline
-Sig1HiddenLayer                     & 42.6 ± 16.8 &  0.48 & [10]           &         10 &       20 \\
+TanhLinFFNN                         & 74.3 ± 3.0  &  0.21 & [10]           &         10 &       50 \\
  \hline
-Linear2HiddenLayer                  & 40.1 ± 10.7 &  0.5  & [15, 5]        &         20 &       20 \\
+TanhFFNN                            & 74.3 ± 3.0  &  0.21 & [10]           &         10 &       50 \\
  \hline
-\multirow{2}{*}{Sig1HiddenLayer}    & 35.4 ± 17.1 &  0.54 & [10]           &         10 &      100 \\
-                                            & 25.6 ± 26.1 &  0.62 & [10]           &         10 &      200 \\
+Sig1HiddenLayer                     & 74.1 ± 1.0  &  0.22 & [10]           &         10 &       20 \\
+ \hline
+SigReLU2HiddenLayer                 & 72.6 ± 6.3  &  0.23 & [15, 5]        &         20 &       20 \\
+ \hline
+Tanh1HiddenLayer                    & 72.3 ± 3.4  &  0.23 & [10]           &         10 &       50 \\
+ \hline
+TanhLinFFNN                         & 71.0 ± 5.6  &  0.24 & [8, 4]         &         12 &       50 \\
+ \hline
+SigReLU2HiddenLayer                 & 70.3 ± 2.3  &  0.25 & [15, 5]        &         20 &       50 \\
+ \hline
+TanhFFNN                            & 69.8 ± 14.8 &  0.25 & [15, 5]        &         20 &       20 \\
+ \hline
+Sig1HiddenLayer                     & 69.8 ± 2.4  &  0.25 & [10]           &         10 &       50 \\
+ \hline
+Relu2HiddenLayer                    & 69.2 ± 16.1 &  0.26 & [15, 5]        &         20 &       50 \\
+ \hline
+LinearFFNN                          & 67.2 ± 1.6  &  0.27 & [10]           &         10 &       50 \\
+ \hline
+Linear1HiddenLayer                  & 67.2 ± 1.0  &  0.27 & [10]           &         10 &       50 \\
+ \hline
+Linear2HiddenLayer                  & 66.9 ± 0.4  &  0.28 & [15, 5]        &         20 &       50 \\
+ \hline
+TanhLinFFNN                         & 66.8 ± 6.6  &  0.28 & [15, 5]        &         20 &       20 \\
+ \hline
+Linear2HiddenLayer                  & 66.4 ± 0.9  &  0.28 & [8, 4]         &         12 &       50 \\
+ \hline
+\multirow{2}{*}{LinearFFNN}         & 66.4 ± 0.7  &  0.28 & [8, 4]         &         12 &       50 \\
+                                            & 66.4 ± 0.7  &  0.28 & [15, 5]        &         20 &       50 \\
+ \hline
+TanhFFNN                            & 66.4 ± 18.1 &  0.28 & [8, 4]         &         12 &       20 \\
+ \hline
+ReLUSig2HiddenLayer                 & 66.2 ± 4.1  &  0.28 & [15, 5]        &         20 &       50 \\
+ \hline
+TanhLinFFNN                         & 66.1 ± 0.5  &  0.28 & [8, 4]         &         12 &       20 \\
+ \hline
+\multirow{3}{*}{LinearFFNN}         & 65.9 ± 0.9  &  0.28 & [15, 10, 3]    &         28 &       50 \\
+                                            & 65.9 ± 4.7  &  0.28 & [8, 4]         &         12 &       20 \\
+                                            & 65.3 ± 2.3  &  0.29 & [15, 5]        &         20 &       20 \\
+ \hline
+TanhFFNN                            & 65.1 ± 5.2  &  0.29 & [15, 10, 3]    &         28 &       50 \\
+ \hline
+Relu1HiddenLayer                    & 64.2 ± 4.0  &  0.3  & [10]           &         10 &       50 \\
+ \hline
+LinearFFNN                          & 64.1 ± 2.3  &  0.3  & [15, 10, 3]    &         28 &       20 \\
+ \hline
+Sig2HiddenLayer                     & 64.0 ± 0.9  &  0.3  & [8, 4]         &         12 &       50 \\
+ \hline
+Tanh2HiddenLayer                    & 63.8 ± 15.2 &  0.3  & [8, 4]         &         12 &       20 \\
+ \hline
+SigReLU2HiddenLayer                 & 63.7 ± 1.6  &  0.3  & [8, 4]         &         12 &       50 \\
+ \hline
+Tanh1HiddenLayer                    & 63.7 ± 5.3  &  0.3  & [10]           &         10 &       20 \\
+ \hline
+LinearFFNN                          & 62.3 ± 5.8  &  0.31 & [10]           &         10 &       20 \\
+ \hline
+\multirow{2}{*}{Linear2HiddenLayer} & 61.9 ± 4.2  &  0.32 & [8, 4]         &         12 &       20 \\
+                                            & 61.6 ± 4.2  &  0.32 & [15, 5]        &         20 &       20 \\
+ \hline
+Linear1HiddenLayer                  & 61.5 ± 3.1  &  0.32 & [10]           &         10 &       20 \\
+ \hline
+ReLUSig2HiddenLayer                 & 61.5 ± 5.1  &  0.32 & [15, 5]        &         20 &       20 \\
+ \hline
+Sig2HiddenLayer                     & 61.1 ± 4.4  &  0.32 & [15, 5]        &         20 &       50 \\
+ \hline
+ReluTanhFFNN                        & 59.9 ± 5.3  &  0.33 & [8, 4]         &         12 &       50 \\
+ \hline
+ReluFFNN                            & 59.7 ± 3.3  &  0.34 & [10]           &         10 &       50 \\
+ \hline
+FFNN                                & 59.7 ± 3.3  &  0.34 & [10]           &         10 &       50 \\
+ \hline
+ReluTanhFFNN                        & 59.7 ± 3.3  &  0.34 & [10]           &         10 &       50 \\
+ \hline
+SigReLU2HiddenLayer                 & 59.6 ± 10.8 &  0.34 & [8, 4]         &         12 &       20 \\
+ \hline
+ReluTanhFFNN                        & 59.4 ± 4.7  &  0.34 & [15, 5]        &         20 &       50 \\
+ \hline
+Sig2HiddenLayer                     & 59.1 ± 18.9 &  0.34 & [8, 4]         &         12 &       20 \\
+ \hline
+Relu1HiddenLayer                    & 58.8 ± 7.8  &  0.34 & [10]           &         10 &       20 \\
+ \hline
+TanhLinFFNN                         & 58.3 ± 5.0  &  0.35 & [15, 10, 3]    &         28 &       20 \\
+ \hline
+ReluFFNN                            & 58.3 ± 9.3  &  0.35 & [15, 5]        &         20 &       50 \\
+ \hline
+FFNN                                & 58.3 ± 9.3  &  0.35 & [15, 5]        &         20 &       50 \\
+ \hline
+TanhReluFFNN                        & 57.5 ± 15.9 &  0.35 & [10]           &         10 &       20 \\
+ \hline
+TanhFFNN                            & 57.5 ± 15.9 &  0.35 & [10]           &         10 &       20 \\
+ \hline
+TanhLinFFNN                         & 57.5 ± 15.9 &  0.35 & [10]           &         10 &       20 \\
+ \hline
+TanhReluFFNN                        & 57.2 ± 7.6  &  0.36 & [8, 4]         &         12 &       20 \\
+ \hline
+TanhLinFFNN                         & 56.5 ± 5.3  &  0.36 & [15, 10, 3]    &         28 &       50 \\
+ \hline
+GRNN                                & 54.1 ± 15.7 &  0.38 & [10]           &         10 &       50 \\
+ \hline
+TanhReluFFNN                        & 52.9 ± 10.1 &  0.39 & [15, 5]        &         20 &       50 \\
+ \hline
+RBFN                                & 52.3 ± 7.3  &  0.4  & [10]           &         10 &       50 \\
+ \hline
+TanhFFNN                            & 51.8 ± 20.0 &  0.4  & [15, 5]        &         20 &       50 \\
+ \hline
+ReLUSig2HiddenLayer                 & 50.9 ± 13.4 &  0.41 & [8, 4]         &         12 &       50 \\
+ \hline
+Tanh2HiddenLayer                    & 50.2 ± 25.0 &  0.42 & [15, 5]        &         20 &       20 \\
+ \hline
+Relu2HiddenLayer                    & 49.9 ± 9.3  &  0.42 & [15, 5]        &         20 &       20 \\
+ \hline
+ReluFFNN                            & 49.5 ± 18.7 &  0.42 & [15, 5]        &         20 &       20 \\
+ \hline
+FFNN                                & 49.5 ± 18.7 &  0.42 & [15, 5]        &         20 &       20 \\
+ \hline
+ReluTanhFFNN                        & 48.5 ± 16.3 &  0.43 & [15, 5]        &         20 &       20 \\
+ \hline
+Relu2HiddenLayer                    & 47.0 ± 8.1  &  0.44 & [8, 4]         &         12 &       50 \\
+ \hline
+ReLUSig2HiddenLayer                 & 46.7 ± 21.7 &  0.44 & [8, 4]         &         12 &       20 \\
+ \hline
+FFNN                                & 46.5 ± 11.6 &  0.45 & [10]           &         10 &       20 \\
+ \hline
+ReluFFNN                            & 46.5 ± 11.6 &  0.45 & [10]           &         10 &       20 \\
+ \hline
+ReluTanhFFNN                        & 46.5 ± 11.6 &  0.45 & [10]           &         10 &       20 \\
+ \hline
+TanhFFNN                            & 44.9 ± 24.6 &  0.46 & [15, 10, 3]    &         28 &       20 \\
+ \hline
+TanhReluFFNN                        & 44.3 ± 17.1 &  0.46 & [15, 5]        &         20 &       20 \\
+ \hline
+ReluTanhFFNN                        & 43.5 ± 14.9 &  0.47 & [15, 10, 3]    &         28 &       50 \\
+ \hline
+TanhReluFFNN                        & 43.4 ± 16.1 &  0.47 & [8, 4]         &         12 &       50 \\
+ \hline
+ReluTanhFFNN                        & 42.9 ± 7.5  &  0.48 & [15, 10, 3]    &         28 &       20 \\
+ \hline
+Tanh2HiddenLayer                    & 42.8 ± 25.8 &  0.48 & [15, 5]        &         20 &       50 \\
+ \hline
+TanhReluFFNN                        & 42.7 ± 33.5 &  0.48 & [15, 10, 3]    &         28 &       20 \\
+ \hline
+GRNN                                & 42.6 ± 18.5 &  0.48 & [10]           &         10 &       20 \\
+ \hline
+ReluTanhFFNN                        & 42.3 ± 3.4  &  0.48 & [8, 4]         &         12 &       20 \\
+ \hline
+ReluFFNN                            & 41.1 ± 8.8  &  0.49 & [8, 4]         &         12 &       20 \\
+ \hline
+FFNN                                & 41.1 ± 8.8  &  0.49 & [8, 4]         &         12 &       20 \\
+ \hline
+TanhReluFFNN                        & 35.8 ± 25.7 &  0.54 & [15, 10, 3]    &         28 &       50 \\
+ \hline
+RBFN                                & 32.5 ± 18.0 &  0.56 & [10]           &         10 &       20 \\
+ \hline
+FFNN                                & 29.2 ± 19.2 &  0.59 & [8, 4]         &         12 &       50 \\
+ \hline
+\multirow{2}{*}{ReluFFNN}           & 29.2 ± 19.2 &  0.59 & [8, 4]         &         12 &       50 \\
+                                            & 10.8 ± 15.2 &  0.74 & [15, 10, 3]    &         28 &       50 \\
+ \hline
+FFNN                                & 10.8 ± 15.2 &  0.74 & [15, 10, 3]    &         28 &       50 \\
+ \hline
+ReluFFNN                            & 10.4 ± 14.9 &  0.75 & [15, 10, 3]    &         28 &       20 \\
+ \hline
+FFNN                                & 10.4 ± 14.9 &  0.75 & [15, 10, 3]    &         28 &       20 \\
+ \hline
+Relu2HiddenLayer                    & 9.1 ± 18.6  &  0.76 & [8, 4]         &         12 &       20 \\
 \hline
 \end{longtable}

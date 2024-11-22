@@ -43,31 +43,31 @@ class GRNN(nn.Module):
         return output
 
 
-class CNN(nn.Module):
-    def __init__(self, input_channels, num_classes):
-        super(CNN, self).__init__()
-        self.layer1 = nn.Sequential(
-            nn.Conv2d(input_channels, 16, kernel_size=5, stride=1, padding=2),
-            nn.BatchNorm2d(16),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2))
-        self.layer2 = nn.Sequential(
-            nn.Conv2d(16, 32, kernel_size=5, stride=1, padding=2),
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2))
-        self.fc1 = nn.Linear(32 * 7 * 7, 1000)
-        self.fc2 = nn.Linear(1000, num_classes)
-
-    def forward(self, x):
-        out = self.layer1(x)
-        out = self.layer2(out)
-        out = out.view(out.size(0), -1)
-        out = self.fc1(out)
-        out = self.fc2(out)
-        return out
-
-
+#class CNN(nn.Module):
+#    def __init__(self, input_channels, num_classes):
+#        super(CNN, self).__init__()
+#        self.layer1 = nn.Sequential(
+#            nn.Conv2d(input_channels, 16, kernel_size=5, stride=1, padding=2),
+#            nn.BatchNorm2d(16),
+#            nn.ReLU(),
+#            nn.MaxPool2d(kernel_size=2, stride=2))
+#        self.layer2 = nn.Sequential(
+#            nn.Conv2d(16, 32, kernel_size=5, stride=1, padding=2),
+#            nn.BatchNorm2d(32),
+#            nn.ReLU(),
+#            nn.MaxPool2d(kernel_size=2, stride=2))
+#        self.fc1 = nn.Linear(32 * 7 * 7, 1000)
+#        self.fc2 = nn.Linear(1000, num_classes)
+#
+#    def forward(self, x):
+#        out = self.layer1(x)
+#        out = self.layer2(out)
+#        out = out.view(out.size(0), -1)
+#        out = self.fc1(out)
+#        out = self.fc2(out)
+#        return out
+#
+#
 class Linear1HiddenLayer(nn.Module):
     activation1 = None
     def __init__(self, input_size, hidden_sizes):
@@ -202,38 +202,46 @@ class Sig1HiddenLayer(Linear1HiddenLayer):
 class Sig2HiddenLayer(Linear2HiddenLayer):
     activation1 = nn.Sigmoid()
     activation2 = nn.Sigmoid()
+
+class ReLUSig2HiddenLayer(Linear2HiddenLayer):
+    activation1 = nn.ReLU()
+    activation2 = nn.Sigmoid()
+class SigReLU2HiddenLayer(Linear2HiddenLayer):
+    activation1 = nn.Sigmoid()
+    activation2 = nn.ReLU()
+
 # LSTM Model (Still included for comparison)
-class LSTM(nn.Module):
-    def __init__(self, input_size, hidden_sizes): # in ezafeh shod va ziri hazf shod
-    # def __init__(self, input_size, hidden_size, num_layers, output_size, transfer_function):
-        super(LSTM, self).__init__()
-        # be jaaye parametrhaye dadeh shode inha estefadeh shod
-        num_layers = 2
-        hidden_size = hidden_sizes[0]
-        output_size = hidden_sizes[1] if len(hidden_sizes) > 1 else 1
-        transfer_function = nn.ReLU
-
-        ###########  
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_size, output_size)
-
-        # hame modelha in hidden_layers ro daran
-        self.hidden_layers = [self.lstm, self.fc]
-
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.transfer_function = transfer_function
-
-    def forward(self, x):
-        print("Input shape:", x.shape)
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
-        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
-
-        out, _ = self.lstm(x, (h0, c0))
-        print("LSTM output shape:", out.shape)
-        out = self.fc(out[:, -1, :])
-        print("FC output shape:", out.shape)
-
-        if out.numel() > 0:
-            out = self.transfer_function()(out)
-        return out
+#class LSTM(nn.Module):
+#    def __init__(self, input_size, hidden_sizes): # in ezafeh shod va ziri hazf shod
+#    # def __init__(self, input_size, hidden_size, num_layers, output_size, transfer_function):
+#        super(LSTM, self).__init__()
+#        # be jaaye parametrhaye dadeh shode inha estefadeh shod
+#        num_layers = 2
+#        hidden_size = hidden_sizes[0]
+#        output_size = hidden_sizes[1] if len(hidden_sizes) > 1 else 1
+#        transfer_function = nn.ReLU
+#
+#        ###########  
+#        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+#        self.fc = nn.Linear(hidden_size, output_size)
+#
+#        # hame modelha in hidden_layers ro daran
+#        self.hidden_layers = [self.lstm, self.fc]
+#
+#        self.hidden_size = hidden_size
+#        self.num_layers = num_layers
+#        self.transfer_function = transfer_function
+#
+#    def forward(self, x):
+#        print("Input shape:", x.shape)
+#        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
+#        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
+#
+#        out, _ = self.lstm(x, (h0, c0))
+#        print("LSTM output shape:", out.shape)
+#        out = self.fc(out[:, -1, :])
+#        print("FC output shape:", out.shape)
+#
+#        if out.numel() > 0:
+#            out = self.transfer_function()(out)
+#        return out
