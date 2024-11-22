@@ -196,6 +196,12 @@ class Relu2HiddenLayer(Linear2HiddenLayer):
     activation1 = nn.ReLU()
     activation2 = nn.ReLU()
 
+class Sig1HiddenLayer(Linear1HiddenLayer):
+    activation1 = nn.Sigmoid()
+
+class Sig2HiddenLayer(Linear2HiddenLayer):
+    activation1 = nn.Sigmoid()
+    activation2 = nn.Sigmoid()
 # LSTM Model (Still included for comparison)
 class LSTM(nn.Module):
     def __init__(self, input_size, hidden_sizes): # in ezafeh shod va ziri hazf shod

@@ -2,7 +2,6 @@ from matplotlib import pyplot as plt
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 import pandas as pd
 import numpy as np
@@ -13,6 +12,9 @@ import os
 from latex import *
 from plot import *
 from models import *
+from read_data import read_prep_data
+import inspect
+import models
 
 list_epochs = [20, 50, 100 , 200]
 best_epochs = 100 
@@ -143,8 +145,7 @@ def fit_model(model, X_train, X_test, y_train, y_test,
 # Sensitivity Analysis Functions
 
 def weight_analysis(model_class, data, inputs, output, num_epochs, hidden_sizes):
-    y = data[output]
-    X_train, X_test, y_train, y_test = train_test_split(data[inputs], y, test_size=0.2, random_state=data_seed)
+    X_train, X_test, y_train, y_test = read_prep_data(inputs)
     input_size = X_train.shape[1]
 
     if model_class == GRNN:
@@ -165,9 +166,8 @@ def weight_analysis(model_class, data, inputs, output, num_epochs, hidden_sizes)
 
 
 def jackknife_sensitivity_analysis(model_class, data, inputs, output, num_epochs, hidden_sizes):
-    y = data[output]
     base_model_r2, _, _, _, _, _, run = repeat_fit_model(model_class, 
-            num_repeats, data[inputs], y, num_epochs, hidden_sizes)
+            num_repeats, num_epochs, hidden_sizes)
     sensitivities = {}
     variances = []
     _num_repeats = input("Number of repeat [10]:")
@@ -179,7 +179,7 @@ def jackknife_sensitivity_analysis(model_class, data, inputs, output, num_epochs
         reduced_r2_list = []
         for _ in range(_num_repeats):
             reduced_r2, _, _, _, _, _, _run = repeat_fit_model(model_class,
-                    1, data[reduced_inputs], y, num_epochs, hidden_sizes)
+                    1, num_epochs, hidden_sizes, features= reduced_inputs)
             reduced_r2_list.append(reduced_r2)
         reduced_r2_mean = np.mean(reduced_r2_list)
         sensitivity = base_model_r2 - reduced_r2_mean
@@ -192,15 +192,8 @@ def jackknife_sensitivity_analysis(model_class, data, inputs, output, num_epochs
     return sensitivity_table
 
 def backward_feature_elimination(model_class, data, inputs, output, num_epochs, hidden_sizes):
-    y = data[output] 
-    # Remove extra columns
-    # data = data.drop([output, 'HTC_ANN1', 'HTC_ANN2'], axis=1).copy()
-    data = data.drop([output, 'm'], axis=1).copy()
-    X = data[inputs]
-    # it uses num_repeats, num_epochs and model_seed as global variables
-    # use _ for output of repeat_fit_model, which you don't need to use here
     mean_r2, _, _, _, _,_, _run = repeat_fit_model(model_class,
-            num_repeats, X, y, num_epochs, hidden_sizes)
+            num_repeats, num_epochs, hidden_sizes,features=inputs)
     best_r2 = mean_r2
     print("Using all features")
     print("Features:", inputs)
@@ -213,9 +206,7 @@ def backward_feature_elimination(model_class, data, inputs, output, num_epochs, 
         for feature in candidates:
             # Selet other features except for current feature
             features = [f for f in candidates if f != feature]
-            X = data[features]
-            mean_r2, _, _, _,_,_, _run = repeat_fit_model(model_class, 
-                    num_repeats, X, y, num_epochs, hidden_sizes)
+            mean_r2, _, _, _,_,_, _run = repeat_fit_model(model_class, num_repeats, num_epochs, hidden_sizes, features=features)
             results[feature] = mean_r2
             print("---------------------------------------")
             # Results of removing the feature
@@ -253,9 +244,6 @@ def backward_feature_elimination(model_class, data, inputs, output, num_epochs, 
 # This method add features one by one
 # Search about Forward Feature Selction
 def forward_feature_selection(model_class, data, inputs, output, num_epochs, hidden_sizes):
-    y = data[output] 
-    # Remove extra columns
-    data = data.drop([output, 'm'], axis=1).copy()
     candidates = []
     best_r2 = -1
     results = {}
@@ -268,9 +256,7 @@ def forward_feature_selection(model_class, data, inputs, output, num_epochs, hid
             else:
                 features = [feature] + candidates 
 
-            X = data[features]
-            mean_r2, _, _, _,_,_, _run = repeat_fit_model(model_class, 
-                    num_repeats, X, y, num_epochs, hidden_sizes)
+            mean_r2, _, _, _,_,_, _run = repeat_fit_model(model_class, num_repeats, num_epochs, hidden_sizes, features=features)
             if mean_r2 is None:
                 continue
             results[feature] = mean_r2
@@ -308,10 +294,9 @@ def forward_feature_selection(model_class, data, inputs, output, num_epochs, hid
 
 # Repeats an fit_model to get average of results
 def repeat_fit_model(model_class, num_repeats, 
-        X, y, num_epochs, hidden_sizes, display_steps=False):
-    X_train, X_test, y_train, y_test = train_test_split(X, y, 
-        test_size=0.2, 
-        random_state=data_seed) 
+        num_epochs, hidden_sizes, 
+        display_steps=False, features=None):
+    X_train, X_test, y_train, y_test = read_prep_data(features)
     r2_list = []
     mse_list = []
     max_r2 = 0
@@ -350,45 +335,22 @@ def repeat_fit_model(model_class, num_repeats,
 
 ############################### Start of Program ###################
 # Load data from data CSV file in data folder
-data = pd.read_csv(os.path.join('data','data.csv'))
+X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder="prep_data")
 
-# Input features and output 
-#inputs = ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1','flow_rate2', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2']
-inputs = ['flow_rate1', 'conc_nano1', 'Kfluid1', 'heat_flux1', 'X_D1','flow_rate2', 'conc_nano2', 'Kfluid2', 'heat_flux2', 'X_D2']
-inputs = [
-    'SG Coating',
-    'Temp Alk Sol',
-    'NaOH Wt%',
-    'Dip Time Alk (min)',
-    'pH Sol',
-    'Hydro Time (h)',
-    'Dip Time Sol (s)',
-    'Clay Conc',
-    'Cure Time (min)',
-    'Cure Temp'
-]
+# After loading, get the column names from X_train
+inputs = X_train.columns.tolist()
+output = y_train.name
 
-output = 'Impedance module'
-# Read data into X and y
-X = data[inputs]
-y = data[output] 
+data = X_train
+print("inputs:", inputs)
+print("output:", output)
+ans = input("Are these inputs and outputs for files in prep_data folder correct?(y/n):")
 
+# Dynamically collect all model classes from the module
 models = [
-            Linear1HiddenLayer, 
-            Linear2HiddenLayer,
-            Tanh1HiddenLayer,
-            Tanh2HiddenLayer,
-            Relu1HiddenLayer,
-            Relu2HiddenLayer,
-            TanhReluFFNN,
-            TanhLinFFNN,
-            ReluTanhFFNN,
-            ReluFFNN,
-            TanhFFNN,
-            LinearFFNN,
-            RBFN,
-            GRNN
-         ]
+    member for name, member in inspect.getmembers(models, inspect.isclass)
+    if issubclass(member, models.nn.Module) and member.__module__ == models.__name__
+]
 
 model_names=[model.__name__ for model in models]
 # User input for selecting the model and number of epochs
@@ -455,7 +417,7 @@ if answer != "0":
                 # Apply model on data for 3 times and get predictions, mse and r2
                 mean_r2, std_r2, mean_mse, model_best_preds, max_r2, r2_list, max_run = repeat_fit_model(
                         model_class,
-                        num_repeats, X, y, num_epochs, hidden_sizes, display_steps=True)
+                        num_repeats, num_epochs, hidden_sizes, display_steps=True)
 
                 # Keep best seed to generate the same predictions later
                 if mean_r2 is None:
@@ -527,9 +489,7 @@ if answer != "0":
  
     results_table.to_csv("exp.csv")
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, 
-        test_size=0.2, 
-        random_state=data_seed) 
+    X_train, X_test, y_train, y_test = read_prep_data()
 
     # Show and save the plot for best results
     best_predictions = model_best_predictions[max_model_name] 
@@ -573,8 +533,7 @@ while True:
 
     if answer == '1':
         print("============================= Backward Feature Elimination =============")
-        backward_table = backward_feature_elimination(best_model, data, 
-                inputs, output, best_epochs, best_hidden_sizes)
+        backward_table = backward_feature_elimination(best_model, data, inputs, output, best_epochs, best_hidden_sizes)
         print("------------ backward feature elimination ---------------")
         print(backward_table)
 
