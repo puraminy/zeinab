@@ -70,7 +70,7 @@ class GRNN(nn.Module):
 #
 class Linear1HiddenLayer(nn.Module):
     activation1 = None
-    def __init__(self, input_size, hidden_sizes):
+    def __init__(self, input_size, hidden_sizes, output_zide=1):
         super().__init__()
         #                          O1
         #   O1                     O2                  
@@ -83,7 +83,7 @@ class Linear1HiddenLayer(nn.Module):
         #   5 neuron             10 neurons        1 neuron
         #
         self.input_to_hidden1 = nn.Linear(input_size, hidden_sizes[0])
-        self.hidden1_to_output = nn.Linear(hidden_sizes[0], 1)
+        self.hidden1_to_output = nn.Linear(hidden_sizes[0], output_size)
 
         self.hidden_layers = nn.ModuleList()
         self.hidden_layers.append(self.input_to_hidden1)
@@ -100,7 +100,7 @@ class Linear1HiddenLayer(nn.Module):
 class Linear2HiddenLayer(nn.Module):
     activation1 = None
     activation2 = None
-    def __init__(self, input_size, hidden_sizes):
+    def __init__(self, input_size, hidden_sizes, output_size =1):
         super().__init__()
         #     
         #   O1                     O1                O1
@@ -113,7 +113,7 @@ class Linear2HiddenLayer(nn.Module):
         #                       10 neurons         5 neurons
         self.input_to_hidden1 = nn.Linear(input_size, hidden_sizes[0])
         self.hidden1_to_hidden2 = nn.Linear(hidden_sizes[0], hidden_sizes[-1])
-        self.hidden2_to_output = nn.Linear(hidden_sizes[-1], 1)
+        self.hidden2_to_output = nn.Linear(hidden_sizes[-1], output_size)
 
         self.hidden_layers = nn.ModuleList()
         self.hidden_layers.append(self.input_to_hidden1)
@@ -133,7 +133,7 @@ class Linear2HiddenLayer(nn.Module):
 
 class FFNN(nn.Module):
     activations = [nn.ReLU(), nn.ReLU(), nn.ReLU()]  # Specify activations for hidden layers
-    def __init__(self, input_size, hidden_sizes):
+    def __init__(self, input_size, hidden_sizes, output_size=1):
         super().__init__()
         self.hidden_layers = nn.ModuleList()
         # self.activations = activations if activations is not None else []
@@ -146,7 +146,7 @@ class FFNN(nn.Module):
             self.hidden_layers.append(nn.Linear(hidden_sizes[i], hidden_sizes[i + 1]))
 
         # Last hidden layer to output
-        self.output_layer = nn.Linear(hidden_sizes[-1], 1)
+        self.output_layer = nn.Linear(hidden_sizes[-1], output_size)
 
     def forward(self, x):
         for i, layer in enumerate(self.hidden_layers):
