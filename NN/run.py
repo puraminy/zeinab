@@ -12,7 +12,7 @@ import os
 from latex import *
 from plot import *
 from models import *
-from read_data import read_prep_data
+from read_data import read_prep_data, sync_prep_data_with_dataset
 import inspect
 import models
 
@@ -334,7 +334,10 @@ def repeat_fit_model(model_class, num_repeats,
     return mean_r2, std_r2, mean_mse, best_preds, max_r2*100, r2_list, max_run
 
 ############################### Start of Program ###################
-# Load data from data CSV file in data folder
+# Sync prep_data with current dataset (NN/data.csv by default).
+sync_prep_data_with_dataset(dataset_path="data.csv", prep_folder="prep_data", output_feature="rate")
+
+# Load data from prep_data after schema sync.
 X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder="prep_data")
 
 # After loading, get the column names from X_train
