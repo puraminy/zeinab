@@ -335,7 +335,7 @@ def repeat_fit_model(model_class, num_repeats,
 
 ############################### Start of Program ###################
 # Sync prep_data with current dataset (NN/data.csv by default).
-sync_prep_data_with_dataset(dataset_path="data.csv", prep_folder="prep_data", output_feature="rate")
+sync_prep_data_with_dataset(dataset_path="data.csv", prep_folder="prep_data", output_feature="white_total_points")
 
 # Load data from prep_data after schema sync.
 X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder="prep_data")
