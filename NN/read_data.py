@@ -2,6 +2,10 @@ import os
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
+ANSI_RED = "\033[91m"
+ANSI_YELLOW = "\033[93m"
+ANSI_RESET = "\033[0m"
+
 
 def _normalize_output_features(output_feature, all_columns):
     """Normalize output feature(s) to a validated list."""
@@ -223,6 +227,41 @@ def read_prep_data(inputs=None, prep_folder="prep_data"):
         print("No specific inputs provided; returning all columns.")
         X_train = X_train_full
         X_test = X_test_full
+
+    def _nan_report(df, name):
+        nan_counts = df.isna().sum()
+        nan_counts = nan_counts[nan_counts > 0]
+        if nan_counts.empty:
+            print(f"{name}: no NaN values detected.")
+            return
+
+        total_nans = int(nan_counts.sum())
+        print(
+            f"{ANSI_RED}WARNING: {name} contains NaN values "
+            f"(total: {total_nans}).{ANSI_RESET}"
+        )
+        for col, cnt in nan_counts.items():
+            print(f"{ANSI_RED}  - {col}: {int(cnt)} NaN{ANSI_RESET}")
+
+    _nan_report(X_train, "X_train")
+    _nan_report(X_test, "X_test")
+    _nan_report(y_train, "y_train")
+    _nan_report(y_test, "y_test")
+
+    # Fill missing values in inputs so sklearn regressors that do not support NaN can train.
+    input_fill_values = X_train.median(numeric_only=True)
+    X_train = X_train.fillna(input_fill_values)
+    X_test = X_test.fillna(input_fill_values)
+    remaining_train_nan = int(X_train.isna().sum().sum())
+    remaining_test_nan = int(X_test.isna().sum().sum())
+    if remaining_train_nan or remaining_test_nan:
+        print(
+            f"{ANSI_YELLOW}Some input NaNs remained after median-fill. "
+            "Applying forward/backward fill as fallback for compatibility."
+            f"{ANSI_RESET}"
+        )
+        X_train = X_train.ffill().bfill()
+        X_test = X_test.ffill().bfill()
 
     print("Data loaded successfully!")
     print(f"X_train shape: {X_train.shape}")
