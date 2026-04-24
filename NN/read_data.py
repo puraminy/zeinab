@@ -3,16 +3,35 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 
+def _normalize_output_features(output_feature, all_columns):
+    """Normalize output feature(s) to a validated list."""
+    if output_feature is None:
+        return [all_columns[-1]]
+
+    if isinstance(output_feature, str):
+        output_features = [output_feature]
+    else:
+        output_features = list(output_feature)
+
+    missing_outputs = [col for col in output_features if col not in all_columns]
+    if missing_outputs:
+        raise ValueError(
+            f"Target column(s) '{missing_outputs}' not found in dataset. "
+            f"Available columns: {list(all_columns)}"
+        )
+
+    if len(output_features) == 0:
+        raise ValueError("At least one output feature must be selected.")
+
+    return output_features
+
+
 def resolve_data_columns(data, output_feature=None, input_features=None):
     """Resolve and validate target/input columns."""
-    if output_feature is None:
-        output_feature = data.columns[-1]
-
-    if output_feature not in data.columns:
-        raise ValueError(f"Target column '{output_feature}' not found in dataset.")
+    output_features = _normalize_output_features(output_feature, data.columns)
 
     if input_features is None:
-        input_features = [col for col in data.columns if col != output_feature]
+        input_features = [col for col in data.columns if col not in output_features]
 
     missing_inputs = [col for col in input_features if col not in data.columns]
     if missing_inputs:
@@ -21,7 +40,7 @@ def resolve_data_columns(data, output_feature=None, input_features=None):
             f"Available columns: {list(data.columns)}"
         )
 
-    return output_feature, input_features
+    return output_features, input_features
 
 
 def read_data(default_train_file="data.csv"):
@@ -47,22 +66,22 @@ def read_data(default_train_file="data.csv"):
         test_data = None
         auto_split = True
 
-    output_feature, input_features = select_features(train_data)
+    output_features, input_features = select_features(train_data)
 
     if auto_split:
         data_seed = 123
         seed = input(f"Enter data seed for splitting ({data_seed}):").strip()
         if seed:
             data_seed = int(seed)
-        y = train_data[output_feature]
+        y = train_data[output_features]
         X = train_data[input_features]
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=0.2, random_state=data_seed
         )
     else:
-        y_train = train_data[output_feature]
+        y_train = train_data[output_features]
         X_train = train_data[input_features]
-        y_test = test_data[output_feature]
+        y_test = test_data[output_features]
         X_test = test_data[input_features]
 
     save_data(prep_data_dir, X_train, X_test, y_train, y_test)
@@ -75,10 +94,16 @@ def select_features(data):
     for idx, col in enumerate(data.columns, start=1):
         print(f"{idx}. {col}")
 
-    output_feature = input("\nEnter the name of the output (target) feature: ").strip()
+    output_answer = input(
+        "\nEnter output (target) feature(s), comma-separated [last column]: "
+    ).strip()
+    if not output_answer:
+        output_features = [data.columns[-1]]
+    else:
+        output_features = [col.strip() for col in output_answer.split(",") if col.strip()]
 
-    default_inputs = [col for col in data.columns if col != output_feature]
-    print("\nDefault input features (excluding the output):")
+    default_inputs = [col for col in data.columns if col not in output_features]
+    print("\nDefault input features (excluding selected output(s)):")
     print(", ".join(default_inputs))
 
     input_features = input(
@@ -90,7 +115,7 @@ def select_features(data):
     else:
         input_features = [col.strip() for col in input_features.split(",")]
 
-    return output_feature, input_features
+    return output_features, input_features
 
 
 def save_data(folder, X_train, X_test, y_train, y_test):
@@ -117,10 +142,10 @@ def prepare_data_from_file(
         raise FileNotFoundError(f"Dataset file '{dataset_path}' not found.")
 
     data = pd.read_csv(dataset_path)
-    output_feature, input_features = resolve_data_columns(data, output_feature, input_features)
+    output_features, input_features = resolve_data_columns(data, output_feature, input_features)
 
     X = data[input_features]
-    y = data[output_feature]
+    y = data[output_features]
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_size, random_state=random_state
@@ -141,7 +166,7 @@ def sync_prep_data_with_dataset(
         raise FileNotFoundError(f"Dataset file '{dataset_path}' not found.")
 
     data = pd.read_csv(dataset_path)
-    output_feature, input_features = resolve_data_columns(data, output_feature, input_features)
+    output_features, input_features = resolve_data_columns(data, output_feature, input_features)
 
     expected_files = [
         os.path.join(prep_folder, "X_train.csv"),
@@ -157,14 +182,14 @@ def sync_prep_data_with_dataset(
         current_y = pd.read_csv(expected_files[2])
         should_rebuild = (
             list(current_x.columns) != input_features
-            or current_y.columns[0] != output_feature
+            or list(current_y.columns) != output_features
         )
 
     if should_rebuild:
         print("prep_data is missing or outdated. Rebuilding from dataset...")
         prepare_data_from_file(
             dataset_path=dataset_path,
-            output_feature=output_feature,
+            output_feature=output_features,
             input_features=input_features,
             prep_folder=prep_folder,
         )
@@ -187,8 +212,8 @@ def read_prep_data(inputs=None, prep_folder="prep_data"):
 
     X_train_full = pd.read_csv(X_train_path)
     X_test_full = pd.read_csv(X_test_path)
-    y_train = pd.read_csv(y_train_path).iloc[:, 0]
-    y_test = pd.read_csv(y_test_path).iloc[:, 0]
+    y_train = pd.read_csv(y_train_path)
+    y_test = pd.read_csv(y_test_path)
 
     if inputs is not None:
         print(f"Filtering inputs: {inputs}")

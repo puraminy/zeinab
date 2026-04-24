@@ -3,11 +3,11 @@ import torch.nn as nn
 
 ##################### New Models
 class RBFN(nn.Module):
-    def __init__(self, input_size, hidden_sizes):
+    def __init__(self, input_size, hidden_sizes, output_size=1):
         super(RBFN, self).__init__()
         hidden_size = hidden_sizes[0]
         self.hidden = nn.Linear(input_size, hidden_size)
-        self.output = nn.Linear(hidden_size, 1)
+        self.output = nn.Linear(hidden_size, output_size)
         self.hidden_size = hidden_size
 
         self.hidden_layers = nn.ModuleList()
@@ -23,9 +23,10 @@ class RBFN(nn.Module):
         return output
 
 class GRNN(nn.Module):
-    def __init__(self, input_size, sigma=1.0):
+    def __init__(self, input_size, sigma=1.0, output_size=1):
         super(GRNN, self).__init__()
         self.pattern_layer = nn.Linear(input_size, input_size, bias=False)
+        self.output_layer = nn.Linear(1, output_size)
         self.sigma = sigma
 
         self.hidden_layers = nn.ModuleList()
@@ -39,7 +40,8 @@ class GRNN(nn.Module):
         # Summation layer
         summation_layer = basis_functions.sum(dim=1, keepdim=True)
         # Output layer
-        output = (basis_functions @ self.pattern_layer.weight).sum(dim=1, keepdim=True) / summation_layer
+        weighted = (basis_functions @ self.pattern_layer.weight).sum(dim=1, keepdim=True) / summation_layer
+        output = self.output_layer(weighted)
         return output
 
 
@@ -70,7 +72,7 @@ class GRNN(nn.Module):
 #
 class Linear1HiddenLayer(nn.Module):
     activation1 = None
-    def __init__(self, input_size, hidden_sizes, output_zide=1):
+    def __init__(self, input_size, hidden_sizes, output_size=1):
         super().__init__()
         #                          O1
         #   O1                     O2                  

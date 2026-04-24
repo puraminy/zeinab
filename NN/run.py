@@ -71,8 +71,14 @@ def fit_model(model, X_train, X_test, y_train, y_test,
     scaler = StandardScaler()
     X_train = torch.tensor(scaler.fit_transform(X_train), dtype=torch.float32)
     X_test = torch.tensor(scaler.transform(X_test), dtype=torch.float32)
-    y_train = torch.tensor(y_train.values, dtype=torch.float32).view(-1, 1)
-    y_test = torch.tensor(y_test.values, dtype=torch.float32).view(-1, 1)
+    y_train_values = y_train.values if hasattr(y_train, "values") else y_train
+    y_test_values = y_test.values if hasattr(y_test, "values") else y_test
+    y_train = torch.tensor(y_train_values, dtype=torch.float32)
+    y_test = torch.tensor(y_test_values, dtype=torch.float32)
+    if y_train.ndim == 1:
+        y_train = y_train.view(-1, 1)
+    if y_test.ndim == 1:
+        y_test = y_test.view(-1, 1)
 
    # Normalize inputs and targets to zero mean and unity standard deviation
     X_train_normalized = normalize(X_train, normalization_type)
@@ -133,10 +139,9 @@ def fit_model(model, X_train, X_test, y_train, y_test,
     mae = nn.L1Loss()(predictions, y_test_normalized)
     predictions_denormalized = predictions * y_test.std() + y_test.mean()
 
-    predictions_np = predictions_denormalized.numpy().flatten()  # Ensure predictions are 1D array
-    y_test_np = y_test.numpy().flatten()  # Ensure y_test is 1D array
-
-    r2 = r2_score(y_test_np, predictions_np)
+    predictions_np = predictions_denormalized.numpy()
+    y_test_np = y_test.numpy()
+    r2 = r2_score(y_test_np, predictions_np, multioutput='uniform_average')
     return predictions_np, mse, r2, model
 
 ############################ Feature Selection ####################
@@ -148,9 +153,10 @@ def weight_analysis(model_class, data, inputs, output, num_epochs, hidden_sizes)
     X_train, X_test, y_train, y_test = read_prep_data(inputs)
     input_size = X_train.shape[1]
 
-    if model_class == GRNN:
-        model = model_class(input_size)
-    else:
+    output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
+    try:
+        model = model_class(input_size, hidden_sizes, output_size=output_size)
+    except TypeError:
         model = model_class(input_size, hidden_sizes)
     _,_,r2, model = fit_model(model, X_train, X_test, y_train, y_test, num_epochs)
     print("R2:", r2)
@@ -303,9 +309,10 @@ def repeat_fit_model(model_class, num_repeats,
     max_run = 0
     best_preds = None
     input_size = X_train.shape[1]
-    if model_class == GRNN:
-        model = model_class(input_size)
-    else:
+    output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
+    try:
+        model = model_class(input_size, hidden_sizes, output_size=output_size)
+    except TypeError:
         model = model_class(input_size, hidden_sizes)
     if len(hidden_sizes) == len(model.hidden_layers):
         for i in range(num_repeats):
@@ -337,9 +344,11 @@ def repeat_fit_model(model_class, num_repeats,
 # Sync prep_data with current dataset (NN/data.csv by default).
 dataset_path="data.csv"
 data = pd.read_csv(dataset_path)
-output_feature, input_features = resolve_data_columns(data, 
-                                                      output_feature=None, 
-                                                      input_features=None)
+output_features, input_features = resolve_data_columns(
+    data,
+    output_feature=None,
+    input_features=None
+)
 # User input for selecting the model and number of epochs
 answer = input("\n".join([str(i) + ")" + name for i,name in enumerate(input_features)]) \
         + "\nSelect one or several input_features (separated with space) [all]:")
@@ -358,21 +367,40 @@ else:
             exit()
         selected_input_features.append(input_features[feature_index])
 
-sync_prep_data_with_dataset(dataset_path=dataset_path, 
-                            prep_folder="prep_data", 
-                            input_features = selected_input_features,
-                            output_feature=None)
+answer = input(
+    "\n".join([str(i) + ")" + name for i, name in enumerate(data.columns)])
+    + "\nSelect one or several output features (separated with space) [last column]:"
+)
+if not answer:
+    selected_output_features = [data.columns[-1]]
+else:
+    indexes = answer.split()
+    selected_output_features = []
+    for ind in indexes:
+        feature_index = int(ind)
+        if feature_index >= len(data.columns):
+            print("Invalid output feature selection.")
+            exit()
+        selected_output_features.append(data.columns[feature_index])
+
+sync_prep_data_with_dataset(
+    dataset_path=dataset_path,
+    prep_folder="prep_data",
+    input_features=selected_input_features,
+    output_feature=selected_output_features
+)
 
 # Load data from prep_data after schema sync.
 X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder="prep_data")
 
 # After loading, get the column names from X_train
 inputs = X_train.columns.tolist()
-output = y_train.name
+outputs = y_train.columns.tolist()
+output = outputs
 
 data = X_train
 print("inputs:", inputs)
-print("output:", output)
+print("outputs:", outputs)
 ans = input("Are these inputs and outputs for files in prep_data folder correct?(y/n):")
 
 # Dynamically collect all model classes from the module
@@ -522,23 +550,29 @@ if answer != "0":
 
     # Show and save the plot for best results
     best_predictions = model_best_predictions[max_model_name] 
-    title = "Prediction of " + output + " with " + max_model_name + " epochs:" + str(max_epochs)
-    file_name = f"R2-{best_r2:.2f}-" + max_model_name + "-" + output + ".png"
+    output_title = ", ".join(outputs)
+    title = "Prediction of " + output_title + " with " + max_model_name + " epochs:" + str(max_epochs)
+    file_name = f"R2-{best_r2:.2f}-" + max_model_name + "-" + "-".join(outputs) + ".png"
 
     print("\n\n")
     print("Plot was saved in plots folder")
     answer = input("Do you want to see them? [y]:") 
-    if answer == "y" or answer == "yes":
-        plot_results(best_predictions, y_test, title, file_name, show_plot=True)
+    if len(outputs) == 1:
+        target_series = y_test[outputs[0]]
+        pred_series = best_predictions[:, 0] if best_predictions.ndim > 1 else best_predictions
+        if answer == "y" or answer == "yes":
+            plot_results(pred_series, target_series, title, file_name, show_plot=True)
+        else:
+            plot_results(pred_series, target_series, title, file_name, show_plot=False)
     else:
-        plot_results(best_predictions, y_test, title, file_name, show_plot=False)
+        print("Skipping scatter plot for multi-output predictions.")
 
     # Save results of predicitons in a file named results.csv
-    results_df = pd.DataFrame(columns=[output, "predictions"])
-    results_df[output] = y_test
-    results_df.rename(columns={output: "actual"}, inplace=True)
-    pred_list = [round(x,2) for x in best_predictions]
-    results_df["predictions"] = pred_list # pd.Series(pred_list)
+    results_df = pd.DataFrame()
+    for i, output_name in enumerate(outputs):
+        results_df[f"{output_name}_actual"] = y_test[output_name].values
+        pred_col = best_predictions[:, i] if best_predictions.ndim > 1 else best_predictions
+        results_df[f"{output_name}_predictions"] = np.round(pred_col, 2)
     results_df.to_csv("results.csv", index=False)
     print("Predictions of best model were saved in results.csv")
     answer = input("Do you want to see them? [y]:") 
@@ -635,4 +669,3 @@ input("Plots have been saved in the 'plots' folder. (press any key to exit)")
 # from torchviz import make_dot
 # dot = make_dot(model(dummy_input), params=dict(model.named_parameters()))
 # dot.render("mlp_structure", format="png", cleanup=True)
-
