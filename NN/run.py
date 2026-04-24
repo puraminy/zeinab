@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import KFold
 import pandas as pd
 import numpy as np
 import torch.nn as nn
@@ -80,6 +81,27 @@ def parse_multi_select(answer, options, allow_all=True):
 def ask_with_default(prompt, default):
     answer = input(f"{prompt} [{default}]:").strip()
     return answer if answer else str(default)
+
+
+def parse_epochs_input(answer, default_epochs):
+    """Parse epochs input and detect optional CV early-stop mode."""
+    text = answer.strip().lower()
+    if text == "0":
+        return [], False
+
+    use_cv_early_stop = False
+    parsed_epochs = []
+    for token in answer.split():
+        lowered = token.lower()
+        if lowered in ("cv", "auto"):
+            use_cv_early_stop = True
+            continue
+        if token.isdigit() and int(token) > 0:
+            parsed_epochs.append(int(token))
+
+    if not parsed_epochs and not use_cv_early_stop:
+        parsed_epochs = list(default_epochs)
+    return sorted(set(parsed_epochs)), use_cv_early_stop
 
 # Define the normalization function
 def normalize(data, normalization_type):
@@ -173,6 +195,99 @@ def fit_model(model, X_train, X_test, y_train, y_test,
     y_test_np = y_test.numpy()
     r2 = r2_score(y_test_np, predictions_np, multioutput='uniform_average')
     return predictions_np, mse, r2, model
+
+
+def select_epochs_with_cv_early_stopping(model_class, hidden_sizes, features=None, folds=5, patience=20, min_delta=1e-4):
+    """
+    Estimate a good epoch count via K-Fold CV with early stopping on validation loss.
+    Returns an integer epoch recommendation or None if it cannot be computed.
+    """
+    X_train, X_test, y_train, y_test = read_prep_data(features)
+    full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
+    full_y = pd.concat([y_train, y_test], axis=0).reset_index(drop=True)
+
+    kfold = KFold(n_splits=folds, shuffle=True, random_state=data_seed)
+    best_epochs = []
+    input_size = full_X.shape[1]
+    output_size = full_y.shape[1] if hasattr(full_y, "shape") and len(full_y.shape) > 1 else 1
+    max_epochs = max(list_epochs) if list_epochs else 200
+
+    for fold_index, (train_idx, val_idx) in enumerate(kfold.split(full_X), start=1):
+        x_train_fold = full_X.iloc[train_idx]
+        x_val_fold = full_X.iloc[val_idx]
+        y_train_fold = full_y.iloc[train_idx]
+        y_val_fold = full_y.iloc[val_idx]
+
+        scaler = StandardScaler()
+        x_train_fold = torch.tensor(scaler.fit_transform(x_train_fold), dtype=torch.float32)
+        x_val_fold = torch.tensor(scaler.transform(x_val_fold), dtype=torch.float32)
+        y_train_values = y_train_fold.values if hasattr(y_train_fold, "values") else y_train_fold
+        y_val_values = y_val_fold.values if hasattr(y_val_fold, "values") else y_val_fold
+        y_train_fold = torch.tensor(y_train_values, dtype=torch.float32)
+        y_val_fold = torch.tensor(y_val_values, dtype=torch.float32)
+        if y_train_fold.ndim == 1:
+            y_train_fold = y_train_fold.view(-1, 1)
+        if y_val_fold.ndim == 1:
+            y_val_fold = y_val_fold.view(-1, 1)
+
+        x_train_fold = normalize(x_train_fold, normalization_type)
+        x_val_fold = normalize(x_val_fold, normalization_type)
+        y_train_fold = normalize(y_train_fold, normalization_type)
+        y_val_fold = normalize(y_val_fold, normalization_type)
+
+        try:
+            model = model_class(input_size, hidden_sizes, output_size=output_size)
+        except TypeError:
+            model = model_class(input_size, hidden_sizes)
+
+        if len(hidden_sizes) != len(model.hidden_layers):
+            return None
+
+        set_model_seed(model_seed + fold_index)
+        model.apply(
+            lambda m: (
+                init.kaiming_uniform_(m.weight.data),
+                init.constant_(m.bias.data, 0) if m.bias is not None else None
+            ) if isinstance(m, nn.Linear) else None
+        )
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+
+        best_val_loss = float("inf")
+        best_epoch = 1
+        epochs_without_improvement = 0
+
+        for epoch in range(1, max_epochs + 1):
+            model.train()
+            optimizer.zero_grad()
+            train_outputs = model(x_train_fold)
+            train_loss = criterion(train_outputs, y_train_fold)
+            if torch.isnan(train_loss):
+                break
+            train_loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+
+            model.eval()
+            with torch.no_grad():
+                val_outputs = model(x_val_fold)
+                val_loss = criterion(val_outputs, y_val_fold).item()
+
+            if val_loss + min_delta < best_val_loss:
+                best_val_loss = val_loss
+                best_epoch = epoch
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
+
+            if epochs_without_improvement >= patience:
+                break
+
+        best_epochs.append(best_epoch)
+
+    if not best_epochs:
+        return None
+    return int(np.median(best_epochs))
 
 ############################ Feature Selection ####################
 # Selects the best combination of features by removing features one by one
@@ -586,15 +701,21 @@ print("Selected Models:", [model_names[i] for i in selected_models])
 best_model_index = selected_models[0]
 max_model_index = best_model_index
 
-answer = ask_with_default("Enter the number of epochs separated by spaces (or 0 to skip training)", " ".join([str(e) for e in list_epochs]))
+default_epochs = list(list_epochs)
+answer = ask_with_default(
+    "Enter epochs (e.g. '20 50 100', add 'cv' for cross-val early stop, or 0 to skip)",
+    " ".join([str(e) for e in default_epochs]),
+)
+list_epochs, use_cv_early_stop = parse_epochs_input(answer, default_epochs)
 if answer != "0":
-    if answer:
-       list_epochs = [int(a) for a in answer.split() if a.isnumeric() and int(a) > 0]
-    if not list_epochs:
-       print("No valid epoch values were provided.")
-       exit()
+    if not list_epochs and not use_cv_early_stop:
+        print("No valid epoch values were provided.")
+        exit()
     
-    print(list_epochs)
+    if list_epochs:
+        print("Manual epoch candidates:", list_epochs)
+    if use_cv_early_stop:
+        print("Cross-validation early-stop epoch search is enabled.")
 
     answer = ask_with_default(
         "Enter hidden sizes (groups split by '#', e.g. '10 5 # 15 10 3')",
@@ -634,15 +755,35 @@ if answer != "0":
     model_best_predictions = {}
     # for all models
     for model_index in selected_models:
-        for num_epochs in list_epochs:
-            for hidden_sizes in list_hidden_sizes:
-                # Instantiate the selected model
-                model_class = models[model_index]
-                model_name = model_names[model_index]
-                # Apply model on data for 3 times and get predictions, mse and r2
+        model_class = models[model_index]
+        model_name = model_names[model_index]
+        for hidden_sizes in list_hidden_sizes:
+            epoch_candidates = list(list_epochs)
+            if use_cv_early_stop:
+                cv_epoch = select_epochs_with_cv_early_stopping(
+                    model_class,
+                    hidden_sizes,
+                    features=None,
+                )
+                if cv_epoch is not None and cv_epoch > 0:
+                    epoch_candidates.append(cv_epoch)
+                    print(
+                        f"[{model_name} | {hidden_sizes}] CV early-stop suggested epochs: {cv_epoch}"
+                    )
+                else:
+                    print(
+                        f"[{model_name} | {hidden_sizes}] CV early-stop failed; using manual epochs only."
+                    )
+
+            epoch_candidates = sorted(set(epoch_candidates))
+            if not epoch_candidates:
+                continue
+
+            for num_epochs in epoch_candidates:
+                # Apply model on data for N repeats and get predictions, mse and r2
                 mean_r2, std_r2, mean_mse, model_best_preds, max_r2, r2_list, max_run = repeat_fit_model(
-                        model_class,
-                        num_repeats, num_epochs, hidden_sizes, display_steps=True)
+                    model_class,
+                    num_repeats, num_epochs, hidden_sizes, display_steps=True)
 
                 # Keep best seed to generate the same predictions later
                 if mean_r2 is None:
