@@ -1,37 +1,26 @@
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
-*.pyz
-*.pyw
-*.pyc
-*.pyo
-*.pyz
 *.pyw
 *.py~
-*.pyc
-*.pyo
-*.png
+*.pyz
 
 # Jupyter Notebooks
 .ipynb_checkpoints/
 
-# LaTeX
+# LaTeX temporary/aux files
 *.aux
 *.log
 *.out
 *.toc
-*.zip
-
-# Compiled LaTeX
-*.dvi
 *.synctex.gz
-*.synctex.*
 *.synctex.gz(busy)
+*.dvi
 
-# Temporary files
-*~
+# Archives
+*.zip
 
 # Compiled binaries
 *.com
@@ -41,14 +30,17 @@ __pycache__/
 *.o
 *.so
 
-# Miscellaneous
+# Images
+*.png
+
+# Documents / Data (ALL folders)
+*.csv
+*.pdf
+*.tex
+
+# Temporary files
+*~
+
+# System files
 .DS_Store
 Thumbs.db
-
-#Others
-*.png
-*.zip
-
-**/**/*.csv
-**/**/*.pdf
-**/**/*.tex
