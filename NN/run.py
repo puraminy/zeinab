@@ -179,6 +179,97 @@ def fit_model(model, X_train, X_test, y_train, y_test,
 # Search about Backward Feature Elimination 
 # Sensitivity Analysis Functions
 
+
+
+def train_single_model(model_class, num_epochs, hidden_sizes, features=None, run=0):
+    """Train one model instance and return trained model with raw train/test splits."""
+    X_train, X_test, y_train, y_test = read_prep_data(features)
+    input_size = X_train.shape[1]
+    output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
+    try:
+        model = model_class(input_size, hidden_sizes, output_size=output_size)
+    except TypeError:
+        model = model_class(input_size, hidden_sizes)
+
+    _, _, r2, model = fit_model(
+        model, X_train, X_test, y_train, y_test, num_epochs, display_steps=False, run=run
+    )
+    return model, X_train, X_test, y_train, y_test, r2
+
+
+def shap_feature_importance(model_class, inputs, num_epochs, hidden_sizes):
+    """Compute SHAP-based feature importance for the selected model."""
+    try:
+        import shap
+    except ImportError:
+        print("SHAP is not installed. Install it with: pip install shap")
+        return None
+
+    model, X_train, X_test, y_train, _, r2 = train_single_model(
+        model_class, num_epochs, hidden_sizes, features=inputs, run=0
+    )
+    if r2 is None:
+        print("Could not train model for SHAP analysis.")
+        return None
+
+    scaler = StandardScaler()
+    X_train_scaled = torch.tensor(scaler.fit_transform(X_train), dtype=torch.float32)
+    X_test_scaled = torch.tensor(scaler.transform(X_test), dtype=torch.float32)
+    X_train_norm = normalize(X_train_scaled, normalization_type).numpy()
+    X_test_norm = normalize(X_test_scaled, normalization_type).numpy()
+
+    background_default = min(25, len(X_train_norm))
+    explain_default = min(20, len(X_test_norm))
+    nsamples_default = 100
+
+    background_size = input(f"Background sample size [{background_default}]:").strip()
+    explain_size = input(f"Number of test samples to explain [{explain_default}]:").strip()
+    nsamples = input(f"Kernel SHAP nsamples [{nsamples_default}]:").strip()
+
+    background_size = int(background_size) if background_size else background_default
+    explain_size = int(explain_size) if explain_size else explain_default
+    nsamples = int(nsamples) if nsamples else nsamples_default
+
+    background_size = max(1, min(background_size, len(X_train_norm)))
+    explain_size = max(1, min(explain_size, len(X_test_norm)))
+
+    background = X_train_norm[:background_size]
+    explain_points = X_test_norm[:explain_size]
+
+    model.eval()
+
+    def predict_fn(x):
+        with torch.no_grad():
+            x_tensor = torch.tensor(x, dtype=torch.float32)
+            pred = model(x_tensor).detach().numpy()
+        return pred
+
+    print("Computing SHAP values. This may take some time ...")
+    explainer = shap.KernelExplainer(predict_fn, background)
+    shap_values = explainer.shap_values(explain_points, nsamples=nsamples)
+
+    if isinstance(shap_values, list):
+        shap_array = np.mean([np.abs(sv) for sv in shap_values], axis=0)
+    else:
+        shap_array = np.abs(shap_values)
+
+    mean_abs_shap = shap_array.mean(axis=0)
+    shap_table = pd.DataFrame({
+        "Feature": list(X_train.columns),
+        "Mean(|SHAP|)": mean_abs_shap
+    }).sort_values(by="Mean(|SHAP|)", ascending=False)
+
+    try:
+        os.makedirs("plots", exist_ok=True)
+        shap.summary_plot(shap_values, explain_points, feature_names=list(X_train.columns), show=False)
+        plt.tight_layout()
+        plt.savefig(os.path.join("plots", "shap_summary.png"), dpi=200)
+        plt.close()
+        print("SHAP summary plot saved at plots/shap_summary.png")
+    except Exception as err:
+        print(f"Could not save SHAP summary plot: {err}")
+
+    return shap_table
 def weight_analysis(model_class, data, inputs, output, num_epochs, hidden_sizes):
     X_train, X_test, y_train, y_test = read_prep_data(inputs)
     input_size = X_train.shape[1]
@@ -630,6 +721,7 @@ while True:
     print("2. Forward Feature Selection")
     print("3. Weight Analysis")
     print("4. Jackknife Sensitivity Analysis (Node Deletion Sensitivity)")
+    print("5. SHAP (SHapley Additive exPlanations)")
     print("q. Quit")
 
     answer = input("Enter the number of the method you want to run (or 'q' to quit): ").strip().lower()
@@ -688,6 +780,17 @@ while True:
         negative_sensitivity_features = jackknife_table[jackknife_table['Sensitivity'] < 0]
         print("\nFeatures with negative sensitivity (potentially redundant or harmful):")
         print(negative_sensitivity_features)
+
+    elif answer == '5':
+        print("============================= SHAP Feature Importance =============")
+        shap_table = shap_feature_importance(best_model, inputs, best_epochs, best_hidden_sizes)
+        if shap_table is not None:
+            print("------------ SHAP feature importance ---------------")
+            print(shap_table)
+            shap_table_latex = generate_latex_table(shap_table, caption="Results of SHAP Feature Importance", label="shap")
+            with open(os.path.join("tables", "shap.tex"), 'w', encoding='utf-8') as f:
+                print(shap_table_latex, file=f)
+            shap_table.to_csv(os.path.join("tables", "shap.csv"), index=False)
 
     elif answer == 'q':
         print("Exiting the feature selection and sensitivity analysis loop. Goodbye!")

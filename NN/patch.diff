@@ -1,0 +1,255 @@
+diff --git a/NN/run.py b/NN/run.py
+index 68f448cc7a1e238c341ddfd1016cf27cf4e9ba10..db461dfc194a6dca26ae790241a636a06e113481 100644
+--- a/NN/run.py
++++ b/NN/run.py
+@@ -157,50 +157,141 @@ def fit_model(model, X_train, X_test, y_train, y_test,
+             print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item()}')
+ 
+     model.eval()
+     with torch.no_grad():
+         predictions = model(X_test_normalized)
+         
+         # Check for NaN in predictions
+         if torch.isnan(predictions).any():
+             print(f"NaN detected in predictions")
+             return None, None, None, model
+ 
+     mse = nn.MSELoss()(predictions, y_test_normalized)
+     mae = nn.L1Loss()(predictions, y_test_normalized)
+     predictions_denormalized = predictions * y_test.std() + y_test.mean()
+ 
+     predictions_np = predictions_denormalized.numpy()
+     y_test_np = y_test.numpy()
+     r2 = r2_score(y_test_np, predictions_np, multioutput='uniform_average')
+     return predictions_np, mse, r2, model
+ 
+ ############################ Feature Selection ####################
+ # Selects the best combination of features by removing features one by one
+ # Search about Backward Feature Elimination 
+ # Sensitivity Analysis Functions
+ 
++
++
++def train_single_model(model_class, num_epochs, hidden_sizes, features=None, run=0):
++    """Train one model instance and return trained model with raw train/test splits."""
++    X_train, X_test, y_train, y_test = read_prep_data(features)
++    input_size = X_train.shape[1]
++    output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
++    try:
++        model = model_class(input_size, hidden_sizes, output_size=output_size)
++    except TypeError:
++        model = model_class(input_size, hidden_sizes)
++
++    _, _, r2, model = fit_model(
++        model, X_train, X_test, y_train, y_test, num_epochs, display_steps=False, run=run
++    )
++    return model, X_train, X_test, y_train, y_test, r2
++
++
++def shap_feature_importance(model_class, inputs, num_epochs, hidden_sizes):
++    """Compute SHAP-based feature importance for the selected model."""
++    try:
++        import shap
++    except ImportError:
++        print("SHAP is not installed. Install it with: pip install shap")
++        return None
++
++    model, X_train, X_test, y_train, _, r2 = train_single_model(
++        model_class, num_epochs, hidden_sizes, features=inputs, run=0
++    )
++    if r2 is None:
++        print("Could not train model for SHAP analysis.")
++        return None
++
++    scaler = StandardScaler()
++    X_train_scaled = torch.tensor(scaler.fit_transform(X_train), dtype=torch.float32)
++    X_test_scaled = torch.tensor(scaler.transform(X_test), dtype=torch.float32)
++    X_train_norm = normalize(X_train_scaled, normalization_type).numpy()
++    X_test_norm = normalize(X_test_scaled, normalization_type).numpy()
++
++    background_default = min(25, len(X_train_norm))
++    explain_default = min(20, len(X_test_norm))
++    nsamples_default = 100
++
++    background_size = input(f"Background sample size [{background_default}]:").strip()
++    explain_size = input(f"Number of test samples to explain [{explain_default}]:").strip()
++    nsamples = input(f"Kernel SHAP nsamples [{nsamples_default}]:").strip()
++
++    background_size = int(background_size) if background_size else background_default
++    explain_size = int(explain_size) if explain_size else explain_default
++    nsamples = int(nsamples) if nsamples else nsamples_default
++
++    background_size = max(1, min(background_size, len(X_train_norm)))
++    explain_size = max(1, min(explain_size, len(X_test_norm)))
++
++    background = X_train_norm[:background_size]
++    explain_points = X_test_norm[:explain_size]
++
++    model.eval()
++
++    def predict_fn(x):
++        with torch.no_grad():
++            x_tensor = torch.tensor(x, dtype=torch.float32)
++            pred = model(x_tensor).detach().numpy()
++        return pred
++
++    print("Computing SHAP values. This may take some time ...")
++    explainer = shap.KernelExplainer(predict_fn, background)
++    shap_values = explainer.shap_values(explain_points, nsamples=nsamples)
++
++    if isinstance(shap_values, list):
++        shap_array = np.mean([np.abs(sv) for sv in shap_values], axis=0)
++    else:
++        shap_array = np.abs(shap_values)
++
++    mean_abs_shap = shap_array.mean(axis=0)
++    shap_table = pd.DataFrame({
++        "Feature": list(X_train.columns),
++        "Mean(|SHAP|)": mean_abs_shap
++    }).sort_values(by="Mean(|SHAP|)", ascending=False)
++
++    try:
++        os.makedirs("plots", exist_ok=True)
++        shap.summary_plot(shap_values, explain_points, feature_names=list(X_train.columns), show=False)
++        plt.tight_layout()
++        plt.savefig(os.path.join("plots", "shap_summary.png"), dpi=200)
++        plt.close()
++        print("SHAP summary plot saved at plots/shap_summary.png")
++    except Exception as err:
++        print(f"Could not save SHAP summary plot: {err}")
++
++    return shap_table
+ def weight_analysis(model_class, data, inputs, output, num_epochs, hidden_sizes):
+     X_train, X_test, y_train, y_test = read_prep_data(inputs)
+     input_size = X_train.shape[1]
+ 
+     output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
+     try:
+         model = model_class(input_size, hidden_sizes, output_size=output_size)
+     except TypeError:
+         model = model_class(input_size, hidden_sizes)
+     _,_,r2, model = fit_model(model, X_train, X_test, y_train, y_test, num_epochs)
+     print("R2:", r2)
+ 
+     weight_importances = {}
+     with torch.no_grad():
+         for i, feature in enumerate(inputs):
+             importance = np.abs(model.hidden_layers[0].weight[:, i].numpy()).mean()
+             weight_importances[feature] = importance
+     
+     weight_table = pd.DataFrame(list(weight_importances.items()), columns=['Feature', 'Weight Importance'])
+     return weight_table
+ 
+ 
+ def jackknife_sensitivity_analysis(model_class, data, inputs, output, num_epochs, hidden_sizes):
+     base_model_r2, _, _, _, _, _, run = repeat_fit_model(model_class, 
+             num_repeats, num_epochs, hidden_sizes)
+@@ -608,50 +699,51 @@ if answer != "0":
+         print("Skipping scatter plot for multi-output predictions.")
+ 
+     # Save results of predicitons in a file named results.csv
+     results_df = pd.DataFrame()
+     for i, output_name in enumerate(outputs):
+         results_df[f"{output_name}_actual"] = y_test[output_name].values
+         pred_col = best_predictions[:, i] if best_predictions.ndim > 1 else best_predictions
+         results_df[f"{output_name}_predictions"] = np.round(pred_col, 2)
+     results_df.to_csv("results.csv", index=False)
+     print("Predictions of best model were saved in results.csv")
+     answer = input("Do you want to see them? [y]:") 
+     if answer == "y" or answer == "yes":
+        print("======= Predictions of best model:", best_model_name)
+        print(results_df)
+ 
+ best_model = models[best_model_index]
+ best_model_name = model_names[best_model_index]
+ while True:
+     print("\n\n")
+     print(f"================= Feature Selection ({best_model_name}:{best_epochs} epochs, {best_hidden_sizes}) ======")
+     print("\nPlease select a feature selection or sensitivity analysis method:\n")
+     print("1. Backward Feature Elimination")
+     print("2. Forward Feature Selection")
+     print("3. Weight Analysis")
+     print("4. Jackknife Sensitivity Analysis (Node Deletion Sensitivity)")
++    print("5. SHAP (SHapley Additive exPlanations)")
+     print("q. Quit")
+ 
+     answer = input("Enter the number of the method you want to run (or 'q' to quit): ").strip().lower()
+ 
+     if answer == '1':
+         print("============================= Backward Feature Elimination =============")
+         backward_table = backward_feature_elimination(best_model, data, inputs, output, best_epochs, best_hidden_sizes)
+         print("------------ backward feature elimination ---------------")
+         print(backward_table)
+ 
+         backward_table_latex = generate_latex_table(backward_table, caption="Results of Backward Feature Elimination", label="backward")
+         with open(os.path.join("tables", "backward.tex"), 'w', encoding='utf-8') as f:
+             print(backward_table_latex, file=f)
+ 
+     elif answer == '2':
+         print("============================= Forward Feature Selection ================")
+         forward_table = forward_feature_selection(best_model, data, inputs, output, 
+                                                   best_epochs, best_hidden_sizes)
+         print("\n")
+         print("------------ forward feature selection ---------------")
+         print(forward_table)
+         forward_table_latex = generate_latex_table(forward_table, caption="Results of Forward Feature Selection for different features", label="forward")
+         with open(os.path.join("tables", "forward.tex"), 'w', encoding='utf-8') as f:
+             print(forward_table_latex, file=f)
+ 
+@@ -667,45 +759,56 @@ while True:
+         with open(os.path.join("tables", "weight-analysis.tex"), 'w', encoding='utf-8') as f:
+             print(weight_table_latex, file=f)
+ 
+     elif answer == '4':
+         print("============================= Jackknife Sensitivity Analysis =============")
+         jackknife_table = jackknife_sensitivity_analysis(best_model, 
+                 data, inputs, output, best_epochs, best_hidden_sizes)
+         print("------------ jackknife sensitivity analysis ---------------")
+         # Sort and display the most sensitive features
+         jackknife_table = jackknife_table.sort_values(by='Sensitivity', ascending=False)
+         print(jackknife_table)
+         jackknife_table_latex = generate_latex_table(jackknife_table, caption="Results of Jackknife Sensitivity Analysis", label="jackknife")
+         with open(os.path.join("tables", "jackknife.tex"), 'w', encoding='utf-8') as f:
+             print(jackknife_table_latex, file=f)
+ 
+         # Focus on the top 5 most important features
+         important_features = jackknife_table.head(5)['Feature'].tolist()
+         print("\nTop 5 important features to focus on:")
+         print(important_features)
+ 
+         # Investigate features with negative sensitivity
+         negative_sensitivity_features = jackknife_table[jackknife_table['Sensitivity'] < 0]
+         print("\nFeatures with negative sensitivity (potentially redundant or harmful):")
+         print(negative_sensitivity_features)
+ 
++    elif answer == '5':
++        print("============================= SHAP Feature Importance =============")
++        shap_table = shap_feature_importance(best_model, inputs, best_epochs, best_hidden_sizes)
++        if shap_table is not None:
++            print("------------ SHAP feature importance ---------------")
++            print(shap_table)
++            shap_table_latex = generate_latex_table(shap_table, caption="Results of SHAP Feature Importance", label="shap")
++            with open(os.path.join("tables", "shap.tex"), 'w', encoding='utf-8') as f:
++                print(shap_table_latex, file=f)
++            shap_table.to_csv(os.path.join("tables", "shap.csv"), index=False)
++
+     elif answer == 'q':
+         print("Exiting the feature selection and sensitivity analysis loop. Goodbye!")
+         break
+     else:
+         print("Invalid choice, please try again.")
+     print("\n----------------------------------------------------------")
+     input("Press any key to return to main menu ...")
+ 
+ 
+ 
+ print("----------------------Important! READ -------------------")
+ print("latex code for tables are saved in tables folder")
+ print("predictions are saved in results.csv file")
+ input("Plots have been saved in the 'plots' folder. (press any key to exit)")
+ 
+ # Visualize the model and save it on mlp_structure image
+ # dummy_input = torch.randn(1, input_size)
+ # from torchviz import make_dot
+ # dot = make_dot(model(dummy_input), params=dict(model.named_parameters()))
+ # dot.render("mlp_structure", format="png", cleanup=True)
