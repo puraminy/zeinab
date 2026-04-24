@@ -49,6 +49,6 @@ Thumbs.db
 *.png
 *.zip
 
-*.csv
-*.pdf
-*.tex
+**/**/*.csv
+**/**/*.pdf
+**/**/*.tex
