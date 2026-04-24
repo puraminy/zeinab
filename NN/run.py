@@ -222,13 +222,34 @@ def shap_feature_importance(model_class, inputs, num_epochs, hidden_sizes):
     explain_default = min(20, len(X_test_norm))
     nsamples_default = 100
 
-    background_size = input(f"Background sample size [{background_default}]:").strip()
-    explain_size = input(f"Number of test samples to explain [{explain_default}]:").strip()
-    nsamples = input(f"Kernel SHAP nsamples [{nsamples_default}]:").strip()
+    def parse_positive_int(answer, default_value, name):
+        if not answer:
+            return default_value
+        try:
+            value = int(answer)
+        except ValueError:
+            print(f"Invalid {name} '{answer}'. Using default value {default_value}.")
+            return default_value
+        if value <= 0:
+            print(f"{name} must be > 0. Using default value {default_value}.")
+            return default_value
+        return value
 
-    background_size = int(background_size) if background_size else background_default
-    explain_size = int(explain_size) if explain_size else explain_default
-    nsamples = int(nsamples) if nsamples else nsamples_default
+    background_size = parse_positive_int(
+        input(f"Background sample size [{background_default}]:").strip(),
+        background_default,
+        "background sample size",
+    )
+    explain_size = parse_positive_int(
+        input(f"Number of test samples to explain [{explain_default}]:").strip(),
+        explain_default,
+        "number of test samples",
+    )
+    nsamples = parse_positive_int(
+        input(f"Kernel SHAP nsamples [{nsamples_default}]:").strip(),
+        nsamples_default,
+        "Kernel SHAP nsamples",
+    )
 
     background_size = max(1, min(background_size, len(X_train_norm)))
     explain_size = max(1, min(explain_size, len(X_test_norm)))
@@ -248,14 +269,30 @@ def shap_feature_importance(model_class, inputs, num_epochs, hidden_sizes):
     explainer = shap.KernelExplainer(predict_fn, background)
     shap_values = explainer.shap_values(explain_points, nsamples=nsamples)
 
+    shap_array = np.asarray(shap_values)
     if isinstance(shap_values, list):
-        shap_array = np.mean([np.abs(sv) for sv in shap_values], axis=0)
-    else:
-        shap_array = np.abs(shap_values)
+        shap_array = np.stack([np.asarray(sv) for sv in shap_values], axis=0)
 
-    mean_abs_shap = shap_array.mean(axis=0)
+    shap_abs = np.abs(shap_array)
+    # Collapse extra output dimensions (e.g., multi-output predictions) until we get
+    # a 2D array with shape (n_samples, n_features) or a 1D feature vector.
+    while shap_abs.ndim > 2:
+        shap_abs = shap_abs.mean(axis=0)
+
+    mean_abs_shap = shap_abs.mean(axis=0) if shap_abs.ndim == 2 else shap_abs
+    mean_abs_shap = np.asarray(mean_abs_shap).reshape(-1)
+    feature_names = list(X_train.columns)
+
+    if mean_abs_shap.shape[0] != len(feature_names):
+        print(
+            "Could not build SHAP table because feature and SHAP dimensions do not match. "
+            f"Got {mean_abs_shap.shape[0]} SHAP values for {len(feature_names)} features. "
+            f"Raw SHAP shape: {np.asarray(shap_values).shape}"
+        )
+        return None
+
     shap_table = pd.DataFrame({
-        "Feature": list(X_train.columns),
+        "Feature": feature_names,
         "Mean(|SHAP|)": mean_abs_shap
     }).sort_values(by="Mean(|SHAP|)", ascending=False)
 
