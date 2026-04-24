@@ -1,11 +1,16 @@
-\begin{longtable}{llrlrr}
+\begin{longtable}{llrlrl}
 \hline
- model   & R2          &   MSE & hidden sizes   &   total hs &   epochs \\
+ model   & R2          &   MSE & hidden sizes   &   total hs & epochs   \\
 \hline
  \hline
-\multirow{4}{*}{FFNN}         & 30.4 ± 3.7  &  0.66 & [10]           &         10 &       11 \\
-         & 24.1 ± 14.3 &  0.72 & [15, 10, 3]    &         28 &       14 \\
-         & 16.1 ± 18.2 &  0.79 & [8, 4]         &         12 &       10 \\
-         & 13.9 ± 9.5  &  0.81 & [15, 5]        &         20 &       11 \\
+RandomForestRegressor         & 34.2 ± 0.6  &  3.82 & N/A            &          0 & N/A      \\
+ \hline
+ReluTanhFFNN         & 32.7 ± 13.9 &  0.64 & [8, 4]         &         12 & 8        \\
+ \hline
+GradientBoostingRegressor         & 31.6 ± 1.0  &  3.97 & N/A            &          0 & N/A      \\
+ \hline
+\multirow{3}{*}{ReluTanhFFNN}         & 30.4 ± 3.7  &  0.66 & [10]           &         10 & 11       \\
+         & 27.9 ± 9.9  &  0.68 & [15, 10, 3]    &         28 & 6        \\
+         & 27.3 ± 7.5  &  0.69 & [15, 5]        &         20 & 11       \\
 \hline
 \end{longtable}

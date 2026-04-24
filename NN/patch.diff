@@ -1,14 +1,19 @@
 diff --git a/NN/run.py b/NN/run.py
-index a1dd781213b3d37c9af12ed12bba6b5a1621243c..bca5b0f009f7ab2e7c1db0635e30645074bdd9dc 100644
+index bca5b0f009f7ab2e7c1db0635e30645074bdd9dc..a6755329d2dcd8fb04018e59c2eca4b95beac9b8 100644
 --- a/NN/run.py
 +++ b/NN/run.py
-@@ -1,30 +1,31 @@
+@@ -1,80 +1,103 @@
  from matplotlib import pyplot as plt
  import torch
  import torch.nn as nn
  import torch.optim as optim
  from sklearn.preprocessing import StandardScaler
-+from sklearn.model_selection import KFold
+ from sklearn.model_selection import KFold
++from sklearn.ensemble import RandomForestRegressor, ExtraTreesRegressor, GradientBoostingRegressor
++from sklearn.neighbors import KNeighborsRegressor
++from sklearn.svm import SVR
++from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
++from sklearn.tree import DecisionTreeRegressor
  import pandas as pd
  import numpy as np
  import torch.nn as nn
@@ -34,7 +39,52 @@ index a1dd781213b3d37c9af12ed12bba6b5a1621243c..bca5b0f009f7ab2e7c1db0635e306450
  # Dont change it if you want to reproduce the same results
  data_seed = 123 # it is used for random_state of splitting data into source and train sets
  # changing it creates different source and train sets.
-@@ -59,50 +60,71 @@ def parse_multi_select(answer, options, allow_all=True):
+ # Since the number of data is low changing it can largely affect the results
+ model_seed = 123 # it is used for random_state of models
+ def set_model_seed(model_seed):
+     torch.manual_seed(model_seed)
+     np.random.seed(model_seed)
+ 
+ learning_rate = 0.05
+ # The learnign rate used in ANN
+ #hidden_size1 = 10
+ hidden_size1 = 15
+ hidden_size2 = 10
+ 
+ # the number of neurons in hidden layers
+ 
+ # https://alexlenail.me/NN-SVG/
+ # use the site above to draw the following network
+ #
+ hidden_sizes = [15, 10, 3 ]
+ # nn.ReLU(), nn.Tanh(), nn.Identity()
+ 
+ list_hidden_sizes = [[10], [15, 10, 3], [8, 4], [15, 5]]
+ normalization_type = "z_score"
+ 
+ 
++SKLEARN_MODEL_FACTORIES = {
++    "RandomForestRegressor": lambda seed: RandomForestRegressor(
++        n_estimators=300, random_state=seed
++    ),
++    "ExtraTreesRegressor": lambda seed: ExtraTreesRegressor(
++        n_estimators=300, random_state=seed
++    ),
++    "GradientBoostingRegressor": lambda seed: GradientBoostingRegressor(random_state=seed),
++    "DecisionTreeRegressor": lambda seed: DecisionTreeRegressor(random_state=seed),
++    "KNeighborsRegressor": lambda seed: KNeighborsRegressor(n_neighbors=5),
++    "SVR_RBF": lambda seed: SVR(kernel="rbf"),
++    "LinearRegression": lambda seed: LinearRegression(),
++    "Ridge": lambda seed: Ridge(random_state=seed),
++    "Lasso": lambda seed: Lasso(random_state=seed),
++    "ElasticNet": lambda seed: ElasticNet(random_state=seed),
++}
++
++
+ def parse_multi_select(answer, options, allow_all=True):
+     """Parse space-separated indexes and return selected values."""
+     if not answer:
+         return None if allow_all else []
  
      answer = answer.strip().lower()
      if allow_all and answer == "all":
@@ -56,58 +106,7 @@ index a1dd781213b3d37c9af12ed12bba6b5a1621243c..bca5b0f009f7ab2e7c1db0635e306450
      return selected_values
  
  
- def ask_with_default(prompt, default):
-     answer = input(f"{prompt} [{default}]:").strip()
-     return answer if answer else str(default)
- 
-+
-+def parse_epochs_input(answer, default_epochs):
-+    """Parse epochs input and detect optional CV early-stop mode."""
-+    text = answer.strip().lower()
-+    if text == "0":
-+        return [], False
-+
-+    use_cv_early_stop = False
-+    parsed_epochs = []
-+    for token in answer.split():
-+        lowered = token.lower()
-+        if lowered in ("cv", "auto"):
-+            use_cv_early_stop = True
-+            continue
-+        if token.isdigit() and int(token) > 0:
-+            parsed_epochs.append(int(token))
-+
-+    if not parsed_epochs and not use_cv_early_stop:
-+        parsed_epochs = list(default_epochs)
-+    return sorted(set(parsed_epochs)), use_cv_early_stop
-+
- # Define the normalization function
- def normalize(data, normalization_type):
-     if normalization_type == 'z_score':
-         return (data - data.mean()) / data.std()
-     elif normalization_type == 'minmax':
-         return (data - data.min()) / (data.max() - data.min())
-     else:
-         raise ValueError("Unsupported normalization type. Choose 'z_score' or 'minmax'.")
- 
- # Function to apply model on data and generate predictions
- # Return predictions, MSE and R-Squared
- import torch.nn.init as init
- 
- def fit_model(model, X_train, X_test, y_train, y_test, 
-         num_epochs, display_steps=False, run=0):
- 
-     set_model_seed(model_seed + run)
-     scaler = StandardScaler()
-     X_train = torch.tensor(scaler.fit_transform(X_train), dtype=torch.float32)
-     X_test = torch.tensor(scaler.transform(X_test), dtype=torch.float32)
-     y_train_values = y_train.values if hasattr(y_train, "values") else y_train
-     y_test_values = y_test.values if hasattr(y_test, "values") else y_test
-     y_train = torch.tensor(y_train_values, dtype=torch.float32)
-     y_test = torch.tensor(y_test_values, dtype=torch.float32)
-     if y_train.ndim == 1:
-@@ -152,50 +174,143 @@ def fit_model(model, X_train, X_test, y_train, y_test,
-         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+@@ -175,50 +198,80 @@ def fit_model(model, X_train, X_test, y_train, y_test,
  
          optimizer.step()
  
@@ -132,128 +131,189 @@ index a1dd781213b3d37c9af12ed12bba6b5a1621243c..bca5b0f009f7ab2e7c1db0635e306450
      r2 = r2_score(y_test_np, predictions_np, multioutput='uniform_average')
      return predictions_np, mse, r2, model
  
-+
-+def select_epochs_with_cv_early_stopping(model_class, hidden_sizes, features=None, folds=5, patience=20, min_delta=1e-4):
-+    """
-+    Estimate a good epoch count via K-Fold CV with early stopping on validation loss.
-+    Returns an integer epoch recommendation or None if it cannot be computed.
-+    """
-+    X_train, X_test, y_train, y_test = read_prep_data(features)
-+    full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
-+    full_y = pd.concat([y_train, y_test], axis=0).reset_index(drop=True)
-+
-+    kfold = KFold(n_splits=folds, shuffle=True, random_state=data_seed)
-+    best_epochs = []
-+    input_size = full_X.shape[1]
-+    output_size = full_y.shape[1] if hasattr(full_y, "shape") and len(full_y.shape) > 1 else 1
-+    max_epochs = max(list_epochs) if list_epochs else 200
-+
-+    for fold_index, (train_idx, val_idx) in enumerate(kfold.split(full_X), start=1):
-+        x_train_fold = full_X.iloc[train_idx]
-+        x_val_fold = full_X.iloc[val_idx]
-+        y_train_fold = full_y.iloc[train_idx]
-+        y_val_fold = full_y.iloc[val_idx]
-+
-+        scaler = StandardScaler()
-+        x_train_fold = torch.tensor(scaler.fit_transform(x_train_fold), dtype=torch.float32)
-+        x_val_fold = torch.tensor(scaler.transform(x_val_fold), dtype=torch.float32)
-+        y_train_values = y_train_fold.values if hasattr(y_train_fold, "values") else y_train_fold
-+        y_val_values = y_val_fold.values if hasattr(y_val_fold, "values") else y_val_fold
-+        y_train_fold = torch.tensor(y_train_values, dtype=torch.float32)
-+        y_val_fold = torch.tensor(y_val_values, dtype=torch.float32)
-+        if y_train_fold.ndim == 1:
-+            y_train_fold = y_train_fold.view(-1, 1)
-+        if y_val_fold.ndim == 1:
-+            y_val_fold = y_val_fold.view(-1, 1)
-+
-+        x_train_fold = normalize(x_train_fold, normalization_type)
-+        x_val_fold = normalize(x_val_fold, normalization_type)
-+        y_train_fold = normalize(y_train_fold, normalization_type)
-+        y_val_fold = normalize(y_val_fold, normalization_type)
-+
-+        try:
-+            model = model_class(input_size, hidden_sizes, output_size=output_size)
-+        except TypeError:
-+            model = model_class(input_size, hidden_sizes)
-+
-+        if len(hidden_sizes) != len(model.hidden_layers):
-+            return None
-+
-+        set_model_seed(model_seed + fold_index)
-+        model.apply(
-+            lambda m: (
-+                init.kaiming_uniform_(m.weight.data),
-+                init.constant_(m.bias.data, 0) if m.bias is not None else None
-+            ) if isinstance(m, nn.Linear) else None
-+        )
-+        criterion = nn.MSELoss()
-+        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-+
-+        best_val_loss = float("inf")
-+        best_epoch = 1
-+        epochs_without_improvement = 0
-+
-+        for epoch in range(1, max_epochs + 1):
-+            model.train()
-+            optimizer.zero_grad()
-+            train_outputs = model(x_train_fold)
-+            train_loss = criterion(train_outputs, y_train_fold)
-+            if torch.isnan(train_loss):
-+                break
-+            train_loss.backward()
-+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-+            optimizer.step()
-+
-+            model.eval()
-+            with torch.no_grad():
-+                val_outputs = model(x_val_fold)
-+                val_loss = criterion(val_outputs, y_val_fold).item()
-+
-+            if val_loss + min_delta < best_val_loss:
-+                best_val_loss = val_loss
-+                best_epoch = epoch
-+                epochs_without_improvement = 0
-+            else:
-+                epochs_without_improvement += 1
-+
-+            if epochs_without_improvement >= patience:
-+                break
-+
-+        best_epochs.append(best_epoch)
-+
-+    if not best_epochs:
-+        return None
-+    return int(np.median(best_epochs))
-+
- ############################ Feature Selection ####################
- # Selects the best combination of features by removing features one by one
- # Search about Backward Feature Elimination 
- # Sensitivity Analysis Functions
  
- 
- 
- def train_single_model(model_class, num_epochs, hidden_sizes, features=None, run=0):
-     """Train one model instance and return trained model with raw train/test splits."""
++def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
++    scaler_x = StandardScaler()
++    X_train_scaled = scaler_x.fit_transform(X_train)
++    X_test_scaled = scaler_x.transform(X_test)
++
++    y_train_values = y_train.values if hasattr(y_train, "values") else y_train
++    y_test_values = y_test.values if hasattr(y_test, "values") else y_test
++    if y_train_values.ndim == 2 and y_train_values.shape[1] == 1:
++        y_train_fit = y_train_values.ravel()
++    else:
++        y_train_fit = y_train_values
++
++    model.fit(X_train_scaled, y_train_fit)
++    predictions = model.predict(X_test_scaled)
++
++    if predictions.ndim == 1:
++        predictions_2d = predictions.reshape(-1, 1)
++    else:
++        predictions_2d = predictions
++
++    y_test_2d = y_test_values.reshape(-1, 1) if y_test_values.ndim == 1 else y_test_values
++    mse = float(np.mean((predictions_2d - y_test_2d) ** 2))
++    r2 = r2_score(y_test_2d, predictions_2d, multioutput='uniform_average')
++    return predictions_2d, mse, r2, model
++
++
++def is_torch_model(model_class):
++    return isinstance(model_class, type) and issubclass(model_class, nn.Module)
++
++
+ def select_epochs_with_cv_early_stopping(model_class, hidden_sizes, features=None, folds=5, patience=20, min_delta=1e-4):
+     """
+     Estimate a good epoch count via K-Fold CV with early stopping on validation loss.
+     Returns an integer epoch recommendation or None if it cannot be computed.
+     """
      X_train, X_test, y_train, y_test = read_prep_data(features)
+     full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
+     full_y = pd.concat([y_train, y_test], axis=0).reset_index(drop=True)
+ 
+     kfold = KFold(n_splits=folds, shuffle=True, random_state=data_seed)
+     best_epochs = []
+     input_size = full_X.shape[1]
+     output_size = full_y.shape[1] if hasattr(full_y, "shape") and len(full_y.shape) > 1 else 1
+     max_epochs = max(list_epochs) if list_epochs else 200
+ 
+     for fold_index, (train_idx, val_idx) in enumerate(kfold.split(full_X), start=1):
+         x_train_fold = full_X.iloc[train_idx]
+         x_val_fold = full_X.iloc[val_idx]
+         y_train_fold = full_y.iloc[train_idx]
+         y_val_fold = full_y.iloc[val_idx]
+ 
+         scaler = StandardScaler()
+         x_train_fold = torch.tensor(scaler.fit_transform(x_train_fold), dtype=torch.float32)
+         x_val_fold = torch.tensor(scaler.transform(x_val_fold), dtype=torch.float32)
+         y_train_values = y_train_fold.values if hasattr(y_train_fold, "values") else y_train_fold
+@@ -562,62 +615,75 @@ def forward_feature_selection(model_class, data, inputs, output, num_epochs, hid
+     print('\n\n')
+     print('=============== Final Features ==================')
+     print('Selected Features: ')
+     print(candidates)
+     print('Final R2: ' + str(best_r2))
+     print('Elminated Features: ')
+     print(set(data.columns).difference(candidates))
+ 
+     table = pd.DataFrame(data=rows)
+     return table
+ 
+ 
+ # Repeats an fit_model to get average of results
+ def repeat_fit_model(model_class, num_repeats, 
+         num_epochs, hidden_sizes, 
+         display_steps=False, features=None):
+     X_train, X_test, y_train, y_test = read_prep_data(features)
+     r2_list = []
+     mse_list = []
+     max_r2 = 0
+     max_run = 0
+     best_preds = None
      input_size = X_train.shape[1]
      output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
-     try:
-         model = model_class(input_size, hidden_sizes, output_size=output_size)
-     except TypeError:
-         model = model_class(input_size, hidden_sizes)
+     for i in range(num_repeats):
+-        # Recreate model on each run so repeats are independent.
+-        try:
+-            model = model_class(input_size, hidden_sizes, output_size=output_size)
+-        except TypeError:
+-            model = model_class(input_size, hidden_sizes)
+-
+-        if len(hidden_sizes) != len(model.hidden_layers):
+-            continue
++        if is_torch_model(model_class):
++            # Recreate model on each run so repeats are independent.
++            try:
++                model = model_class(input_size, hidden_sizes, output_size=output_size)
++            except TypeError:
++                model = model_class(input_size, hidden_sizes)
++
++            if len(hidden_sizes) != len(model.hidden_layers):
++                continue
  
-     _, _, r2, model = fit_model(
-         model, X_train, X_test, y_train, y_test, num_epochs, display_steps=False, run=run
-     )
-     return model, X_train, X_test, y_train, y_test, r2
+-        predictions, mse, r2, model = fit_model(model, 
+-                X_train, X_test, y_train, y_test, num_epochs, 
+-                display_steps=display_steps, run=i)
++            predictions, mse, r2, model = fit_model(
++                model,
++                X_train,
++                X_test,
++                y_train,
++                y_test,
++                num_epochs,
++                display_steps=display_steps,
++                run=i,
++            )
++        else:
++            model = model_class(model_seed + i)
++            predictions, mse, r2, model = fit_sklearn_model(
++                model, X_train, X_test, y_train, y_test
++            )
+         if r2 is None:
+             continue
  
+         if r2 > max_r2:
+             max_r2 = r2
+             max_run = i
+             best_preds = predictions
  
- def shap_feature_importance(model_class, inputs, num_epochs, hidden_sizes):
-     """Compute SHAP-based feature importance for the selected model."""
-@@ -564,107 +679,133 @@ models = [
+         r2_list.append(r2*100)
+         mse_list.append(mse)
+     if display_steps:
+         print(r2_list)
+ 
+     mean_r2 = np.mean(r2_list) if r2_list else None
+     mean_mse = np.mean(mse_list) if mse_list else None
+     std_r2 = np.std(r2_list) if r2_list else None
+     std_mse = np.std(mse_list) if mse_list else None
+ 
+     return mean_r2, std_r2, mean_mse, best_preds, max_r2*100, r2_list, max_run
+ 
+ ############################### Start of Program ###################
+ # Sync prep_data with current dataset (NN/data.csv by default).
+ dataset_path="data.csv"
+ data = pd.read_csv(dataset_path)
+ output_features, input_features = resolve_data_columns(
+@@ -650,193 +716,200 @@ except ValueError as err:
+     exit()
+ 
+ sync_prep_data_with_dataset(
+     dataset_path=dataset_path,
+     prep_folder="prep_data",
+     input_features=selected_input_features,
+     output_feature=selected_output_features
+ )
+ 
+ # Load data from prep_data after schema sync.
+ X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder="prep_data")
+ 
+ # After loading, get the column names from X_train
+ inputs = X_train.columns.tolist()
+ outputs = y_train.columns.tolist()
+ output = outputs
+ 
+ data = X_train
+ print("inputs:", inputs)
+ print("outputs:", outputs)
+ ans = input("Are these inputs and outputs for files in prep_data folder correct?(y/n):")
+ if ans.strip().lower() not in ("y", "yes"):
+     print("Please re-run and choose your preferred input/output features.")
+     exit()
+ 
+-# Dynamically collect all model classes from the module
+-models = [
++# Dynamically collect all neural-network model classes from the module
++nn_models = [
+     member for name, member in inspect.getmembers(models, inspect.isclass)
+     if issubclass(member, models.nn.Module) and member.__module__ == models.__name__
  ]
- 
- model_names=[model.__name__ for model in models]
+-
+-model_names=[model.__name__ for model in models]
++sklearn_models = [
++    (name, factory) for name, factory in SKLEARN_MODEL_FACTORIES.items()
++]
++models = nn_models + [factory for _, factory in sklearn_models]
++model_names = [model.__name__ for model in nn_models] + [name for name, _ in sklearn_models]
  # User input for selecting the model and number of epochs
  answer = input("\n".join([str(i) + ")" + name for i,name in enumerate(model_names)]) \
          + "\nSelect one or several models (separated with space) [all]:")
@@ -275,47 +335,64 @@ index a1dd781213b3d37c9af12ed12bba6b5a1621243c..bca5b0f009f7ab2e7c1db0635e306450
  print("Selected Models:", [model_names[i] for i in selected_models])
  best_model_index = selected_models[0]
  max_model_index = best_model_index
++has_nn_model = any(is_torch_model(models[i]) for i in selected_models)
  
--answer = ask_with_default("Enter the number of epochs separated by spaces (or 0 to skip training)", " ".join([str(e) for e in list_epochs]))
-+default_epochs = list(list_epochs)
-+answer = ask_with_default(
-+    "Enter epochs (e.g. '20 50 100', add 'cv' for cross-val early stop, or 0 to skip)",
-+    " ".join([str(e) for e in default_epochs]),
-+)
-+list_epochs, use_cv_early_stop = parse_epochs_input(answer, default_epochs)
+ default_epochs = list(list_epochs)
+ answer = ask_with_default(
+     "Enter epochs (e.g. '20 50 100', add 'cv' for cross-val early stop, or 0 to skip)",
+     " ".join([str(e) for e in default_epochs]),
+ )
+ list_epochs, use_cv_early_stop = parse_epochs_input(answer, default_epochs)
  if answer != "0":
--    if answer:
--       list_epochs = [int(a) for a in answer.split() if a.isnumeric() and int(a) > 0]
--    if not list_epochs:
--       print("No valid epoch values were provided.")
--       exit()
-+    if not list_epochs and not use_cv_early_stop:
-+        print("No valid epoch values were provided.")
-+        exit()
+     if not list_epochs and not use_cv_early_stop:
+         print("No valid epoch values were provided.")
+         exit()
      
--    print(list_epochs)
-+    if list_epochs:
-+        print("Manual epoch candidates:", list_epochs)
-+    if use_cv_early_stop:
-+        print("Cross-validation early-stop epoch search is enabled.")
+-    if list_epochs:
++    if list_epochs and has_nn_model:
+         print("Manual epoch candidates:", list_epochs)
+-    if use_cv_early_stop:
++    if use_cv_early_stop and has_nn_model:
+         print("Cross-validation early-stop epoch search is enabled.")
  
-     answer = ask_with_default(
-         "Enter hidden sizes (groups split by '#', e.g. '10 5 # 15 10 3')",
-         " # ".join([" ".join([str(v) for v in hs]) for hs in list_hidden_sizes]),
-     )
-     if answer: 
-        list_hidden_sizes = []
-        hs = answer.split("#")
-        for ans in hs:
-           ans = ans.strip()
-           if not ans:
-               continue
-           h = [int(a) for a in ans.split() if a.isdigit() and int(a) > 0]
-           if h:
-               list_hidden_sizes.append(h)
-     if not list_hidden_sizes:
-        print("No valid hidden size values were provided.")
-        exit()
+-    answer = ask_with_default(
+-        "Enter hidden sizes (groups split by '#', e.g. '10 5 # 15 10 3')",
+-        " # ".join([" ".join([str(v) for v in hs]) for hs in list_hidden_sizes]),
+-    )
+-    if answer: 
+-       list_hidden_sizes = []
+-       hs = answer.split("#")
+-       for ans in hs:
+-          ans = ans.strip()
+-          if not ans:
+-              continue
+-          h = [int(a) for a in ans.split() if a.isdigit() and int(a) > 0]
+-          if h:
+-              list_hidden_sizes.append(h)
+-    if not list_hidden_sizes:
+-       print("No valid hidden size values were provided.")
+-       exit()
++    if has_nn_model:
++        answer = ask_with_default(
++            "Enter hidden sizes (groups split by '#', e.g. '10 5 # 15 10 3')",
++            " # ".join([" ".join([str(v) for v in hs]) for hs in list_hidden_sizes]),
++        )
++        if answer:
++           list_hidden_sizes = []
++           hs = answer.split("#")
++           for ans in hs:
++              ans = ans.strip()
++              if not ans:
++                  continue
++              h = [int(a) for a in ans.split() if a.isdigit() and int(a) > 0]
++              if h:
++                  list_hidden_sizes.append(h)
++        if not list_hidden_sizes:
++           print("No valid hidden size values were provided.")
++           exit()
++    else:
++        list_hidden_sizes = [[]]
++        use_cv_early_stop = False
  
      answer = ask_with_default("Enter the number of repeating predictions", num_repeats)
      if answer:
@@ -337,43 +414,40 @@ index a1dd781213b3d37c9af12ed12bba6b5a1621243c..bca5b0f009f7ab2e7c1db0635e306450
      model_best_predictions = {}
      # for all models
      for model_index in selected_models:
--        for num_epochs in list_epochs:
--            for hidden_sizes in list_hidden_sizes:
--                # Instantiate the selected model
--                model_class = models[model_index]
--                model_name = model_names[model_index]
--                # Apply model on data for 3 times and get predictions, mse and r2
-+        model_class = models[model_index]
-+        model_name = model_names[model_index]
-+        for hidden_sizes in list_hidden_sizes:
-+            epoch_candidates = list(list_epochs)
-+            if use_cv_early_stop:
-+                cv_epoch = select_epochs_with_cv_early_stopping(
-+                    model_class,
-+                    hidden_sizes,
-+                    features=None,
-+                )
-+                if cv_epoch is not None and cv_epoch > 0:
-+                    epoch_candidates.append(cv_epoch)
-+                    print(
-+                        f"[{model_name} | {hidden_sizes}] CV early-stop suggested epochs: {cv_epoch}"
-+                    )
-+                else:
-+                    print(
-+                        f"[{model_name} | {hidden_sizes}] CV early-stop failed; using manual epochs only."
-+                    )
-+
-+            epoch_candidates = sorted(set(epoch_candidates))
-+            if not epoch_candidates:
-+                continue
-+
-+            for num_epochs in epoch_candidates:
-+                # Apply model on data for N repeats and get predictions, mse and r2
+         model_class = models[model_index]
+         model_name = model_names[model_index]
+-        for hidden_sizes in list_hidden_sizes:
+-            epoch_candidates = list(list_epochs)
+-            if use_cv_early_stop:
++        is_nn = is_torch_model(model_class)
++        hidden_size_candidates = list_hidden_sizes if is_nn else [[]]
++        for hidden_sizes in hidden_size_candidates:
++            epoch_candidates = sorted(set(list_epochs)) if is_nn else [1]
++            if is_nn and use_cv_early_stop:
+                 cv_epoch = select_epochs_with_cv_early_stopping(
+                     model_class,
+                     hidden_sizes,
+                     features=None,
+                 )
+                 if cv_epoch is not None and cv_epoch > 0:
+                     epoch_candidates.append(cv_epoch)
+                     print(
+                         f"[{model_name} | {hidden_sizes}] CV early-stop suggested epochs: {cv_epoch}"
+                     )
+                 else:
+                     print(
+                         f"[{model_name} | {hidden_sizes}] CV early-stop failed; using manual epochs only."
+                     )
+ 
+             epoch_candidates = sorted(set(epoch_candidates))
+-            if not epoch_candidates:
+-                continue
+-
+             for num_epochs in epoch_candidates:
+                 # Apply model on data for N repeats and get predictions, mse and r2
                  mean_r2, std_r2, mean_mse, model_best_preds, max_r2, r2_list, max_run = repeat_fit_model(
--                        model_class,
--                        num_repeats, num_epochs, hidden_sizes, display_steps=True)
-+                    model_class,
-+                    num_repeats, num_epochs, hidden_sizes, display_steps=True)
+                     model_class,
+                     num_repeats, num_epochs, hidden_sizes, display_steps=True)
  
                  # Keep best seed to generate the same predictions later
                  if mean_r2 is None:
@@ -394,8 +468,253 @@ index a1dd781213b3d37c9af12ed12bba6b5a1621243c..bca5b0f009f7ab2e7c1db0635e306450
                      best_epochs = num_epochs
                      best_hidden_sizes = hidden_sizes
                  
-                 total_nodes = sum(hidden_sizes)
+-                total_nodes = sum(hidden_sizes)
++                total_nodes = sum(hidden_sizes) if hidden_sizes else 0
  
                  result = {
                          "model":model_name, 
                          "R2": round(mean_r2,1), 
+                         "MSE": round(mean_mse,2),
+                         "R2 std": round(std_r2, 1),
+                         "R2 List": [round(x, 1) for x in r2_list],
+-                        "hidden sizes": hidden_sizes,
++                        "hidden sizes": hidden_sizes if hidden_sizes else "N/A",
+                         "total hs": total_nodes,
+-                        "epochs": num_epochs,
++                        "epochs": num_epochs if is_nn else "N/A",
+                         }
+                 results.append(result)
+ 
+     # Create a table for results. Some model/config combinations can fail and return no
+     # valid R2 values, so guard against missing/empty result sets.
+     expected_result_cols = ["model", "R2", "MSE", "R2 std", "R2 List", "hidden sizes", "total hs", "epochs"]
+     results_table = pd.DataFrame(data=results)
+     if results_table.empty:
+         results_table = pd.DataFrame(columns=expected_result_cols)
+     else:
+         missing_cols = [col for col in expected_result_cols if col not in results_table.columns]
+         for col in missing_cols:
+             results_table[col] = np.nan
+         # Sort methods by R2 only when the column exists and contains data.
+         if results_table["R2"].notna().any():
+             results_table = results_table.sort_values(by="R2", ascending=False)
+         else:
+             print("No valid R2 values were produced for the selected model/config combinations.")
+ 
+     if results_table["R2"].isna().all():
+         print("Training finished, but no successful runs produced R2 values. Skipping reporting/plots.")
+         results_table.to_csv("exp.csv", index=False)
+         exit()
+ 
+     latex_table = results_table.copy()
+@@ -886,124 +959,124 @@ if answer != "0":
+     if len(outputs) == 1:
+         target_series = y_test[outputs[0]]
+         pred_series = best_predictions[:, 0] if best_predictions.ndim > 1 else best_predictions
+         if answer == "y" or answer == "yes":
+             plot_results(pred_series, target_series, title, file_name, show_plot=True)
+         else:
+             plot_results(pred_series, target_series, title, file_name, show_plot=False)
+     else:
+         print("Skipping scatter plot for multi-output predictions.")
+ 
+     # Save results of predicitons in a file named results.csv
+     results_df = pd.DataFrame()
+     for i, output_name in enumerate(outputs):
+         results_df[f"{output_name}_actual"] = y_test[output_name].values
+         pred_col = best_predictions[:, i] if best_predictions.ndim > 1 else best_predictions
+         results_df[f"{output_name}_predictions"] = np.round(pred_col, 2)
+     results_df.to_csv("results.csv", index=False)
+     print("Predictions of best model were saved in results.csv")
+     answer = input("Do you want to see them? [y]:") 
+     if answer == "y" or answer == "yes":
+        print("======= Predictions of best model:", best_model_name)
+        print(results_df)
+ 
+ best_model = models[best_model_index]
+ best_model_name = model_names[best_model_index]
+-while True:
+-    print("\n\n")
+-    print(f"================= Feature Selection ({best_model_name}:{best_epochs} epochs, {best_hidden_sizes}) ======")
+-    print("\nPlease select a feature selection or sensitivity analysis method:\n")
+-    print("1. Backward Feature Elimination")
+-    print("2. Forward Feature Selection")
+-    print("3. Weight Analysis")
+-    print("4. Jackknife Sensitivity Analysis (Node Deletion Sensitivity)")
+-    print("5. SHAP (SHapley Additive exPlanations)")
+-    print("q. Quit")
+-
+-    answer = input("Enter the number of the method you want to run (or 'q' to quit): ").strip().lower()
+-
+-    if answer == '1':
+-        print("============================= Backward Feature Elimination =============")
+-        backward_table = backward_feature_elimination(best_model, data, inputs, output, best_epochs, best_hidden_sizes)
+-        print("------------ backward feature elimination ---------------")
+-        print(backward_table)
+-
+-        backward_table_latex = generate_latex_table(backward_table, caption="Results of Backward Feature Elimination", label="backward")
+-        with open(os.path.join("tables", "backward.tex"), 'w', encoding='utf-8') as f:
+-            print(backward_table_latex, file=f)
+-
+-    elif answer == '2':
+-        print("============================= Forward Feature Selection ================")
+-        forward_table = forward_feature_selection(best_model, data, inputs, output, 
+-                                                  best_epochs, best_hidden_sizes)
+-        print("\n")
+-        print("------------ forward feature selection ---------------")
+-        print(forward_table)
+-        forward_table_latex = generate_latex_table(forward_table, caption="Results of Forward Feature Selection for different features", label="forward")
+-        with open(os.path.join("tables", "forward.tex"), 'w', encoding='utf-8') as f:
+-            print(forward_table_latex, file=f)
+-
+-    elif answer == '3':
+-        print("============================= Weight Analysis =============")
+-        weight_table = weight_analysis(best_model, data, inputs, output, best_epochs, best_hidden_sizes)
+-        print("------------ weight analysis ---------------")
+-        weight_table = weight_table.sort_values(by='Weight Importance', 
+-                ascending=False)
+-        print("Most important features:")
+-        print(weight_table)
+-        weight_table_latex = generate_latex_table(weight_table, caption="Results of Weight Analysis", label="weight_analysis")
+-        with open(os.path.join("tables", "weight-analysis.tex"), 'w', encoding='utf-8') as f:
+-            print(weight_table_latex, file=f)
+-
+-    elif answer == '4':
+-        print("============================= Jackknife Sensitivity Analysis =============")
+-        jackknife_table = jackknife_sensitivity_analysis(best_model, 
+-                data, inputs, output, best_epochs, best_hidden_sizes)
+-        print("------------ jackknife sensitivity analysis ---------------")
+-        # Sort and display the most sensitive features
+-        jackknife_table = jackknife_table.sort_values(by='Sensitivity', ascending=False)
+-        print(jackknife_table)
+-        jackknife_table_latex = generate_latex_table(jackknife_table, caption="Results of Jackknife Sensitivity Analysis", label="jackknife")
+-        with open(os.path.join("tables", "jackknife.tex"), 'w', encoding='utf-8') as f:
+-            print(jackknife_table_latex, file=f)
+-
+-        # Focus on the top 5 most important features
+-        important_features = jackknife_table.head(5)['Feature'].tolist()
+-        print("\nTop 5 important features to focus on:")
+-        print(important_features)
+-
+-        # Investigate features with negative sensitivity
+-        negative_sensitivity_features = jackknife_table[jackknife_table['Sensitivity'] < 0]
+-        print("\nFeatures with negative sensitivity (potentially redundant or harmful):")
+-        print(negative_sensitivity_features)
+-
+-    elif answer == '5':
+-        print("============================= SHAP Feature Importance =============")
+-        shap_table = shap_feature_importance(best_model, inputs, best_epochs, best_hidden_sizes)
+-        if shap_table is not None:
+-            print("------------ SHAP feature importance ---------------")
+-            print(shap_table)
+-            shap_table_latex = generate_latex_table(shap_table, caption="Results of SHAP Feature Importance", label="shap")
+-            with open(os.path.join("tables", "shap.tex"), 'w', encoding='utf-8') as f:
+-                print(shap_table_latex, file=f)
+-            shap_table.to_csv(os.path.join("tables", "shap.csv"), index=False)
+-
+-    elif answer == 'q':
+-        print("Exiting the feature selection and sensitivity analysis loop. Goodbye!")
+-        break
+-    else:
+-        print("Invalid choice, please try again.")
+-    print("\n----------------------------------------------------------")
+-    input("Press any key to return to main menu ...")
++if is_torch_model(best_model):
++    while True:
++        print("\n\n")
++        print(f"================= Feature Selection ({best_model_name}:{best_epochs} epochs, {best_hidden_sizes}) ======")
++        print("\nPlease select a feature selection or sensitivity analysis method:\n")
++        print("1. Backward Feature Elimination")
++        print("2. Forward Feature Selection")
++        print("3. Weight Analysis")
++        print("4. Jackknife Sensitivity Analysis (Node Deletion Sensitivity)")
++        print("5. SHAP (SHapley Additive exPlanations)")
++        print("q. Quit")
++
++        answer = input("Enter the number of the method you want to run (or 'q' to quit): ").strip().lower()
++
++        if answer == '1':
++            print("============================= Backward Feature Elimination =============")
++            backward_table = backward_feature_elimination(best_model, data, inputs, output, best_epochs, best_hidden_sizes)
++            print("------------ backward feature elimination ---------------")
++            print(backward_table)
++
++            backward_table_latex = generate_latex_table(backward_table, caption="Results of Backward Feature Elimination", label="backward")
++            with open(os.path.join("tables", "backward.tex"), 'w', encoding='utf-8') as f:
++                print(backward_table_latex, file=f)
++
++        elif answer == '2':
++            print("============================= Forward Feature Selection ================")
++            forward_table = forward_feature_selection(best_model, data, inputs, output,
++                                                      best_epochs, best_hidden_sizes)
++            print("\n")
++            print("------------ forward feature selection ---------------")
++            print(forward_table)
++            forward_table_latex = generate_latex_table(forward_table, caption="Results of Forward Feature Selection for different features", label="forward")
++            with open(os.path.join("tables", "forward.tex"), 'w', encoding='utf-8') as f:
++                print(forward_table_latex, file=f)
++
++        elif answer == '3':
++            print("============================= Weight Analysis =============")
++            weight_table = weight_analysis(best_model, data, inputs, output, best_epochs, best_hidden_sizes)
++            print("------------ weight analysis ---------------")
++            weight_table = weight_table.sort_values(by='Weight Importance',
++                    ascending=False)
++            print("Most important features:")
++            print(weight_table)
++            weight_table_latex = generate_latex_table(weight_table, caption="Results of Weight Analysis", label="weight_analysis")
++            with open(os.path.join("tables", "weight-analysis.tex"), 'w', encoding='utf-8') as f:
++                print(weight_table_latex, file=f)
++
++        elif answer == '4':
++            print("============================= Jackknife Sensitivity Analysis =============")
++            jackknife_table = jackknife_sensitivity_analysis(best_model,
++                    data, inputs, output, best_epochs, best_hidden_sizes)
++            print("------------ jackknife sensitivity analysis ---------------")
++            jackknife_table = jackknife_table.sort_values(by='Sensitivity', ascending=False)
++            print(jackknife_table)
++            jackknife_table_latex = generate_latex_table(jackknife_table, caption="Results of Jackknife Sensitivity Analysis", label="jackknife")
++            with open(os.path.join("tables", "jackknife.tex"), 'w', encoding='utf-8') as f:
++                print(jackknife_table_latex, file=f)
++
++            important_features = jackknife_table.head(5)['Feature'].tolist()
++            print("\nTop 5 important features to focus on:")
++            print(important_features)
++
++            negative_sensitivity_features = jackknife_table[jackknife_table['Sensitivity'] < 0]
++            print("\nFeatures with negative sensitivity (potentially redundant or harmful):")
++            print(negative_sensitivity_features)
++
++        elif answer == '5':
++            print("============================= SHAP Feature Importance =============")
++            shap_table = shap_feature_importance(best_model, inputs, best_epochs, best_hidden_sizes)
++            if shap_table is not None:
++                print("------------ SHAP feature importance ---------------")
++                print(shap_table)
++                shap_table_latex = generate_latex_table(shap_table, caption="Results of SHAP Feature Importance", label="shap")
++                with open(os.path.join("tables", "shap.tex"), 'w', encoding='utf-8') as f:
++                    print(shap_table_latex, file=f)
++                shap_table.to_csv(os.path.join("tables", "shap.csv"), index=False)
++
++        elif answer == 'q':
++            print("Exiting the feature selection and sensitivity analysis loop. Goodbye!")
++            break
++        else:
++            print("Invalid choice, please try again.")
++        print("\n----------------------------------------------------------")
++        input("Press any key to return to main menu ...")
++else:
++    print(f"Skipping feature-selection menu because best model '{best_model_name}' is a classical sklearn model.")
+ 
+ 
+ 
+ print("----------------------Important! READ -------------------")
+ print("latex code for tables are saved in tables folder")
+ print("predictions are saved in results.csv file")
+ input("Plots have been saved in the 'plots' folder. (press any key to exit)")
+ 
+ # Visualize the model and save it on mlp_structure image
+ # dummy_input = torch.randn(1, input_size)
+ # from torchviz import make_dot
+ # dot = make_dot(model(dummy_input), params=dict(model.named_parameters()))
+ # dot.render("mlp_structure", format="png", cleanup=True)
