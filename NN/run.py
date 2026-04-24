@@ -677,10 +677,27 @@ if answer != "0":
                         }
                 results.append(result)
 
-    # Creata a Table for results
+    # Create a table for results. Some model/config combinations can fail and return no
+    # valid R2 values, so guard against missing/empty result sets.
+    expected_result_cols = ["model", "R2", "MSE", "R2 std", "R2 List", "hidden sizes", "total hs", "epochs"]
     results_table = pd.DataFrame(data=results)
-    # Sort methods by R2
-    results_table = results_table.sort_values(by = "R2", ascending=False)
+    if results_table.empty:
+        results_table = pd.DataFrame(columns=expected_result_cols)
+    else:
+        missing_cols = [col for col in expected_result_cols if col not in results_table.columns]
+        for col in missing_cols:
+            results_table[col] = np.nan
+        # Sort methods by R2 only when the column exists and contains data.
+        if results_table["R2"].notna().any():
+            results_table = results_table.sort_values(by="R2", ascending=False)
+        else:
+            print("No valid R2 values were produced for the selected model/config combinations.")
+
+    if results_table["R2"].isna().all():
+        print("Training finished, but no successful runs produced R2 values. Skipping reporting/plots.")
+        results_table.to_csv("exp.csv", index=False)
+        exit()
+
     latex_table = results_table.copy()
     # Create and save latex code for table
     latex_table["R2"] = latex_table.apply(lambda row: f"{row['R2']} ± {row['R2 std']}", axis=1)

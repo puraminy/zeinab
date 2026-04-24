@@ -1,138 +1,79 @@
 diff --git a/NN/run.py b/NN/run.py
-index db461dfc194a6dca26ae790241a636a06e113481..9036ee37a7d2e8bf6ff15a47a1457906b2cb26e2 100644
+index 9036ee37a7d2e8bf6ff15a47a1457906b2cb26e2..a1dd781213b3d37c9af12ed12bba6b5a1621243c 100644
 --- a/NN/run.py
 +++ b/NN/run.py
-@@ -200,84 +200,121 @@ def train_single_model(model_class, num_epochs, hidden_sizes, features=None, run
- def shap_feature_importance(model_class, inputs, num_epochs, hidden_sizes):
-     """Compute SHAP-based feature importance for the selected model."""
-     try:
-         import shap
-     except ImportError:
-         print("SHAP is not installed. Install it with: pip install shap")
-         return None
+@@ -655,54 +655,71 @@ if answer != "0":
+                     max_epochs = num_epochs
+                     max_hidden_sizes = hidden_sizes
+                     best_run = max_run
  
-     model, X_train, X_test, y_train, _, r2 = train_single_model(
-         model_class, num_epochs, hidden_sizes, features=inputs, run=0
-     )
-     if r2 is None:
-         print("Could not train model for SHAP analysis.")
-         return None
+                 if mean_r2 > best_mean_r2:
+                     best_mean_r2 = mean_r2
+                     best_mse = mean_mse
+                     best_model_index = model_index
+                     best_epochs = num_epochs
+                     best_hidden_sizes = hidden_sizes
+                 
+                 total_nodes = sum(hidden_sizes)
  
-     scaler = StandardScaler()
-     X_train_scaled = torch.tensor(scaler.fit_transform(X_train), dtype=torch.float32)
-     X_test_scaled = torch.tensor(scaler.transform(X_test), dtype=torch.float32)
-     X_train_norm = normalize(X_train_scaled, normalization_type).numpy()
-     X_test_norm = normalize(X_test_scaled, normalization_type).numpy()
+                 result = {
+                         "model":model_name, 
+                         "R2": round(mean_r2,1), 
+                         "MSE": round(mean_mse,2),
+                         "R2 std": round(std_r2, 1),
+                         "R2 List": [round(x, 1) for x in r2_list],
+                         "hidden sizes": hidden_sizes,
+                         "total hs": total_nodes,
+                         "epochs": num_epochs,
+                         }
+                 results.append(result)
  
-     background_default = min(25, len(X_train_norm))
-     explain_default = min(20, len(X_test_norm))
-     nsamples_default = 100
- 
--    background_size = input(f"Background sample size [{background_default}]:").strip()
--    explain_size = input(f"Number of test samples to explain [{explain_default}]:").strip()
--    nsamples = input(f"Kernel SHAP nsamples [{nsamples_default}]:").strip()
--
--    background_size = int(background_size) if background_size else background_default
--    explain_size = int(explain_size) if explain_size else explain_default
--    nsamples = int(nsamples) if nsamples else nsamples_default
-+    def parse_positive_int(answer, default_value, name):
-+        if not answer:
-+            return default_value
-+        try:
-+            value = int(answer)
-+        except ValueError:
-+            print(f"Invalid {name} '{answer}'. Using default value {default_value}.")
-+            return default_value
-+        if value <= 0:
-+            print(f"{name} must be > 0. Using default value {default_value}.")
-+            return default_value
-+        return value
+-    # Creata a Table for results
++    # Create a table for results. Some model/config combinations can fail and return no
++    # valid R2 values, so guard against missing/empty result sets.
++    expected_result_cols = ["model", "R2", "MSE", "R2 std", "R2 List", "hidden sizes", "total hs", "epochs"]
+     results_table = pd.DataFrame(data=results)
+-    # Sort methods by R2
+-    results_table = results_table.sort_values(by = "R2", ascending=False)
++    if results_table.empty:
++        results_table = pd.DataFrame(columns=expected_result_cols)
++    else:
++        missing_cols = [col for col in expected_result_cols if col not in results_table.columns]
++        for col in missing_cols:
++            results_table[col] = np.nan
++        # Sort methods by R2 only when the column exists and contains data.
++        if results_table["R2"].notna().any():
++            results_table = results_table.sort_values(by="R2", ascending=False)
++        else:
++            print("No valid R2 values were produced for the selected model/config combinations.")
 +
-+    background_size = parse_positive_int(
-+        input(f"Background sample size [{background_default}]:").strip(),
-+        background_default,
-+        "background sample size",
-+    )
-+    explain_size = parse_positive_int(
-+        input(f"Number of test samples to explain [{explain_default}]:").strip(),
-+        explain_default,
-+        "number of test samples",
-+    )
-+    nsamples = parse_positive_int(
-+        input(f"Kernel SHAP nsamples [{nsamples_default}]:").strip(),
-+        nsamples_default,
-+        "Kernel SHAP nsamples",
-+    )
- 
-     background_size = max(1, min(background_size, len(X_train_norm)))
-     explain_size = max(1, min(explain_size, len(X_test_norm)))
- 
-     background = X_train_norm[:background_size]
-     explain_points = X_test_norm[:explain_size]
- 
-     model.eval()
- 
-     def predict_fn(x):
-         with torch.no_grad():
-             x_tensor = torch.tensor(x, dtype=torch.float32)
-             pred = model(x_tensor).detach().numpy()
-         return pred
- 
-     print("Computing SHAP values. This may take some time ...")
-     explainer = shap.KernelExplainer(predict_fn, background)
-     shap_values = explainer.shap_values(explain_points, nsamples=nsamples)
- 
-+    shap_array = np.asarray(shap_values)
-     if isinstance(shap_values, list):
--        shap_array = np.mean([np.abs(sv) for sv in shap_values], axis=0)
--    else:
--        shap_array = np.abs(shap_values)
-+        shap_array = np.stack([np.asarray(sv) for sv in shap_values], axis=0)
++    if results_table["R2"].isna().all():
++        print("Training finished, but no successful runs produced R2 values. Skipping reporting/plots.")
++        results_table.to_csv("exp.csv", index=False)
++        exit()
 +
-+    shap_abs = np.abs(shap_array)
-+    # Collapse extra output dimensions (e.g., multi-output predictions) until we get
-+    # a 2D array with shape (n_samples, n_features) or a 1D feature vector.
-+    while shap_abs.ndim > 2:
-+        shap_abs = shap_abs.mean(axis=0)
-+
-+    mean_abs_shap = shap_abs.mean(axis=0) if shap_abs.ndim == 2 else shap_abs
-+    mean_abs_shap = np.asarray(mean_abs_shap).reshape(-1)
-+    feature_names = list(X_train.columns)
-+
-+    if mean_abs_shap.shape[0] != len(feature_names):
-+        print(
-+            "Could not build SHAP table because feature and SHAP dimensions do not match. "
-+            f"Got {mean_abs_shap.shape[0]} SHAP values for {len(feature_names)} features. "
-+            f"Raw SHAP shape: {np.asarray(shap_values).shape}"
-+        )
-+        return None
+     latex_table = results_table.copy()
+     # Create and save latex code for table
+     latex_table["R2"] = latex_table.apply(lambda row: f"{row['R2']} ± {row['R2 std']}", axis=1)
+     latex_table = latex_table.drop(columns=["R2 List","R2 std"])
+     results_table_latex = generate_latex_table(latex_table, 
+             caption="Results of different models", label="models")
+     with open(os.path.join("tables", "results.tex"), 'w', encoding='utf-8') as f:
+         print(results_table_latex, file=f)
  
--    mean_abs_shap = shap_array.mean(axis=0)
-     shap_table = pd.DataFrame({
--        "Feature": list(X_train.columns),
-+        "Feature": feature_names,
-         "Mean(|SHAP|)": mean_abs_shap
-     }).sort_values(by="Mean(|SHAP|)", ascending=False)
+     # Plot the performance of models across different parameters
+     print("Generating plots ...")
+     plot_model_performance(results_table)
  
-     try:
-         os.makedirs("plots", exist_ok=True)
-         shap.summary_plot(shap_values, explain_points, feature_names=list(X_train.columns), show=False)
-         plt.tight_layout()
-         plt.savefig(os.path.join("plots", "shap_summary.png"), dpi=200)
-         plt.close()
-         print("SHAP summary plot saved at plots/shap_summary.png")
-     except Exception as err:
-         print(f"Could not save SHAP summary plot: {err}")
+     best_model = models[best_model_index]
+     best_model_name = model_names[best_model_index]
+     # Show results
+     max_model_name = model_names[max_model_index]
  
-     return shap_table
- def weight_analysis(model_class, data, inputs, output, num_epochs, hidden_sizes):
-     X_train, X_test, y_train, y_test = read_prep_data(inputs)
-     input_size = X_train.shape[1]
- 
-     output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
-     try:
-         model = model_class(input_size, hidden_sizes, output_size=output_size)
-     except TypeError:
-         model = model_class(input_size, hidden_sizes)
-     _,_,r2, model = fit_model(model, X_train, X_test, y_train, y_test, num_epochs)
-     print("R2:", r2)
+     print("============ Results for models =========================")
+     print(results_table)
+     print("========================== Best Mean Model ===============================")
+     print("Best Mean R-Squred:", best_mean_r2)
+     print("Best model with better mean R-Squred:", best_model_name) 
+     print("Best Hidden sizes:", best_hidden_sizes) 
+     print("Best epochs:", best_epochs) 
