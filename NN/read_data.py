@@ -3,10 +3,10 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 
-def _resolve_columns(data, output_feature=None, input_features=None):
+def resolve_data_columns(data, output_feature=None, input_features=None):
     """Resolve and validate target/input columns."""
     if output_feature is None:
-        output_feature = "rate" if "rate" in data.columns else data.columns[-1]
+        output_feature = data.columns[-1]
 
     if output_feature not in data.columns:
         raise ValueError(f"Target column '{output_feature}' not found in dataset.")
@@ -117,7 +117,7 @@ def prepare_data_from_file(
         raise FileNotFoundError(f"Dataset file '{dataset_path}' not found.")
 
     data = pd.read_csv(dataset_path)
-    output_feature, input_features = _resolve_columns(data, output_feature, input_features)
+    output_feature, input_features = resolve_data_columns(data, output_feature, input_features)
 
     X = data[input_features]
     y = data[output_feature]
@@ -141,7 +141,7 @@ def sync_prep_data_with_dataset(
         raise FileNotFoundError(f"Dataset file '{dataset_path}' not found.")
 
     data = pd.read_csv(dataset_path)
-    output_feature, input_features = _resolve_columns(data, output_feature, input_features)
+    output_feature, input_features = resolve_data_columns(data, output_feature, input_features)
 
     expected_files = [
         os.path.join(prep_folder, "X_train.csv"),

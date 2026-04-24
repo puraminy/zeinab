@@ -12,7 +12,7 @@ import os
 from latex import *
 from plot import *
 from models import *
-from read_data import read_prep_data, sync_prep_data_with_dataset
+from read_data import read_prep_data, sync_prep_data_with_dataset, resolve_data_columns
 import inspect
 import models
 
@@ -335,7 +335,33 @@ def repeat_fit_model(model_class, num_repeats,
 
 ############################### Start of Program ###################
 # Sync prep_data with current dataset (NN/data.csv by default).
-sync_prep_data_with_dataset(dataset_path="data.csv", prep_folder="prep_data", output_feature="white_total_points")
+dataset_path="data.csv"
+data = pd.read_csv(dataset_path)
+output_feature, input_features = resolve_data_columns(data, 
+                                                      output_feature=None, 
+                                                      input_features=None)
+# User input for selecting the model and number of epochs
+answer = input("\n".join([str(i) + ")" + name for i,name in enumerate(input_features)]) \
+        + "\nSelect one or several input_features (separated with space) [all]:")
+
+if not answer:
+    answer = "all"
+if answer.lower() == "all":
+    selected_input_features = None
+else:
+    indexes = answer.split()
+    selected_input_features = []
+    for ind in indexes:
+        feature_index = int(ind)
+        if feature_index > len(input_features):
+            print("Invalid feature selection. Please enter all or 1 to ", len(input_features) - 1)
+            exit()
+        selected_input_features.append(input_features[feature_index])
+
+sync_prep_data_with_dataset(dataset_path=dataset_path, 
+                            prep_folder="prep_data", 
+                            input_features = selected_input_features,
+                            output_feature=None)
 
 # Load data from prep_data after schema sync.
 X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder="prep_data")
