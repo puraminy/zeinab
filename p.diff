@@ -1,145 +1,21 @@
 diff --git a/NN/convert/convert2.py b/NN/convert/convert2.py
-index 8ffa0977e56c89022e7657e5e34b3816f87d6f46..09dad259daa2c6b4df6c75270e48b9db028f24de 100644
+index 492bc9dad74facfbd60cd7d7719f4757e2f0894f..7906408af47f1bc8a6f577db729859c50b9d3a7c 100644
 --- a/NN/convert/convert2.py
 +++ b/NN/convert/convert2.py
-@@ -16,145 +16,240 @@ def clean_number(x):
-         return None
- 
-     x = str(x)
- 
-     # Persian → English digits
-     persian_digits = "۰۱۲۳۴۵۶۷۸۹"
-     english_digits = "0123456789"
-     for p, e in zip(persian_digits, english_digits):
-         x = x.replace(p, e)
- 
-     x = x.replace(",", "")
-     x = x.replace("٫", ".")
-     x = x.replace("...", "")
-     x = x.strip()
- 
-     try:
-         return float(x)
-     except:
-         return None
- 
- 
- # ==========================================
- # 3️⃣ SECTION + PROPERTY FINDER
- # ==========================================
- 
--def find_section_value(df, section_keyword, property_keyword, search_depth=6):
-+def extract_number_near_property(df, row_idx, col_idx, max_row_lookahead=2, max_col_offset=2):
-+    """
-+    Extract a number that is most likely associated with a property label cell.
-+    Priority:
-+      1) Same cell
-+      2) Same column in next rows (for header-above-value layouts, e.g. white_* section)
-+      3) Nearby cells in same row (small horizontal window only)
-+      4) Nearby columns in next rows (small horizontal window)
-+    """
-+
-+    current_row = df.iloc[row_idx]
-+
-+    # 1) Same cell
-+    num = clean_number(current_row.iloc[col_idx])
-+    if num is not None:
-+        return num
-+
-+    # 2) Same column in next rows
-+    for r in range(row_idx + 1, min(row_idx + 1 + max_row_lookahead, len(df))):
-+        next_row = df.iloc[r]
-+        num = clean_number(next_row.iloc[col_idx])
-+        if num is not None:
-+            return num
-+
-+    # 3) Nearby cells in same row (closest first)
-+    for offset in range(1, max_col_offset + 1):
-+        right = col_idx + offset
-+        left = col_idx - offset
-+
-+        if right < len(current_row):
-+            num = clean_number(current_row.iloc[right])
-+            if num is not None:
-+                return num
-+
-+        if left >= 0:
-+            num = clean_number(current_row.iloc[left])
-+            if num is not None:
-+                return num
-+
-+    # 4) Nearby columns in next rows (closest first)
-+    for r in range(row_idx + 1, min(row_idx + 1 + max_row_lookahead, len(df))):
-+        next_row = df.iloc[r]
-+        for offset in range(1, max_col_offset + 1):
-+            right = col_idx + offset
-+            left = col_idx - offset
-+
-+            if right < len(next_row):
-+                num = clean_number(next_row.iloc[right])
-+                if num is not None:
-+                    return num
-+
-+            if left >= 0:
-+                num = clean_number(next_row.iloc[left])
-+                if num is not None:
-+                    return num
-+
-+    return None
-+
-+
-+def detect_shift_columns(df):
-+    """
-+    Detect day/night value columns from the header row that contains both labels.
-+    """
-+    for i in range(len(df)):
-+        row = df.iloc[i].astype(str)
-+        day_cols = [idx for idx, cell in enumerate(row) if "روز" in cell]
-+        night_cols = [idx for idx, cell in enumerate(row) if "شب" in cell]
-+        if day_cols and night_cols:
-+            return day_cols[0], night_cols[0]
-+    return None, None
-+
-+
-+def find_section_value(df, section_keyword, property_keyword, search_depth=6, target_col=None):
-     """
-     Find section row (e.g., شربت خام)
-     Then search next rows for property (e.g., رنگ)
-     """
- 
-     for i in range(len(df)):
- 
-         row = df.iloc[i].astype(str)
- 
-         # Step 1: Find section
-         if any(section_keyword in cell for cell in row):
- 
+@@ -113,113 +113,252 @@ def find_section_value(df, section_keyword, property_keyword, search_depth=6):
              # Step 2: Search next few rows
              for j in range(i, min(i + search_depth, len(df))):
                  subrow = df.iloc[j].astype(str)
  
-+                for col_idx, cell in enumerate(subrow):
-+                    if property_keyword in cell:
-+                        # Shift-based layout: value should be taken from a fixed day/night column.
-+                        if target_col is not None and target_col < len(df.columns):
-+                            direct_value = clean_number(df.iloc[j, target_col])
-+                            if direct_value is not None:
-+                                return direct_value
-+
-+                            # In some sheets value can be just below the property row.
-+                            for r in range(j + 1, min(j + 3, len(df))):
-+                                below_value = clean_number(df.iloc[r, target_col])
-+                                if below_value is not None:
-+                                    return below_value
-+
-+                        value = extract_number_near_property(df, j, col_idx)
-+                        if value is not None:
-+                            return value
-+
-+                # Fallback: old behavior if property exists but
-+                # no position-based number can be extracted
+                 for col_idx, cell in enumerate(subrow):
+                     if property_keyword in cell:
+                         value = extract_number_near_property(df, j, col_idx)
+                         if value is not None:
+                             return value
+ 
+                 # Fallback: old behavior if property exists but
+                 # no position-based number can be extracted
                  if any(property_keyword in cell for cell in subrow):
--
                      numbers = []
                      for cell in subrow:
                          num = clean_number(cell)
@@ -152,6 +28,86 @@ index 8ffa0977e56c89022e7657e5e34b3816f87d6f46..09dad259daa2c6b4df6c75270e48b9db
      return None
  
  
++def find_day_night_columns(df):
++    """
++    Detect day/night column anchors from header rows containing "روز" and "شب".
++    Returns (day_col_idx, night_col_idx). If not found, returns (None, None).
++    """
++    for i in range(len(df)):
++        row = df.iloc[i].astype(str)
++        day_cols = [idx for idx, cell in enumerate(row) if "روز" in cell]
++        night_cols = [idx for idx, cell in enumerate(row) if "شب" in cell]
++        if day_cols and night_cols:
++            return day_cols[0], night_cols[0]
++    return None, None
++
++
++def extract_number_near_column(df, row_idx, target_col_idx, max_row_lookahead=2, max_col_offset=2):
++    """
++    Extract a numeric value close to a target column anchor for a specific row.
++    """
++    if target_col_idx is None:
++        return None
++
++    # Same row first, closest columns first
++    row = df.iloc[row_idx]
++    for offset in range(0, max_col_offset + 1):
++        for col_idx in (target_col_idx + offset, target_col_idx - offset):
++            if 0 <= col_idx < len(row):
++                num = clean_number(row.iloc[col_idx])
++                if num is not None:
++                    return num
++
++    # Look in next rows near same anchor
++    for r in range(row_idx + 1, min(row_idx + 1 + max_row_lookahead, len(df))):
++        next_row = df.iloc[r]
++        for offset in range(0, max_col_offset + 1):
++            for col_idx in (target_col_idx + offset, target_col_idx - offset):
++                if 0 <= col_idx < len(next_row):
++                    num = clean_number(next_row.iloc[col_idx])
++                    if num is not None:
++                        return num
++
++    return None
++
++
++def find_section_shift_values(
++    df,
++    section_keyword,
++    property_keyword,
++    day_col_idx,
++    night_col_idx,
++    search_depth=6
++):
++    """
++    Find values for both day and night shifts for a section/property pair.
++    Returns (day_value, night_value).
++    """
++    for i in range(len(df)):
++        row = df.iloc[i].astype(str)
++
++        if any(section_keyword in cell for cell in row):
++            for j in range(i, min(i + search_depth, len(df))):
++                subrow = df.iloc[j].astype(str)
++
++                if any(property_keyword in cell for cell in subrow):
++                    day_value = extract_number_near_column(df, j, day_col_idx)
++                    night_value = extract_number_near_column(df, j, night_col_idx)
++
++                    # Fallback if anchors fail: pick first two numeric values in row
++                    if day_value is None or night_value is None:
++                        nums = [clean_number(cell) for cell in df.iloc[j]]
++                        nums = [n for n in nums if n is not None]
++                        if day_value is None and len(nums) >= 1:
++                            day_value = nums[0]
++                        if night_value is None and len(nums) >= 2:
++                            night_value = nums[1]
++
++                    return day_value, night_value
++
++    return None, None
++
++
  # ==========================================
  # 4️⃣ EXCEL PROCESSING
  # ==========================================
@@ -169,132 +125,148 @@ index 8ffa0977e56c89022e7657e5e34b3816f87d6f46..09dad259daa2c6b4df6c75270e48b9db
      df = df.fillna("").astype(str)
  
 -    day_data = {"sheet_name": sheet}
--
--    # -------------------------------
--    # RAW SUGAR
--    # -------------------------------
++    day_col_idx, night_col_idx = find_day_night_columns(df)
++
++    day_data = {"sheet_name": sheet, "shift_name": "day"}
++    night_data = {"sheet_name": sheet, "shift_name": "night"}
+ 
+     # -------------------------------
+     # RAW SUGAR
+     # -------------------------------
 -    day_data["raw_sugar_color"] = find_section_value(df, "شکرخام", "رنگ")
--
--    # -------------------------------
--    # RAW SYRUP
--    # -------------------------------
++    day_value, night_value = find_section_shift_values(df, "شکرخام", "رنگ", day_col_idx, night_col_idx)
++    day_data["raw_sugar_color"] = day_value
++    night_data["raw_sugar_color"] = night_value
+ 
+     # -------------------------------
+     # RAW SYRUP
+     # -------------------------------
 -    day_data["raw_syrup_brix"] = find_section_value(df, "شربت خام", "بریکس")
 -    day_data["raw_syrup_color"] = find_section_value(df, "شربت خام", "رنگ")
--
--    # -------------------------------
--    # LIME TREATED SYRUP
--    # -------------------------------
++    day_value, night_value = find_section_shift_values(df, "شربت خام", "بریکس", day_col_idx, night_col_idx)
++    day_data["raw_syrup_brix"] = day_value
++    night_data["raw_syrup_brix"] = night_value
++
++    day_value, night_value = find_section_shift_values(df, "شربت خام", "رنگ", day_col_idx, night_col_idx)
++    day_data["raw_syrup_color"] = day_value
++    night_data["raw_syrup_color"] = night_value
+ 
+     # -------------------------------
+     # LIME TREATED SYRUP
+     # -------------------------------
 -    day_data["lime_alkalinity"] = find_section_value(df, "شربت آهک", "قلیایی")
 -    day_data["co2_percent"] = find_section_value(df, "CO2", "درصد")
--
--    # -------------------------------
--    # CARBONATED SYRUP
--    # -------------------------------
++    day_value, night_value = find_section_shift_values(df, "شربت آهک", "قلیایی", day_col_idx, night_col_idx)
++    day_data["lime_alkalinity"] = day_value
++    night_data["lime_alkalinity"] = night_value
++
++    day_value, night_value = find_section_shift_values(df, "CO2", "درصد", day_col_idx, night_col_idx)
++    day_data["co2_percent"] = day_value
++    night_data["co2_percent"] = night_value
+ 
+     # -------------------------------
+     # CARBONATED SYRUP
+     # -------------------------------
 -    day_data["carbonated_alkalinity"] = find_section_value(df, "شربت کربناتور", "قلیایی")
 -    day_data["carbonated_pH"] = find_section_value(df, "شربت کربناتور", "PH")
--
--    # -------------------------------
--    # FILTER CAKE
--    # -------------------------------
++    day_value, night_value = find_section_shift_values(df, "شربت کربناتور", "قلیایی", day_col_idx, night_col_idx)
++    day_data["carbonated_alkalinity"] = day_value
++    night_data["carbonated_alkalinity"] = night_value
++
++    day_value, night_value = find_section_shift_values(df, "شربت کربناتور", "PH", day_col_idx, night_col_idx)
++    day_data["carbonated_pH"] = day_value
++    night_data["carbonated_pH"] = night_value
+ 
+     # -------------------------------
+     # FILTER CAKE
+     # -------------------------------
 -    day_data["filtercake_moisture"] = find_section_value(df, "گل فیلتر", "رطوبت")
 -    day_data["filtercake_sugar"] = find_section_value(df, "گل فیلتر", "قند")
--
--    # -------------------------------
--    # SWEET WATER
--    # -------------------------------
++    day_value, night_value = find_section_shift_values(df, "گل فیلتر", "رطوبت", day_col_idx, night_col_idx)
++    day_data["filtercake_moisture"] = day_value
++    night_data["filtercake_moisture"] = night_value
++
++    day_value, night_value = find_section_shift_values(df, "گل فیلتر", "قند", day_col_idx, night_col_idx)
++    day_data["filtercake_sugar"] = day_value
++    night_data["filtercake_sugar"] = night_value
+ 
+     # -------------------------------
+     # SWEET WATER
+     # -------------------------------
 -    day_data["sweetwater_brix"] = find_section_value(df, "آب شیرین", "بریکس")
--
--    # -------------------------------
--    # SULPHITED SYRUP
--    # -------------------------------
++    day_value, night_value = find_section_shift_values(df, "آب شیرین", "بریکس", day_col_idx, night_col_idx)
++    day_data["sweetwater_brix"] = day_value
++    night_data["sweetwater_brix"] = night_value
+ 
+     # -------------------------------
+     # SULPHITED SYRUP
+     # -------------------------------
 -    day_data["sulphited_pH"] = find_section_value(df, "شربت سولفیته", "PH")
 -    day_data["sulphited_brix"] = find_section_value(df, "شربت سولفیته", "بریکس")
 -    day_data["sulphited_color"] = find_section_value(df, "شربت سولفیته", "رنگ")
--
--    # -------------------------------
--    # STANDARD LIQUOR
--    # -------------------------------
++    day_value, night_value = find_section_shift_values(df, "شربت سولفیته", "PH", day_col_idx, night_col_idx)
++    day_data["sulphited_pH"] = day_value
++    night_data["sulphited_pH"] = night_value
++
++    day_value, night_value = find_section_shift_values(df, "شربت سولفیته", "بریکس", day_col_idx, night_col_idx)
++    day_data["sulphited_brix"] = day_value
++    night_data["sulphited_brix"] = night_value
++
++    day_value, night_value = find_section_shift_values(df, "شربت سولفیته", "رنگ", day_col_idx, night_col_idx)
++    day_data["sulphited_color"] = day_value
++    night_data["sulphited_color"] = night_value
+ 
+     # -------------------------------
+     # STANDARD LIQUOR
+     # -------------------------------
 -    day_data["standard_liquor_pH"] = find_section_value(df, "لیکور استاندارد", "PH")
 -    day_data["standard_liquor_brix"] = find_section_value(df, "لیکور استاندارد", "بریکس")
 -    day_data["standard_liquor_color"] = find_section_value(df, "لیکور استاندارد", "رنگ")
--
--    # -------------------------------
--    # FINAL WHITE SUGAR (AVERAGE TWO SHIFTS)
--    # -------------------------------
++    day_value, night_value = find_section_shift_values(df, "لیکور استاندارد", "PH", day_col_idx, night_col_idx)
++    day_data["standard_liquor_pH"] = day_value
++    night_data["standard_liquor_pH"] = night_value
++
++    day_value, night_value = find_section_shift_values(df, "لیکور استاندارد", "بریکس", day_col_idx, night_col_idx)
++    day_data["standard_liquor_brix"] = day_value
++    night_data["standard_liquor_brix"] = night_value
++
++    day_value, night_value = find_section_shift_values(df, "لیکور استاندارد", "رنگ", day_col_idx, night_col_idx)
++    day_data["standard_liquor_color"] = day_value
++    night_data["standard_liquor_color"] = night_value
+ 
+     # -------------------------------
+     # FINAL WHITE SUGAR (AVERAGE TWO SHIFTS)
+     # -------------------------------
 -    day_data["white_moisture"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "رطوبت")
 -    day_data["white_invert"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "اینورت")
 -    day_data["white_solution_color"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "رنگ محلول")
 -    day_data["white_apparent_color"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "رنگ ظاهری")
 -    day_data["white_ash"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "خاکستر")
 -    day_data["white_total_points"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "جمع پوئن")
--
--    all_days_data.append(day_data)
-+    day_col, night_col = detect_shift_columns(df)
-+    shifts = [("day", day_col), ("night", night_col)]
++    white_moisture = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "رطوبت")
++    white_invert = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "اینورت")
++    white_solution_color = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "رنگ محلول")
++    white_apparent_color = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "رنگ ظاهری")
++    white_ash = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "خاکستر")
++    white_total_points = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "جمع پوئن")
 +
-+    for shift_name, shift_col in shifts:
-+        day_data = {"sheet_name": sheet, "shift_name": shift_name}
++    # These are already two-shift averages, so keep same value for both rows.
++    day_data["white_moisture"] = white_moisture
++    day_data["white_invert"] = white_invert
++    day_data["white_solution_color"] = white_solution_color
++    day_data["white_apparent_color"] = white_apparent_color
++    day_data["white_ash"] = white_ash
++    day_data["white_total_points"] = white_total_points
 +
-+        # -------------------------------
-+        # RAW SUGAR
-+        # -------------------------------
-+        day_data["raw_sugar_color"] = find_section_value(df, "شکرخام", "رنگ", target_col=shift_col)
-+
-+        # -------------------------------
-+        # RAW SYRUP
-+        # -------------------------------
-+        day_data["raw_syrup_brix"] = find_section_value(df, "شربت خام", "بریکس", target_col=shift_col)
-+        day_data["raw_syrup_color"] = find_section_value(df, "شربت خام", "رنگ", target_col=shift_col)
-+
-+        # -------------------------------
-+        # LIME TREATED SYRUP
-+        # -------------------------------
-+        day_data["lime_alkalinity"] = find_section_value(df, "شربت آهک", "قلیایی", target_col=shift_col)
-+        day_data["co2_percent"] = find_section_value(df, "CO2", "درصد", target_col=shift_col)
-+
-+        # -------------------------------
-+        # CARBONATED SYRUP
-+        # -------------------------------
-+        day_data["carbonated_alkalinity"] = find_section_value(df, "شربت کربناتور", "قلیایی", target_col=shift_col)
-+        day_data["carbonated_pH"] = find_section_value(df, "شربت کربناتور", "PH", target_col=shift_col)
-+
-+        # -------------------------------
-+        # FILTER CAKE
-+        # -------------------------------
-+        day_data["filtercake_moisture"] = find_section_value(df, "گل فیلتر", "رطوبت", target_col=shift_col)
-+        day_data["filtercake_sugar"] = find_section_value(df, "گل فیلتر", "قند", target_col=shift_col)
-+
-+        # -------------------------------
-+        # SWEET WATER
-+        # -------------------------------
-+        day_data["sweetwater_brix"] = find_section_value(df, "آب شیرین", "بریکس", target_col=shift_col)
-+
-+        # -------------------------------
-+        # SULPHITED SYRUP
-+        # -------------------------------
-+        day_data["sulphited_pH"] = find_section_value(df, "شربت سولفیته", "PH", target_col=shift_col)
-+        day_data["sulphited_brix"] = find_section_value(df, "شربت سولفیته", "بریکس", target_col=shift_col)
-+        day_data["sulphited_color"] = find_section_value(df, "شربت سولفیته", "رنگ", target_col=shift_col)
-+
-+        # -------------------------------
-+        # STANDARD LIQUOR
-+        # -------------------------------
-+        day_data["standard_liquor_pH"] = find_section_value(df, "لیکور استاندارد", "PH", target_col=shift_col)
-+        day_data["standard_liquor_brix"] = find_section_value(df, "لیکور استاندارد", "بریکس", target_col=shift_col)
-+        day_data["standard_liquor_color"] = find_section_value(df, "لیکور استاندارد", "رنگ", target_col=shift_col)
-+
-+        # -------------------------------
-+        # FINAL WHITE SUGAR (AVERAGE TWO SHIFTS)
-+        # -------------------------------
-+        # Same averaged value is repeated for both day/night rows.
-+        day_data["white_moisture"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "رطوبت")
-+        day_data["white_invert"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "اینورت")
-+        day_data["white_solution_color"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "رنگ محلول")
-+        day_data["white_apparent_color"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "رنگ ظاهری")
-+        day_data["white_ash"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "خاکستر")
-+        day_data["white_total_points"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "جمع پوئن")
-+
-+        all_days_data.append(day_data)
++    night_data["white_moisture"] = white_moisture
++    night_data["white_invert"] = white_invert
++    night_data["white_solution_color"] = white_solution_color
++    night_data["white_apparent_color"] = white_apparent_color
++    night_data["white_ash"] = white_ash
++    night_data["white_total_points"] = white_total_points
+ 
+     all_days_data.append(day_data)
++    all_days_data.append(night_data)
  
  
  # ==========================================
@@ -306,4 +278,3 @@ index 8ffa0977e56c89022e7657e5e34b3816f87d6f46..09dad259daa2c6b4df6c75270e48b9db
  
  print("\n✅ EXTRACTION COMPLETED SUCCESSFULLY")
  print("Output file:", output_file)
--
