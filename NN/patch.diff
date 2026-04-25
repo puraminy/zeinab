@@ -1,132 +1,176 @@
 diff --git a/NN/run.py b/NN/run.py
-index f82c82b190f23aada5949afc63d8578802839926..0700c43a4acf354f74239f1b9740a9e155bb15ab 100644
+index 0700c43a4acf354f74239f1b9740a9e155bb15ab..20e2b848b76ed00f0c0843463ca0e13834851f0b 100644
 --- a/NN/run.py
 +++ b/NN/run.py
-@@ -531,117 +531,125 @@ def jackknife_sensitivity_analysis(model_class, data, inputs, output, num_epochs
-     for input_feature in inputs:
-         reduced_inputs = [f for f in inputs if f != input_feature]
-         reduced_r2_list = []
-         for _ in range(_num_repeats):
-             reduced_r2, _, _, _, _, _, _run = repeat_fit_model(model_class,
-                     1, num_epochs, hidden_sizes, features= reduced_inputs)
-             reduced_r2_list.append(reduced_r2)
-         reduced_r2_mean = np.mean(reduced_r2_list)
-         sensitivity = base_model_r2 - reduced_r2_mean
-         variance = np.var(reduced_r2_list)
-         sensitivities[input_feature] = sensitivity
-         variances.append(variance)
+@@ -126,50 +126,95 @@ def parse_epochs_input(answer, default_epochs):
+     if not parsed_epochs and not use_cv_early_stop:
+         parsed_epochs = list(default_epochs)
+     return sorted(set(parsed_epochs)), use_cv_early_stop
  
-     sensitivity_table = pd.DataFrame(list(sensitivities.items()), columns=['Feature', 'Sensitivity'])
-     sensitivity_table['Variance'] = variances
-     return sensitivity_table
  
- def backward_feature_elimination(model_class, data, inputs, output, num_epochs, hidden_sizes):
-     mean_r2, _, _, _, _,_, _run = repeat_fit_model(model_class,
-             num_repeats, num_epochs, hidden_sizes,features=inputs)
-     best_r2 = mean_r2
-     print("Using all features")
-     print("Features:", inputs)
-     print("R2:", mean_r2)
-     candidates = inputs
--    results = {}
-     rows = [] # Rows of a table to show the features and the result
-     rows.append({"features": ", ".join(inputs), "R2": round(mean_r2,2)})
-     while(True):
-+        results = {}
-         for feature in candidates:
-             # Selet other features except for current feature
-             features = [f for f in candidates if f != feature]
-             mean_r2, _, _, _,_,_, _run = repeat_fit_model(model_class, num_repeats, num_epochs, hidden_sizes, features=features)
-             results[feature] = mean_r2
-             print("---------------------------------------")
-             # Results of removing the feature
-             print("Removing:", feature)
-             print("Features:", features)
-             print("R2:", mean_r2)
-             rows.append({"features": ", ".join(features), "R2": round(mean_r2,2)})
+ def infer_selected_features_from_table(table, fallback_features):
+     """Infer selected features from the best-R2 row in a feature-selection table."""
+     if table is None or table.empty:
+         return list(fallback_features)
  
-+        if not results:
-+            print("No valid feature-elimination candidates were produced; stopping.")
-+            break
+     if "R2" not in table.columns or "features" not in table.columns:
+         return list(fallback_features)
+ 
+     ranked = table.dropna(subset=["R2"])
+     if ranked.empty:
+         return list(fallback_features)
+ 
+     best_row = ranked.loc[ranked["R2"].astype(float).idxmax()]
+     features_text = str(best_row["features"]).strip()
+     if not features_text:
+         return list(fallback_features)
+ 
+     selected = [f.strip() for f in features_text.split(",") if f.strip()]
+     return selected if selected else list(fallback_features)
+ 
 +
-         max_results =  max(results.values())
-         max_results_key = max(results, key=results.get)
- 
-         if max_results > best_r2:
-             candidates.remove(max_results_key)
-             best_r2 = max_results
-             print('=================================')
-             print('step: ' + str(len(inputs) - len(candidates)))
-             print(candidates)
-             print('Best R2: ' + str(max_results))
-             print('================================')
-         else:
-             break
- 
-     print('\n\n')
-     print('=============== Final Features ==================')
-     print('Selected Features: ')
-     print(candidates)
-     print('Final R2: ' + str(best_r2))
-     print('Elminated Features: ')
-     print(set(data.columns).difference(candidates))
- 
-     table = pd.DataFrame(data=rows)
-     return table
- 
- # Finds the combinaiton of features that best predict y
- # This method add features one by one
- # Search about Forward Feature Selction
- def forward_feature_selection(model_class, data, inputs, output, num_epochs, hidden_sizes):
-     candidates = []
-     best_r2 = -1
--    results = {}
-     rows = [] # Rows of a table to show the features and the result
-     while(True):
-+        results = {}
-         # for all features except for the candidates
-         for feature in data.drop(candidates, axis=1).columns:
-             if len(candidates) == 0:
-                 features = [feature]
-             else:
-                 features = [feature] + candidates 
- 
-             mean_r2, _, _, _,_,_, _run = repeat_fit_model(model_class, num_repeats, num_epochs, hidden_sizes, features=features)
-             if mean_r2 is None:
-                 continue
-             results[feature] = mean_r2
-             print("--------------------------------")
-             print("Adding feature ", feature)
-             print("Features:", features)
-             print("R2:", mean_r2)
-             rows.append({"features": ", ".join(features), "R2": round(mean_r2,2)})
- 
-+        if not results:
-+            print("No valid feature-selection candidates were produced; stopping.")
-+            break
++def compute_regression_report_metrics(y_true, y_pred):
++    """
++    Compute report-friendly regression metrics for the selected/best model.
++    Metrics follow common WEKA-style definitions for RAE and RRSE.
++    """
++    y_true_arr = np.asarray(y_true, dtype=float)
++    y_pred_arr = np.asarray(y_pred, dtype=float)
 +
-         max_results =  max(results.values())
-         max_results_key = max(results, key=results.get)
++    if y_true_arr.ndim == 1:
++        y_true_arr = y_true_arr.reshape(-1, 1)
++    if y_pred_arr.ndim == 1:
++        y_pred_arr = y_pred_arr.reshape(-1, 1)
++
++    y_true_flat = y_true_arr.reshape(-1)
++    y_pred_flat = y_pred_arr.reshape(-1)
++
++    if y_true_flat.size == 0 or y_pred_flat.size == 0:
++        return None
++
++    if y_true_flat.size > 1:
++        correlation = float(np.corrcoef(y_true_flat, y_pred_flat)[0, 1])
++    else:
++        correlation = np.nan
++
++    abs_errors = np.abs(y_pred_flat - y_true_flat)
++    sq_errors = (y_pred_flat - y_true_flat) ** 2
++    mae = float(np.mean(abs_errors))
++    rmse = float(np.sqrt(np.mean(sq_errors)))
++
++    true_mean = float(np.mean(y_true_flat))
++    rae_denominator = float(np.sum(np.abs(y_true_flat - true_mean)))
++    rrse_denominator = float(np.sum((y_true_flat - true_mean) ** 2))
++    rae = float((np.sum(abs_errors) / rae_denominator) * 100.0) if rae_denominator != 0 else np.nan
++    rrse = float(np.sqrt(np.sum(sq_errors) / rrse_denominator) * 100.0) if rrse_denominator != 0 else np.nan
++
++    return {
++        "Correlation coefficient": correlation,
++        "Mean absolute error": mae,
++        "Root mean squared error": rmse,
++        "Relative absolute error": rae,
++        "Root relative squared error": rrse,
++        "Total Number of Instances": int(y_true_arr.shape[0]),
++    }
++
+ # Define the normalization function
+ def normalize(data, normalization_type):
+     if normalization_type == 'z_score':
+         return (data - data.mean()) / data.std()
+     elif normalization_type == 'minmax':
+         return (data - data.min()) / (data.max() - data.min())
+     else:
+         raise ValueError("Unsupported normalization type. Choose 'z_score' or 'minmax'.")
  
-         if max_results > best_r2:
-             candidates.append(max_results_key)
-             best_r2 = max_results
-             print('=================================')
-             print('step: ' + str(len(candidates)))
-             print(candidates)
-             print('Best R2: ' + str(max_results))
-             print('================================')
+ # Function to apply model on data and generate predictions
+ # Return predictions, MSE and R-Squared
+ import torch.nn.init as init
+ 
+ def fit_model(model, X_train, X_test, y_train, y_test, 
+         num_epochs, display_steps=False, run=0):
+ 
+     set_model_seed(model_seed + run)
+     scaler = StandardScaler()
+     X_train = torch.tensor(scaler.fit_transform(X_train), dtype=torch.float32)
+     X_test = torch.tensor(scaler.transform(X_test), dtype=torch.float32)
+     y_train_values = y_train.values if hasattr(y_train, "values") else y_train
+     y_test_values = y_test.values if hasattr(y_test, "values") else y_test
+     y_train = torch.tensor(y_train_values, dtype=torch.float32)
+     y_test = torch.tensor(y_test_values, dtype=torch.float32)
+     if y_train.ndim == 1:
+@@ -1008,50 +1053,75 @@ if answer != "0":
+     max_model_name = model_names[max_model_index]
+ 
+     print("============ Results for models =========================")
+     print(results_table)
+     print("========================== Best Mean Model ===============================")
+     print("Best Mean R-Squred:", best_mean_r2)
+     print("Best model with better mean R-Squred:", best_model_name) 
+     print("Best Hidden sizes:", best_hidden_sizes) 
+     print("Best epochs:", best_epochs) 
+     print("=========================== Max Model ================================")
+     print("Best model with better max R-Squred:", max_model_name) 
+     print("Best Hidden sizes:", max_hidden_sizes) 
+     print("Best epochs:", max_epochs) 
+     print("Max R-Squred:", best_r2)
+  
+     results_table.to_csv("exp.csv")
+ 
+     X_train, X_test, y_train, y_test = read_prep_data(active_features)
+ 
+     # Show and save the plot for best results
+     best_predictions = model_best_predictions[max_model_name] 
+     output_title = ", ".join(outputs)
+     title = "Prediction of " + output_title + " with " + max_model_name + " epochs:" + str(max_epochs)
+     file_name = f"R2-{best_r2:.2f}-" + max_model_name + "-" + "-".join(outputs) + ".png"
+ 
++    y_test_values = y_test.values if hasattr(y_test, "values") else y_test
++    best_model_metrics = compute_regression_report_metrics(y_test_values, best_predictions)
++    if best_model_metrics:
++        print("===================== Best Selected Model Report =====================")
++        print(f"R-Squared                              {best_r2/100:.4f}")
++        print(
++            f"Correlation coefficient                {best_model_metrics['Correlation coefficient']:.4f}"
++        )
++        print(
++            f"Mean absolute error                    {best_model_metrics['Mean absolute error']:.4f}"
++        )
++        print(
++            f"Root mean squared error                {best_model_metrics['Root mean squared error']:.4f}"
++        )
++        print(
++            f"Relative absolute error                {best_model_metrics['Relative absolute error']:.4f} %"
++        )
++        print(
++            f"Root relative squared error            {best_model_metrics['Root relative squared error']:.4f} %"
++        )
++        print(
++            f"Total Number of Instances              {best_model_metrics['Total Number of Instances']}"
++        )
++        print("=====================================================================")
++
+     print("\n\n")
+     print("Plot was saved in plots folder")
+     answer = input("Do you want to see them? [y]:") 
+     if len(outputs) == 1:
+         target_series = y_test[outputs[0]]
+         pred_series = best_predictions[:, 0] if best_predictions.ndim > 1 else best_predictions
+         if answer == "y" or answer == "yes":
+             plot_results(pred_series, target_series, title, file_name, show_plot=True)
          else:
-             break
+             plot_results(pred_series, target_series, title, file_name, show_plot=False)
+     else:
+         print("Skipping scatter plot for multi-output predictions.")
  
-     print('\n\n')
-     print('=============== Final Features ==================')
-     print('Selected Features: ')
-     print(candidates)
-     print('Final R2: ' + str(best_r2))
-     print('Elminated Features: ')
-     print(set(data.columns).difference(candidates))
- 
-     table = pd.DataFrame(data=rows)
-     return table
- 
+     # Save results of predicitons in a file named results.csv
+     results_df = pd.DataFrame()
+     for i, output_name in enumerate(outputs):
+         results_df[f"{output_name}_actual"] = y_test[output_name].values
+         pred_col = best_predictions[:, i] if best_predictions.ndim > 1 else best_predictions
+         results_df[f"{output_name}_predictions"] = np.round(pred_col, 2)
+     results_df.to_csv("results.csv", index=False)
+     print("Predictions of best model were saved in results.csv")
+     answer = input("Do you want to see them? [y]:") 
+     if answer == "y" or answer == "yes":
+        print("======= Predictions of best model:", best_model_name)
+        print(results_df)

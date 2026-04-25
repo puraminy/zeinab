@@ -148,6 +148,51 @@ def infer_selected_features_from_table(table, fallback_features):
     selected = [f.strip() for f in features_text.split(",") if f.strip()]
     return selected if selected else list(fallback_features)
 
+
+def compute_regression_report_metrics(y_true, y_pred):
+    """
+    Compute report-friendly regression metrics for the selected/best model.
+    Metrics follow common WEKA-style definitions for RAE and RRSE.
+    """
+    y_true_arr = np.asarray(y_true, dtype=float)
+    y_pred_arr = np.asarray(y_pred, dtype=float)
+
+    if y_true_arr.ndim == 1:
+        y_true_arr = y_true_arr.reshape(-1, 1)
+    if y_pred_arr.ndim == 1:
+        y_pred_arr = y_pred_arr.reshape(-1, 1)
+
+    y_true_flat = y_true_arr.reshape(-1)
+    y_pred_flat = y_pred_arr.reshape(-1)
+
+    if y_true_flat.size == 0 or y_pred_flat.size == 0:
+        return None
+
+    if y_true_flat.size > 1:
+        correlation = float(np.corrcoef(y_true_flat, y_pred_flat)[0, 1])
+    else:
+        correlation = np.nan
+
+    abs_errors = np.abs(y_pred_flat - y_true_flat)
+    sq_errors = (y_pred_flat - y_true_flat) ** 2
+    mae = float(np.mean(abs_errors))
+    rmse = float(np.sqrt(np.mean(sq_errors)))
+
+    true_mean = float(np.mean(y_true_flat))
+    rae_denominator = float(np.sum(np.abs(y_true_flat - true_mean)))
+    rrse_denominator = float(np.sum((y_true_flat - true_mean) ** 2))
+    rae = float((np.sum(abs_errors) / rae_denominator) * 100.0) if rae_denominator != 0 else np.nan
+    rrse = float(np.sqrt(np.sum(sq_errors) / rrse_denominator) * 100.0) if rrse_denominator != 0 else np.nan
+
+    return {
+        "Correlation coefficient": correlation,
+        "Mean absolute error": mae,
+        "Root mean squared error": rmse,
+        "Relative absolute error": rae,
+        "Root relative squared error": rrse,
+        "Total Number of Instances": int(y_true_arr.shape[0]),
+    }
+
 # Define the normalization function
 def normalize(data, normalization_type):
     if normalization_type == 'z_score':
@@ -1029,6 +1074,31 @@ if answer != "0":
     output_title = ", ".join(outputs)
     title = "Prediction of " + output_title + " with " + max_model_name + " epochs:" + str(max_epochs)
     file_name = f"R2-{best_r2:.2f}-" + max_model_name + "-" + "-".join(outputs) + ".png"
+
+    y_test_values = y_test.values if hasattr(y_test, "values") else y_test
+    best_model_metrics = compute_regression_report_metrics(y_test_values, best_predictions)
+    if best_model_metrics:
+        print("===================== Best Selected Model Report =====================")
+        print(f"R-Squared                              {best_r2/100:.4f}")
+        print(
+            f"Correlation coefficient                {best_model_metrics['Correlation coefficient']:.4f}"
+        )
+        print(
+            f"Mean absolute error                    {best_model_metrics['Mean absolute error']:.4f}"
+        )
+        print(
+            f"Root mean squared error                {best_model_metrics['Root mean squared error']:.4f}"
+        )
+        print(
+            f"Relative absolute error                {best_model_metrics['Relative absolute error']:.4f} %"
+        )
+        print(
+            f"Root relative squared error            {best_model_metrics['Root relative squared error']:.4f} %"
+        )
+        print(
+            f"Total Number of Instances              {best_model_metrics['Total Number of Instances']}"
+        )
+        print("=====================================================================")
 
     print("\n\n")
     print("Plot was saved in plots folder")
