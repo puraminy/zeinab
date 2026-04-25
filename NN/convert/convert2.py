@@ -238,8 +238,8 @@ for sheet in all_sheets:
 
     day_col_idx, night_col_idx = find_day_night_columns(df)
 
-    day_data = {"sheet_name": sheet, "shift_name": "day"}
-    night_data = {"sheet_name": sheet, "shift_name": "night"}
+    day_data = {"sheet_name": sheet, "shift_name": "0"}
+    night_data = {"sheet_name": sheet, "shift_name": "1"}
 
     # -------------------------------
     # RAW SUGAR

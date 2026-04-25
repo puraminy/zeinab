@@ -1,4 +1,5 @@
 from matplotlib import pyplot as plt
+from matplotlib import pyplot as plt
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -684,7 +685,10 @@ def repeat_fit_model(model_class, num_repeats,
 
 ############################### Start of Program ###################
 # Sync prep_data with current dataset (NN/data.csv by default).
-dataset_path="data.csv"
+dataset_path="convert/sugar_all_days_clean_7.csv"
+print("====================================") 
+print("DATASET PATH: " + dataset_path)
+print("====================================") 
 data = pd.read_csv(dataset_path)
 output_features, input_features = resolve_data_columns(
     data,
