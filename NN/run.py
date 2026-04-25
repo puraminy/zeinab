@@ -30,6 +30,16 @@ from read_data import read_prep_data, sync_prep_data_with_dataset, resolve_data_
 import inspect
 import models
 
+try:
+    from xgboost import XGBRegressor
+except ImportError:
+    XGBRegressor = None
+
+try:
+    from lightgbm import LGBMRegressor
+except ImportError:
+    LGBMRegressor = None
+
 ANSI_RESET = "\033[0m"
 ANSI_GREEN = "\033[92m"
 ANSI_BLUE = "\033[94m"
@@ -95,6 +105,7 @@ SKLEARN_MODEL_FACTORIES = {
         n_estimators=300, random_state=seed
     ),
     "GradientBoostingRegressor": lambda seed: GradientBoostingRegressor(random_state=seed),
+    "GBMRegressor": lambda seed: GradientBoostingRegressor(random_state=seed),
     "HistGradientBoostingRegressor": lambda seed: HistGradientBoostingRegressor(
         random_state=seed
     ),
@@ -107,6 +118,24 @@ SKLEARN_MODEL_FACTORIES = {
     "Lasso": lambda seed: Lasso(random_state=seed),
     "ElasticNet": lambda seed: ElasticNet(random_state=seed),
 }
+
+if XGBRegressor is not None:
+    SKLEARN_MODEL_FACTORIES["XGBoostRegressor"] = lambda seed: XGBRegressor(
+        n_estimators=300,
+        random_state=seed,
+        objective="reg:squarederror",
+    )
+else:
+    print("Optional dependency not found: xgboost. Skipping XGBoostRegressor.")
+
+if LGBMRegressor is not None:
+    SKLEARN_MODEL_FACTORIES["LightGBMRegressor"] = lambda seed: LGBMRegressor(
+        n_estimators=300,
+        random_state=seed,
+        verbose=-1,
+    )
+else:
+    print("Optional dependency not found: lightgbm. Skipping LightGBMRegressor.")
 
 
 def _expand_index_token(token, options_len):
