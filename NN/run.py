@@ -553,10 +553,10 @@ def backward_feature_elimination(model_class, data, inputs, output, num_epochs, 
     print("Features:", inputs)
     print("R2:", mean_r2)
     candidates = inputs
-    results = {}
     rows = [] # Rows of a table to show the features and the result
     rows.append({"features": ", ".join(inputs), "R2": round(mean_r2,2)})
     while(True):
+        results = {}
         for feature in candidates:
             # Selet other features except for current feature
             features = [f for f in candidates if f != feature]
@@ -568,6 +568,10 @@ def backward_feature_elimination(model_class, data, inputs, output, num_epochs, 
             print("Features:", features)
             print("R2:", mean_r2)
             rows.append({"features": ", ".join(features), "R2": round(mean_r2,2)})
+
+        if not results:
+            print("No valid feature-elimination candidates were produced; stopping.")
+            break
 
         max_results =  max(results.values())
         max_results_key = max(results, key=results.get)
@@ -600,9 +604,9 @@ def backward_feature_elimination(model_class, data, inputs, output, num_epochs, 
 def forward_feature_selection(model_class, data, inputs, output, num_epochs, hidden_sizes):
     candidates = []
     best_r2 = -1
-    results = {}
     rows = [] # Rows of a table to show the features and the result
     while(True):
+        results = {}
         # for all features except for the candidates
         for feature in data.drop(candidates, axis=1).columns:
             if len(candidates) == 0:
@@ -619,6 +623,10 @@ def forward_feature_selection(model_class, data, inputs, output, num_epochs, hid
             print("Features:", features)
             print("R2:", mean_r2)
             rows.append({"features": ", ".join(features), "R2": round(mean_r2,2)})
+
+        if not results:
+            print("No valid feature-selection candidates were produced; stopping.")
+            break
 
         max_results =  max(results.values())
         max_results_key = max(results, key=results.get)
