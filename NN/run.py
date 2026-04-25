@@ -340,6 +340,7 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
 
         prep_train_path = os.path.join(prep_folder, "train.csv")
         prep_test_path = os.path.join(prep_folder, "test.csv")
+
         if os.path.isfile(prep_train_path) and os.path.isfile(prep_test_path):
             print("\nYou chose not to continue with current prep_data selection.")
             print("1) Reselect input features from prep_data/train.csv and prep_data/test.csv")

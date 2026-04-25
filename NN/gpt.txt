@@ -1,0 +1,1 @@
+Note that train.csv and test.csv are only written in prep_data after building data from main source by the user, but in feature selection just X_train and Y_train etc change not train.csv, and test.csv, alternativly (maybe better) you can also combine X_train and y_train to a file (but not train.csv) it can be Xy_train.csv and Xy_test.csv

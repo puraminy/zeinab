@@ -305,7 +305,7 @@ def select_features(data):
     return output_features, input_features
 
 
-def save_data(folder, X_train, X_test, y_train, y_test, metadata=None):
+def save_data(folder, X_train, X_test, y_train, y_test, metadata=None, after_prepare=False):
     """Save train/test splits to prep_data files."""
     os.makedirs(folder, exist_ok=True)
     print(f"\nSaving processed data to '{folder}'...")
@@ -313,11 +313,20 @@ def save_data(folder, X_train, X_test, y_train, y_test, metadata=None):
     X_test.to_csv(os.path.join(folder, "X_test.csv"), index=False)
     y_train.to_csv(os.path.join(folder, "y_train.csv"), index=False)
     y_test.to_csv(os.path.join(folder, "y_test.csv"), index=False)
+    
+    if after_prepare is True:
+        pd.concat([X_train.reset_index(drop=True), y_train.reset_index(drop=True)], axis=1).to_csv(
+            os.path.join(folder, "train.csv"), index=False
+        )
+        pd.concat([X_test.reset_index(drop=True), y_test.reset_index(drop=True)], axis=1).to_csv(
+            os.path.join(folder, "test.csv"), index=False
+        )
+
     pd.concat([X_train.reset_index(drop=True), y_train.reset_index(drop=True)], axis=1).to_csv(
-        os.path.join(folder, "train.csv"), index=False
+        os.path.join(folder, "Xy_train.csv"), index=False
     )
     pd.concat([X_test.reset_index(drop=True), y_test.reset_index(drop=True)], axis=1).to_csv(
-        os.path.join(folder, "test.csv"), index=False
+        os.path.join(folder, "Xy_test.csv"), index=False
     )
     if metadata is not None:
         save_prep_metadata(folder, metadata)
@@ -395,7 +404,7 @@ def prepare_data_from_file(
         "test_size": float(test_size),
         "random_state": int(random_state),
     }
-    save_data(prep_folder, X_train, X_test, y_train, y_test, metadata=metadata)
+    save_data(prep_folder, X_train, X_test, y_train, y_test, metadata=metadata, after_prepare = True)
     return X_train, X_test, y_train, y_test
 
 
