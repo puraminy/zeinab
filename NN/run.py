@@ -16,6 +16,7 @@ from sklearn.neighbors import KNeighborsRegressor
 from sklearn.svm import SVR
 from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
 from sklearn.tree import DecisionTreeRegressor
+from sklearn.multioutput import MultiOutputRegressor
 import pandas as pd
 import numpy as np
 import torch.nn as nn
@@ -389,23 +390,56 @@ def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
 
     y_train_values = y_train.values if hasattr(y_train, "values") else y_train
     y_test_values = y_test.values if hasattr(y_test, "values") else y_test
-    if y_train_values.ndim == 2 and y_train_values.shape[1] == 1:
+    y_test_2d = y_test_values.reshape(-1, 1) if y_test_values.ndim == 1 else y_test_values
+
+    is_multi_output = y_train_values.ndim == 2 and y_train_values.shape[1] > 1
+    fit_model = model
+
+    if is_multi_output:
+        model_name = getattr(model, "__class__", type(model)).__name__
+        supports_multioutput = False
+        if hasattr(model, "_get_tags"):
+            supports_multioutput = bool(model._get_tags().get("multioutput", False))
+
+        if not supports_multioutput:
+            print(
+                f"{model_name} does not natively support multi-output regression. "
+                "Wrapping it with MultiOutputRegressor."
+            )
+            fit_model = MultiOutputRegressor(model)
+
+        y_train_fit = y_train_values
+    elif y_train_values.ndim == 2 and y_train_values.shape[1] == 1:
         y_train_fit = y_train_values.ravel()
     else:
         y_train_fit = y_train_values
 
-    model.fit(X_train_scaled, y_train_fit)
-    predictions = model.predict(X_test_scaled)
+    try:
+        fit_model.fit(X_train_scaled, y_train_fit)
+        predictions = fit_model.predict(X_test_scaled)
+    except ValueError as err:
+        if is_multi_output:
+            model_name = getattr(model, "__class__", type(model)).__name__
+            print(
+                f"Warning: {model_name} could not be trained on all outputs ({err}). "
+                "Falling back to the last selected output only."
+            )
+            y_train_last = y_train_values[:, -1]
+            y_test_2d = y_test_values[:, -1].reshape(-1, 1)
+            fit_model = model
+            fit_model.fit(X_train_scaled, y_train_last)
+            predictions = fit_model.predict(X_test_scaled)
+        else:
+            raise
 
     if predictions.ndim == 1:
         predictions_2d = predictions.reshape(-1, 1)
     else:
         predictions_2d = predictions
 
-    y_test_2d = y_test_values.reshape(-1, 1) if y_test_values.ndim == 1 else y_test_values
     mse = float(np.mean((predictions_2d - y_test_2d) ** 2))
     r2 = r2_score(y_test_2d, predictions_2d, multioutput='uniform_average')
-    return predictions_2d, mse, r2, model
+    return predictions_2d, mse, r2, fit_model
 
 
 def is_torch_model(model_class):

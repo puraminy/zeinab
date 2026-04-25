@@ -1,8 +1,14 @@
 diff --git a/NN/run.py b/NN/run.py
-index e3a073da3aeeb84f50ae28fbe6b779044e54de8d..6ef26ed15dff044b51503cc5ab72a339a5166b6b 100644
+index 6ef26ed15dff044b51503cc5ab72a339a5166b6b..37b5b0c14361b03ea3c98ebc8c566db9c60239d6 100644
 --- a/NN/run.py
 +++ b/NN/run.py
-@@ -7,50 +7,71 @@ from sklearn.preprocessing import StandardScaler
+@@ -1,43 +1,44 @@
+ from matplotlib import pyplot as plt
+ from matplotlib import pyplot as plt
+ import torch
+ import torch.nn as nn
+ import torch.optim as optim
+ from sklearn.preprocessing import StandardScaler
  from sklearn.model_selection import KFold
  from sklearn.ensemble import (
      RandomForestRegressor,
@@ -15,6 +21,7 @@ index e3a073da3aeeb84f50ae28fbe6b779044e54de8d..6ef26ed15dff044b51503cc5ab72a339
  from sklearn.svm import SVR
  from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
  from sklearn.tree import DecisionTreeRegressor
++from sklearn.multioutput import MultiOutputRegressor
  import pandas as pd
  import numpy as np
  import torch.nn as nn
@@ -28,159 +35,121 @@ index e3a073da3aeeb84f50ae28fbe6b779044e54de8d..6ef26ed15dff044b51503cc5ab72a339
  import inspect
  import models
  
-+ANSI_RESET = "\033[0m"
-+ANSI_GREEN = "\033[92m"
-+ANSI_BLUE = "\033[94m"
-+
-+
-+def color_text(text, color):
-+    return f"{color}{text}{ANSI_RESET}"
-+
-+
-+def print_divider(char="=", width=68):
-+    print(char * width)
-+
-+
-+def print_numbered_feature_list(title, features, color):
-+    print_divider("=")
-+    print(title)
-+    print_divider("-")
-+    for idx, feature_name in enumerate(features, start=1):
-+        print(color_text(f"{idx:>2}. {feature_name}", color))
-+    print_divider("=")
-+
- list_epochs = [20, 50, 100 , 200]
- best_epochs = 100 
+ ANSI_RESET = "\033[0m"
+ ANSI_GREEN = "\033[92m"
+ ANSI_BLUE = "\033[94m"
  
- exp_df = pd.DataFrame()
  
- num_repeats = 5
- # num_repeats shows the number of times to repeat the experiment to get its average values
- # changing model_seed generates different results for each run for each model
- # The same model_seed produces the same results in each run which is good for reporducability of experiments
- # Dont change it if you want to reproduce the same results
- data_seed = 123 # it is used for random_state of splitting data into source and train sets
- # changing it creates different source and train sets.
- # Since the number of data is low changing it can largely affect the results
- model_seed = 123 # it is used for random_state of models
- def set_model_seed(model_seed):
-     torch.manual_seed(model_seed)
-     np.random.seed(model_seed)
+ def color_text(text, color):
+     return f"{color}{text}{ANSI_RESET}"
  
- learning_rate = 0.05
- # The learnign rate used in ANN
- #hidden_size1 = 10
- hidden_size1 = 15
- hidden_size2 = 10
  
- # the number of neurons in hidden layers
-@@ -886,54 +907,54 @@ else:
-         selected_input_features = parse_multi_select(
-             answer,
-             available_input_features,
-             allow_all=True,
-         )
-     except ValueError as err:
-         print(f"Invalid input feature selection: {err}")
-         exit()
+ def print_divider(char="=", width=68):
+     print(char * width)
  
- sync_prep_data_with_dataset(
-     dataset_path=dataset_path,
-     prep_folder="prep_data",
-     input_features=selected_input_features,
-     output_feature=selected_output_features
- )
+@@ -367,67 +368,100 @@ def fit_model(model, X_train, X_test, y_train, y_test,
+     with torch.no_grad():
+         predictions = model(X_test_normalized)
+         
+         # Check for NaN in predictions
+         if torch.isnan(predictions).any():
+             print(f"NaN detected in predictions")
+             return None, None, None, model
  
- # Load data from prep_data after schema sync.
- X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder="prep_data")
+     mse = nn.MSELoss()(predictions, y_test_normalized)
+     mae = nn.L1Loss()(predictions, y_test_normalized)
+     predictions_denormalized = predictions * y_test.std() + y_test.mean()
  
- # After loading, get the column names from X_train
- inputs = X_train.columns.tolist()
- outputs = y_train.columns.tolist()
- output = outputs
+     predictions_np = predictions_denormalized.numpy()
+     y_test_np = y_test.numpy()
+     r2 = r2_score(y_test_np, predictions_np, multioutput='uniform_average')
+     return predictions_np, mse, r2, model
  
- data = X_train
--print("inputs:", inputs)
--print("outputs:", outputs)
-+print_numbered_feature_list("Selected Input Features", inputs, ANSI_GREEN)
-+print_numbered_feature_list("Selected Output Features", outputs, ANSI_BLUE)
- active_features = list(inputs)
--ans = input("Are these inputs and outputs for files in prep_data folder correct?(y/n):")
-+ans = input("Confirm these numbered inputs/outputs from prep_data folder (y/n): ")
- if ans.strip().lower() not in ("y", "yes"):
-     print("Please re-run and choose your preferred input/output features.")
-     exit()
  
- # Dynamically collect all neural-network model classes from the module
- nn_models = [
-     member for name, member in inspect.getmembers(models, inspect.isclass)
-     if issubclass(member, models.nn.Module) and member.__module__ == models.__name__
- ]
- sklearn_models = [
-     (name, factory) for name, factory in SKLEARN_MODEL_FACTORIES.items()
- ]
- models = nn_models + [factory for _, factory in sklearn_models]
- model_names = [model.__name__ for model in nn_models] + [name for name, _ in sklearn_models]
- # User input for selecting the model and number of epochs
- answer = input("\n".join([str(i) + ")" + name for i,name in enumerate(model_names)]) \
-         + "\nSelect one or several models (separated with space) [all]:")
+ def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
+     scaler_x = StandardScaler()
+     X_train_scaled = scaler_x.fit_transform(X_train)
+     X_test_scaled = scaler_x.transform(X_test)
  
- if not answer:
-     answer = "all"
- 
- try:
-     selected_model_names = parse_multi_select(answer, model_names, allow_all=True)
- except ValueError as err:
-     print(f"Invalid model selection: {err}")
-@@ -1152,50 +1173,51 @@ if answer != "0":
-     print("========================== Best Mean Model ===============================")
-     print("Best Mean R-Squred:", best_mean_r2)
-     print("Best model with better mean R-Squred:", best_model_name) 
-     print("Best Hidden sizes:", best_hidden_sizes) 
-     print("Best epochs:", best_epochs) 
-     print("=========================== Max Model ================================")
-     print("Best model with better max R-Squred:", max_model_name) 
-     print("Best Hidden sizes:", max_hidden_sizes) 
-     print("Best epochs:", max_epochs) 
-     print("Max R-Squred:", best_r2)
-  
-     results_table.to_csv("exp.csv")
- 
-     X_train, X_test, y_train, y_test = read_prep_data(active_features)
- 
-     # Show and save the plot for best results
-     best_predictions = model_best_predictions[max_model_name] 
-     output_title = ", ".join(outputs)
-     title = "Prediction of " + output_title + " with " + max_model_name + " epochs:" + str(max_epochs)
-     file_name = f"R2-{best_r2:.2f}-" + max_model_name + "-" + "-".join(outputs) + ".png"
- 
+     y_train_values = y_train.values if hasattr(y_train, "values") else y_train
      y_test_values = y_test.values if hasattr(y_test, "values") else y_test
-     best_model_metrics = compute_regression_report_metrics(y_test_values, best_predictions)
-     if best_model_metrics:
-         print("===================== Best Selected Model Report =====================")
-+        print(f"Selected model name                    {max_model_name}")
-         print(f"R-Squared                              {best_r2/100:.4f}")
-         print(
-             f"Correlation coefficient                {best_model_metrics['Correlation coefficient']:.4f}"
-         )
-         print(
-             f"Mean absolute error                    {best_model_metrics['Mean absolute error']:.4f}"
-         )
-         print(
-             f"Root mean squared error                {best_model_metrics['Root mean squared error']:.4f}"
-         )
-         print(
-             f"Relative absolute error                {best_model_metrics['Relative absolute error']:.4f} %"
-         )
-         print(
-             f"Root relative squared error            {best_model_metrics['Root relative squared error']:.4f} %"
-         )
-         print(
-             f"Total Number of Instances              {best_model_metrics['Total Number of Instances']}"
-         )
-         print("=====================================================================")
+-    if y_train_values.ndim == 2 and y_train_values.shape[1] == 1:
++    y_test_2d = y_test_values.reshape(-1, 1) if y_test_values.ndim == 1 else y_test_values
++
++    is_multi_output = y_train_values.ndim == 2 and y_train_values.shape[1] > 1
++    fit_model = model
++
++    if is_multi_output:
++        model_name = getattr(model, "__class__", type(model)).__name__
++        supports_multioutput = False
++        if hasattr(model, "_get_tags"):
++            supports_multioutput = bool(model._get_tags().get("multioutput", False))
++
++        if not supports_multioutput:
++            print(
++                f"{model_name} does not natively support multi-output regression. "
++                "Wrapping it with MultiOutputRegressor."
++            )
++            fit_model = MultiOutputRegressor(model)
++
++        y_train_fit = y_train_values
++    elif y_train_values.ndim == 2 and y_train_values.shape[1] == 1:
+         y_train_fit = y_train_values.ravel()
+     else:
+         y_train_fit = y_train_values
  
-     print("\n\n")
-     print("Plot was saved in plots folder")
-     answer = input("Do you want to see them? [y]:") 
-     if len(outputs) == 1:
+-    model.fit(X_train_scaled, y_train_fit)
+-    predictions = model.predict(X_test_scaled)
++    try:
++        fit_model.fit(X_train_scaled, y_train_fit)
++        predictions = fit_model.predict(X_test_scaled)
++    except ValueError as err:
++        if is_multi_output:
++            model_name = getattr(model, "__class__", type(model)).__name__
++            print(
++                f"Warning: {model_name} could not be trained on all outputs ({err}). "
++                "Falling back to the last selected output only."
++            )
++            y_train_last = y_train_values[:, -1]
++            y_test_2d = y_test_values[:, -1].reshape(-1, 1)
++            fit_model = model
++            fit_model.fit(X_train_scaled, y_train_last)
++            predictions = fit_model.predict(X_test_scaled)
++        else:
++            raise
+ 
+     if predictions.ndim == 1:
+         predictions_2d = predictions.reshape(-1, 1)
+     else:
+         predictions_2d = predictions
+ 
+-    y_test_2d = y_test_values.reshape(-1, 1) if y_test_values.ndim == 1 else y_test_values
+     mse = float(np.mean((predictions_2d - y_test_2d) ** 2))
+     r2 = r2_score(y_test_2d, predictions_2d, multioutput='uniform_average')
+-    return predictions_2d, mse, r2, model
++    return predictions_2d, mse, r2, fit_model
+ 
+ 
+ def is_torch_model(model_class):
+     return isinstance(model_class, type) and issubclass(model_class, nn.Module)
+ 
+ 
+ def select_epochs_with_cv_early_stopping(model_class, hidden_sizes, features=None, folds=5, patience=20, min_delta=1e-4):
+     """
+     Estimate a good epoch count via K-Fold CV with early stopping on validation loss.
+     Returns an integer epoch recommendation or None if it cannot be computed.
+     """
+     X_train, X_test, y_train, y_test = read_prep_data(features)
+     full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
+     full_y = pd.concat([y_train, y_test], axis=0).reset_index(drop=True)
+ 
+     kfold = KFold(n_splits=folds, shuffle=True, random_state=data_seed)
+     best_epochs = []
+     input_size = full_X.shape[1]
+     output_size = full_y.shape[1] if hasattr(full_y, "shape") and len(full_y.shape) > 1 else 1
+     max_epochs = max(list_epochs) if list_epochs else 200
+ 
+     for fold_index, (train_idx, val_idx) in enumerate(kfold.split(full_X), start=1):
+         x_train_fold = full_X.iloc[train_idx]
+         x_val_fold = full_X.iloc[val_idx]
+         y_train_fold = full_y.iloc[train_idx]
