@@ -1,176 +1,270 @@
 diff --git a/NN/run.py b/NN/run.py
-index 0700c43a4acf354f74239f1b9740a9e155bb15ab..20e2b848b76ed00f0c0843463ca0e13834851f0b 100644
+index 20e2b848b76ed00f0c0843463ca0e13834851f0b..971e80f1c273095c71bb34cc2361484b2b763629 100644
 --- a/NN/run.py
 +++ b/NN/run.py
-@@ -126,50 +126,95 @@ def parse_epochs_input(answer, default_epochs):
+@@ -55,75 +55,139 @@ hidden_size2 = 10
+ hidden_sizes = [15, 10, 3 ]
+ # nn.ReLU(), nn.Tanh(), nn.Identity()
+ 
+ list_hidden_sizes = [[10], [15, 10, 3], [8, 4], [15, 5]]
+ normalization_type = "z_score"
+ 
+ 
+ SKLEARN_MODEL_FACTORIES = {
+     "RandomForestRegressor": lambda seed: RandomForestRegressor(
+         n_estimators=300, random_state=seed
+     ),
+     "ExtraTreesRegressor": lambda seed: ExtraTreesRegressor(
+         n_estimators=300, random_state=seed
+     ),
+     "GradientBoostingRegressor": lambda seed: GradientBoostingRegressor(random_state=seed),
+     "DecisionTreeRegressor": lambda seed: DecisionTreeRegressor(random_state=seed),
+     "KNeighborsRegressor": lambda seed: KNeighborsRegressor(n_neighbors=5),
+     "SVR_RBF": lambda seed: SVR(kernel="rbf"),
+     "LinearRegression": lambda seed: LinearRegression(),
+     "Ridge": lambda seed: Ridge(random_state=seed),
+     "Lasso": lambda seed: Lasso(random_state=seed),
+     "ElasticNet": lambda seed: ElasticNet(random_state=seed),
+ }
+ 
+ 
++def _expand_index_token(token, options_len):
++    """Expand a token like '3' or '1-4' into a list of indexes."""
++    if "-" in token:
++        bounds = token.split("-", 1)
++        if len(bounds) != 2 or not bounds[0].isdigit() or not bounds[1].isdigit():
++            raise ValueError(f"Invalid range '{token}'. Use syntax like 1-4.")
++        start = int(bounds[0])
++        end = int(bounds[1])
++        if start > end:
++            raise ValueError(f"Invalid range '{token}'. Start must be <= end.")
++        indexes = list(range(start, end + 1))
++    else:
++        if not token.isdigit():
++            raise ValueError(f"Invalid input '{token}'. Please use indexes or ranges like 1-4.")
++        indexes = [int(token)]
++
++    for index in indexes:
++        if index < 0 or index >= options_len:
++            raise ValueError(
++                f"Invalid selection '{index}'. Valid range is 0 to {options_len - 1}."
++            )
++    return indexes
++
++
+ def parse_multi_select(answer, options, allow_all=True):
+-    """Parse space-separated indexes and return selected values."""
++    """Parse indexes/ranges and return selected option values.
++
++    Supported syntax examples:
++    - 0 2 4
++    - 1-5
++    - 1,3,6-9
++    - !0 !4-6 (exclude indexes/ranges from current pool)
++    """
+     if not answer:
+         return None if allow_all else []
+ 
+     answer = answer.strip().lower()
+     if allow_all and answer == "all":
+         return None
+ 
+-    selected_values = []
+-    for token in answer.split():
+-        if not token.isdigit():
+-            raise ValueError(f"Invalid input '{token}'. Please use numeric indexes.")
+-        index = int(token)
+-        if index < 0 or index >= len(options):
+-            raise ValueError(
+-                f"Invalid selection '{index}'. Valid range is 0 to {len(options) - 1}."
+-            )
+-        selected_values.append(options[index])
++    include_indexes = set()
++    exclude_indexes = set()
++    tokens = [token for token in answer.replace(",", " ").split() if token]
++    if not tokens:
++        return None if allow_all else []
++
++    for token in tokens:
++        is_exclude = token.startswith("!")
++        clean = token[1:] if is_exclude else token
++        if clean == "all":
++            if not allow_all:
++                raise ValueError("'all' is not allowed for this selection.")
++            include_indexes.update(range(len(options)))
++            continue
++
++        indexes = _expand_index_token(clean, len(options))
++        if is_exclude:
++            exclude_indexes.update(indexes)
++        else:
++            include_indexes.update(indexes)
+ 
+-    if len(set(selected_values)) != len(selected_values):
+-        raise ValueError("Duplicate selections are not allowed.")
++    if include_indexes:
++        final_indexes = sorted(include_indexes.difference(exclude_indexes))
++    else:
++        # Exclude-only syntax means "all except excluded".
++        if exclude_indexes:
++            final_indexes = [i for i in range(len(options)) if i not in exclude_indexes]
++        elif allow_all:
++            return None
++        else:
++            final_indexes = []
++
++    if not final_indexes:
++        raise ValueError("Selection is empty after applying include/exclude filters.")
++
++    selected_values = [options[index] for index in final_indexes]
+     return selected_values
+ 
+ 
++def print_selection_guide():
++    print("\nSelection guide:")
++    print("- Single indexes: 0 3 5")
++    print("- Range syntax: 1-9")
++    print("- Mixed syntax: 0 2-4 7")
++    print("- Commas are also allowed: 0,2-4,7")
++    print("- Exclude indexes/ranges with ! : !0 !5-8")
++    print("- In auto mode, exclude-only means all features except those indexes.")
++
++
+ def ask_with_default(prompt, default):
+     answer = input(f"{prompt} [{default}]:").strip()
+     return answer if answer else str(default)
+ 
+ 
+ def parse_epochs_input(answer, default_epochs):
+     """Parse epochs input and detect optional CV early-stop mode."""
+     text = answer.strip().lower()
+     if text == "0":
+         return [], False
+ 
+     use_cv_early_stop = False
+     parsed_epochs = []
+     for token in answer.split():
+         lowered = token.lower()
+         if lowered in ("cv", "auto"):
+             use_cv_early_stop = True
+             continue
+         if token.isdigit() and int(token) > 0:
+             parsed_epochs.append(int(token))
+ 
      if not parsed_epochs and not use_cv_early_stop:
          parsed_epochs = list(default_epochs)
      return sorted(set(parsed_epochs)), use_cv_early_stop
  
+@@ -747,78 +811,99 @@ def repeat_fit_model(model_class, num_repeats,
  
- def infer_selected_features_from_table(table, fallback_features):
-     """Infer selected features from the best-R2 row in a feature-selection table."""
-     if table is None or table.empty:
-         return list(fallback_features)
+         r2_list.append(r2*100)
+         mse_list.append(mse)
+     if display_steps:
+         print(r2_list)
  
-     if "R2" not in table.columns or "features" not in table.columns:
-         return list(fallback_features)
+     mean_r2 = np.mean(r2_list) if r2_list else None
+     mean_mse = np.mean(mse_list) if mse_list else None
+     std_r2 = np.std(r2_list) if r2_list else None
+     std_mse = np.std(mse_list) if mse_list else None
  
-     ranked = table.dropna(subset=["R2"])
-     if ranked.empty:
-         return list(fallback_features)
+     return mean_r2, std_r2, mean_mse, best_preds, max_r2*100, r2_list, max_run
  
-     best_row = ranked.loc[ranked["R2"].astype(float).idxmax()]
-     features_text = str(best_row["features"]).strip()
-     if not features_text:
-         return list(fallback_features)
+ ############################### Start of Program ###################
+ # Sync prep_data with current dataset (NN/data.csv by default).
+ dataset_path="convert/sugar_all_days_clean_7.csv"
+ print("====================================") 
+ print("DATASET PATH: " + dataset_path)
+ print("====================================") 
+ data = pd.read_csv(dataset_path)
+ output_features, input_features = resolve_data_columns(
+     data,
+     output_feature=None,
+     input_features=None
+ )
+-# User input for selecting the model and number of epochs
+-answer = input("\n".join([str(i) + ")" + name for i,name in enumerate(input_features)]) \
+-        + "\nSelect one or several input_features (separated with space), [all], or [auto]:")
+-
+-use_auto_feature_selection = answer.strip().lower() == "auto"
+-if use_auto_feature_selection:
+-    selected_input_features = None
+-else:
+-    try:
+-        selected_input_features = parse_multi_select(answer, input_features, allow_all=True)
+-    except ValueError as err:
+-        print(f"Invalid input feature selection: {err}")
+-        exit()
++print_selection_guide()
  
-     selected = [f.strip() for f in features_text.split(",") if f.strip()]
-     return selected if selected else list(fallback_features)
+ answer = input(
+     "\n".join([str(i) + ")" + name for i, name in enumerate(data.columns)])
+     + "\nSelect one or several output features (separated with space) [last column]:"
+ )
+ try:
+     selected_output_features = (
+         [data.columns[-1]]
+         if not answer
+         else parse_multi_select(answer, data.columns.tolist(), allow_all=False)
+     )
+ except ValueError as err:
+     print(f"Invalid output feature selection: {err}")
+     exit()
  
++available_input_features = [col for col in data.columns if col not in selected_output_features]
++print("\nAvailable input features (output columns are excluded):")
++print("\n".join([str(i) + ")" + name for i, name in enumerate(available_input_features)]))
 +
-+def compute_regression_report_metrics(y_true, y_pred):
-+    """
-+    Compute report-friendly regression metrics for the selected/best model.
-+    Metrics follow common WEKA-style definitions for RAE and RRSE.
-+    """
-+    y_true_arr = np.asarray(y_true, dtype=float)
-+    y_pred_arr = np.asarray(y_pred, dtype=float)
++answer = input(
++    "\nSelect one or several input features (indexes/ranges), [all], or [auto]: "
++).strip()
 +
-+    if y_true_arr.ndim == 1:
-+        y_true_arr = y_true_arr.reshape(-1, 1)
-+    if y_pred_arr.ndim == 1:
-+        y_pred_arr = y_pred_arr.reshape(-1, 1)
-+
-+    y_true_flat = y_true_arr.reshape(-1)
-+    y_pred_flat = y_pred_arr.reshape(-1)
-+
-+    if y_true_flat.size == 0 or y_pred_flat.size == 0:
-+        return None
-+
-+    if y_true_flat.size > 1:
-+        correlation = float(np.corrcoef(y_true_flat, y_pred_flat)[0, 1])
-+    else:
-+        correlation = np.nan
-+
-+    abs_errors = np.abs(y_pred_flat - y_true_flat)
-+    sq_errors = (y_pred_flat - y_true_flat) ** 2
-+    mae = float(np.mean(abs_errors))
-+    rmse = float(np.sqrt(np.mean(sq_errors)))
-+
-+    true_mean = float(np.mean(y_true_flat))
-+    rae_denominator = float(np.sum(np.abs(y_true_flat - true_mean)))
-+    rrse_denominator = float(np.sum((y_true_flat - true_mean) ** 2))
-+    rae = float((np.sum(abs_errors) / rae_denominator) * 100.0) if rae_denominator != 0 else np.nan
-+    rrse = float(np.sqrt(np.sum(sq_errors) / rrse_denominator) * 100.0) if rrse_denominator != 0 else np.nan
-+
-+    return {
-+        "Correlation coefficient": correlation,
-+        "Mean absolute error": mae,
-+        "Root mean squared error": rmse,
-+        "Relative absolute error": rae,
-+        "Root relative squared error": rrse,
-+        "Total Number of Instances": int(y_true_arr.shape[0]),
-+    }
-+
- # Define the normalization function
- def normalize(data, normalization_type):
-     if normalization_type == 'z_score':
-         return (data - data.mean()) / data.std()
-     elif normalization_type == 'minmax':
-         return (data - data.min()) / (data.max() - data.min())
-     else:
-         raise ValueError("Unsupported normalization type. Choose 'z_score' or 'minmax'.")
- 
- # Function to apply model on data and generate predictions
- # Return predictions, MSE and R-Squared
- import torch.nn.init as init
- 
- def fit_model(model, X_train, X_test, y_train, y_test, 
-         num_epochs, display_steps=False, run=0):
- 
-     set_model_seed(model_seed + run)
-     scaler = StandardScaler()
-     X_train = torch.tensor(scaler.fit_transform(X_train), dtype=torch.float32)
-     X_test = torch.tensor(scaler.transform(X_test), dtype=torch.float32)
-     y_train_values = y_train.values if hasattr(y_train, "values") else y_train
-     y_test_values = y_test.values if hasattr(y_test, "values") else y_test
-     y_train = torch.tensor(y_train_values, dtype=torch.float32)
-     y_test = torch.tensor(y_test_values, dtype=torch.float32)
-     if y_train.ndim == 1:
-@@ -1008,50 +1053,75 @@ if answer != "0":
-     max_model_name = model_names[max_model_index]
- 
-     print("============ Results for models =========================")
-     print(results_table)
-     print("========================== Best Mean Model ===============================")
-     print("Best Mean R-Squred:", best_mean_r2)
-     print("Best model with better mean R-Squred:", best_model_name) 
-     print("Best Hidden sizes:", best_hidden_sizes) 
-     print("Best epochs:", best_epochs) 
-     print("=========================== Max Model ================================")
-     print("Best model with better max R-Squred:", max_model_name) 
-     print("Best Hidden sizes:", max_hidden_sizes) 
-     print("Best epochs:", max_epochs) 
-     print("Max R-Squred:", best_r2)
-  
-     results_table.to_csv("exp.csv")
- 
-     X_train, X_test, y_train, y_test = read_prep_data(active_features)
- 
-     # Show and save the plot for best results
-     best_predictions = model_best_predictions[max_model_name] 
-     output_title = ", ".join(outputs)
-     title = "Prediction of " + output_title + " with " + max_model_name + " epochs:" + str(max_epochs)
-     file_name = f"R2-{best_r2:.2f}-" + max_model_name + "-" + "-".join(outputs) + ".png"
- 
-+    y_test_values = y_test.values if hasattr(y_test, "values") else y_test
-+    best_model_metrics = compute_regression_report_metrics(y_test_values, best_predictions)
-+    if best_model_metrics:
-+        print("===================== Best Selected Model Report =====================")
-+        print(f"R-Squared                              {best_r2/100:.4f}")
-+        print(
-+            f"Correlation coefficient                {best_model_metrics['Correlation coefficient']:.4f}"
++use_auto_feature_selection = answer.lower() == "auto"
++if use_auto_feature_selection:
++    auto_pool_answer = input(
++        "Auto mode candidate pool [all] (use ! to exclude, e.g. !0 !3-5): "
++    ).strip()
++    try:
++        selected_input_features = parse_multi_select(
++            auto_pool_answer,
++            available_input_features,
++            allow_all=True,
 +        )
-+        print(
-+            f"Mean absolute error                    {best_model_metrics['Mean absolute error']:.4f}"
++    except ValueError as err:
++        print(f"Invalid auto candidate selection: {err}")
++        exit()
++else:
++    try:
++        selected_input_features = parse_multi_select(
++            answer,
++            available_input_features,
++            allow_all=True,
 +        )
-+        print(
-+            f"Root mean squared error                {best_model_metrics['Root mean squared error']:.4f}"
-+        )
-+        print(
-+            f"Relative absolute error                {best_model_metrics['Relative absolute error']:.4f} %"
-+        )
-+        print(
-+            f"Root relative squared error            {best_model_metrics['Root relative squared error']:.4f} %"
-+        )
-+        print(
-+            f"Total Number of Instances              {best_model_metrics['Total Number of Instances']}"
-+        )
-+        print("=====================================================================")
++    except ValueError as err:
++        print(f"Invalid input feature selection: {err}")
++        exit()
 +
-     print("\n\n")
-     print("Plot was saved in plots folder")
-     answer = input("Do you want to see them? [y]:") 
-     if len(outputs) == 1:
-         target_series = y_test[outputs[0]]
-         pred_series = best_predictions[:, 0] if best_predictions.ndim > 1 else best_predictions
-         if answer == "y" or answer == "yes":
-             plot_results(pred_series, target_series, title, file_name, show_plot=True)
-         else:
-             plot_results(pred_series, target_series, title, file_name, show_plot=False)
-     else:
-         print("Skipping scatter plot for multi-output predictions.")
+ sync_prep_data_with_dataset(
+     dataset_path=dataset_path,
+     prep_folder="prep_data",
+     input_features=selected_input_features,
+     output_feature=selected_output_features
+ )
  
-     # Save results of predicitons in a file named results.csv
-     results_df = pd.DataFrame()
-     for i, output_name in enumerate(outputs):
-         results_df[f"{output_name}_actual"] = y_test[output_name].values
-         pred_col = best_predictions[:, i] if best_predictions.ndim > 1 else best_predictions
-         results_df[f"{output_name}_predictions"] = np.round(pred_col, 2)
-     results_df.to_csv("results.csv", index=False)
-     print("Predictions of best model were saved in results.csv")
-     answer = input("Do you want to see them? [y]:") 
-     if answer == "y" or answer == "yes":
-        print("======= Predictions of best model:", best_model_name)
-        print(results_df)
+ # Load data from prep_data after schema sync.
+ X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder="prep_data")
+ 
+ # After loading, get the column names from X_train
+ inputs = X_train.columns.tolist()
+ outputs = y_train.columns.tolist()
+ output = outputs
+ 
+ data = X_train
+ print("inputs:", inputs)
+ print("outputs:", outputs)
+ active_features = list(inputs)
+ ans = input("Are these inputs and outputs for files in prep_data folder correct?(y/n):")
+ if ans.strip().lower() not in ("y", "yes"):
+     print("Please re-run and choose your preferred input/output features.")
+     exit()
+ 
+ # Dynamically collect all neural-network model classes from the module
