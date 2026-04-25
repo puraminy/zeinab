@@ -268,6 +268,9 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
     print("DATASET PATH: " + dataset_path)
     print("====================================")
 
+    use_auto_feature_selection = False
+    reused_prep_data = False
+
     if prep_data_exists(prep_folder):
         X_train_existing, _, y_train_existing, _ = read_prep_data(inputs=None, prep_folder=prep_folder)
         existing_inputs = X_train_existing.columns.tolist()
@@ -284,7 +287,8 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
             "Use existing prepared data from prep_data and continue to models? [y]: "
         ).strip().lower()
         if reuse_answer in ("", "y", "yes"):
-            return X_train_existing, existing_outputs
+            reused_prep_data = True
+            return X_train_existing, existing_outputs, use_auto_feature_selection, reused_prep_data
 
     data = pd.read_csv(dataset_path)
     print_selection_guide()
@@ -361,7 +365,7 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
 
     X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder=prep_folder)
     _ = (X_test, y_test)
-    return X_train, y_train.columns.tolist()
+    return X_train, y_train.columns.tolist(), use_auto_feature_selection, reused_prep_data
 
 
 def ask_with_default(prompt, default):
@@ -1054,7 +1058,10 @@ def repeat_fit_model(model_class, num_repeats,
 
 ############################### Start of Program ###################
 dataset_path = "convert/sugar_all_days_clean_7.csv"
-prepare_or_reuse_data(dataset_path=dataset_path, prep_folder="prep_data")
+_, _, use_auto_feature_selection, reused_prep_data = prepare_or_reuse_data(
+    dataset_path=dataset_path,
+    prep_folder="prep_data",
+)
 X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder="prep_data")
 
 # After loading, get the column names from X_train
@@ -1066,10 +1073,11 @@ data = X_train
 print_numbered_feature_list("Selected Input Features", inputs, ANSI_GREEN)
 print_numbered_feature_list("Selected Output Features", outputs, ANSI_BLUE)
 active_features = list(inputs)
-ans = input("Confirm these numbered inputs/outputs from prep_data folder (y/n): ")
-if ans.strip().lower() not in ("y", "yes"):
-    print("Please re-run and choose your preferred input/output features.")
-    exit()
+if not reused_prep_data:
+    ans = input("Confirm these numbered inputs/outputs from prep_data folder [y]: ").strip().lower()
+    if ans not in ("", "y", "yes"):
+        print("Please re-run and choose your preferred input/output features.")
+        exit()
 
 # Dynamically collect all neural-network model classes from the module
 nn_models = [
