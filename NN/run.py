@@ -5,7 +5,13 @@ import torch.nn as nn
 import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold
-from sklearn.ensemble import RandomForestRegressor, ExtraTreesRegressor, GradientBoostingRegressor
+from sklearn.ensemble import (
+    RandomForestRegressor,
+    ExtraTreesRegressor,
+    GradientBoostingRegressor,
+    AdaBoostRegressor,
+    HistGradientBoostingRegressor,
+)
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.svm import SVR
 from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
@@ -67,6 +73,10 @@ SKLEARN_MODEL_FACTORIES = {
         n_estimators=300, random_state=seed
     ),
     "GradientBoostingRegressor": lambda seed: GradientBoostingRegressor(random_state=seed),
+    "HistGradientBoostingRegressor": lambda seed: HistGradientBoostingRegressor(
+        random_state=seed
+    ),
+    "AdaBoostRegressor": lambda seed: AdaBoostRegressor(random_state=seed),
     "DecisionTreeRegressor": lambda seed: DecisionTreeRegressor(random_state=seed),
     "KNeighborsRegressor": lambda seed: KNeighborsRegressor(n_neighbors=5),
     "SVR_RBF": lambda seed: SVR(kernel="rbf"),

@@ -1,8 +1,59 @@
 diff --git a/NN/run.py b/NN/run.py
-index 20e2b848b76ed00f0c0843463ca0e13834851f0b..971e80f1c273095c71bb34cc2361484b2b763629 100644
+index 971e80f1c273095c71bb34cc2361484b2b763629..e3a073da3aeeb84f50ae28fbe6b779044e54de8d 100644
 --- a/NN/run.py
 +++ b/NN/run.py
-@@ -55,75 +55,139 @@ hidden_size2 = 10
+@@ -1,33 +1,39 @@
+ from matplotlib import pyplot as plt
+ from matplotlib import pyplot as plt
+ import torch
+ import torch.nn as nn
+ import torch.optim as optim
+ from sklearn.preprocessing import StandardScaler
+ from sklearn.model_selection import KFold
+-from sklearn.ensemble import RandomForestRegressor, ExtraTreesRegressor, GradientBoostingRegressor
++from sklearn.ensemble import (
++    RandomForestRegressor,
++    ExtraTreesRegressor,
++    GradientBoostingRegressor,
++    AdaBoostRegressor,
++    HistGradientBoostingRegressor,
++)
+ from sklearn.neighbors import KNeighborsRegressor
+ from sklearn.svm import SVR
+ from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
+ from sklearn.tree import DecisionTreeRegressor
+ import pandas as pd
+ import numpy as np
+ import torch.nn as nn
+ from sklearn.metrics import r2_score
+ from tabulate import tabulate
+ import os
+ from latex import *
+ from plot import *
+ from models import *
+ from read_data import read_prep_data, sync_prep_data_with_dataset, resolve_data_columns
+ import inspect
+ import models
+ 
+ list_epochs = [20, 50, 100 , 200]
+ best_epochs = 100 
+ 
+ exp_df = pd.DataFrame()
+ 
+ num_repeats = 5
+ # num_repeats shows the number of times to repeat the experiment to get its average values
+ # changing model_seed generates different results for each run for each model
+@@ -45,50 +51,54 @@ learning_rate = 0.05
+ # The learnign rate used in ANN
+ #hidden_size1 = 10
+ hidden_size1 = 15
+ hidden_size2 = 10
+ 
+ # the number of neurons in hidden layers
+ 
+ # https://alexlenail.me/NN-SVG/
+ # use the site above to draw the following network
+ #
  hidden_sizes = [15, 10, 3 ]
  # nn.ReLU(), nn.Tanh(), nn.Identity()
  
@@ -18,6 +69,10 @@ index 20e2b848b76ed00f0c0843463ca0e13834851f0b..971e80f1c273095c71bb34cc2361484b
          n_estimators=300, random_state=seed
      ),
      "GradientBoostingRegressor": lambda seed: GradientBoostingRegressor(random_state=seed),
++    "HistGradientBoostingRegressor": lambda seed: HistGradientBoostingRegressor(
++        random_state=seed
++    ),
++    "AdaBoostRegressor": lambda seed: AdaBoostRegressor(random_state=seed),
      "DecisionTreeRegressor": lambda seed: DecisionTreeRegressor(random_state=seed),
      "KNeighborsRegressor": lambda seed: KNeighborsRegressor(n_neighbors=5),
      "SVR_RBF": lambda seed: SVR(kernel="rbf"),
@@ -28,243 +83,18 @@ index 20e2b848b76ed00f0c0843463ca0e13834851f0b..971e80f1c273095c71bb34cc2361484b
  }
  
  
-+def _expand_index_token(token, options_len):
-+    """Expand a token like '3' or '1-4' into a list of indexes."""
-+    if "-" in token:
-+        bounds = token.split("-", 1)
-+        if len(bounds) != 2 or not bounds[0].isdigit() or not bounds[1].isdigit():
-+            raise ValueError(f"Invalid range '{token}'. Use syntax like 1-4.")
-+        start = int(bounds[0])
-+        end = int(bounds[1])
-+        if start > end:
-+            raise ValueError(f"Invalid range '{token}'. Start must be <= end.")
-+        indexes = list(range(start, end + 1))
-+    else:
-+        if not token.isdigit():
-+            raise ValueError(f"Invalid input '{token}'. Please use indexes or ranges like 1-4.")
-+        indexes = [int(token)]
-+
-+    for index in indexes:
-+        if index < 0 or index >= options_len:
-+            raise ValueError(
-+                f"Invalid selection '{index}'. Valid range is 0 to {options_len - 1}."
-+            )
-+    return indexes
-+
-+
- def parse_multi_select(answer, options, allow_all=True):
--    """Parse space-separated indexes and return selected values."""
-+    """Parse indexes/ranges and return selected option values.
-+
-+    Supported syntax examples:
-+    - 0 2 4
-+    - 1-5
-+    - 1,3,6-9
-+    - !0 !4-6 (exclude indexes/ranges from current pool)
-+    """
-     if not answer:
-         return None if allow_all else []
- 
-     answer = answer.strip().lower()
-     if allow_all and answer == "all":
-         return None
- 
--    selected_values = []
--    for token in answer.split():
--        if not token.isdigit():
--            raise ValueError(f"Invalid input '{token}'. Please use numeric indexes.")
--        index = int(token)
--        if index < 0 or index >= len(options):
--            raise ValueError(
--                f"Invalid selection '{index}'. Valid range is 0 to {len(options) - 1}."
--            )
--        selected_values.append(options[index])
-+    include_indexes = set()
-+    exclude_indexes = set()
-+    tokens = [token for token in answer.replace(",", " ").split() if token]
-+    if not tokens:
-+        return None if allow_all else []
-+
-+    for token in tokens:
-+        is_exclude = token.startswith("!")
-+        clean = token[1:] if is_exclude else token
-+        if clean == "all":
-+            if not allow_all:
-+                raise ValueError("'all' is not allowed for this selection.")
-+            include_indexes.update(range(len(options)))
-+            continue
-+
-+        indexes = _expand_index_token(clean, len(options))
-+        if is_exclude:
-+            exclude_indexes.update(indexes)
-+        else:
-+            include_indexes.update(indexes)
- 
--    if len(set(selected_values)) != len(selected_values):
--        raise ValueError("Duplicate selections are not allowed.")
-+    if include_indexes:
-+        final_indexes = sorted(include_indexes.difference(exclude_indexes))
-+    else:
-+        # Exclude-only syntax means "all except excluded".
-+        if exclude_indexes:
-+            final_indexes = [i for i in range(len(options)) if i not in exclude_indexes]
-+        elif allow_all:
-+            return None
-+        else:
-+            final_indexes = []
-+
-+    if not final_indexes:
-+        raise ValueError("Selection is empty after applying include/exclude filters.")
-+
-+    selected_values = [options[index] for index in final_indexes]
-     return selected_values
- 
- 
-+def print_selection_guide():
-+    print("\nSelection guide:")
-+    print("- Single indexes: 0 3 5")
-+    print("- Range syntax: 1-9")
-+    print("- Mixed syntax: 0 2-4 7")
-+    print("- Commas are also allowed: 0,2-4,7")
-+    print("- Exclude indexes/ranges with ! : !0 !5-8")
-+    print("- In auto mode, exclude-only means all features except those indexes.")
-+
-+
- def ask_with_default(prompt, default):
-     answer = input(f"{prompt} [{default}]:").strip()
-     return answer if answer else str(default)
- 
- 
- def parse_epochs_input(answer, default_epochs):
-     """Parse epochs input and detect optional CV early-stop mode."""
-     text = answer.strip().lower()
-     if text == "0":
-         return [], False
- 
-     use_cv_early_stop = False
-     parsed_epochs = []
-     for token in answer.split():
-         lowered = token.lower()
-         if lowered in ("cv", "auto"):
-             use_cv_early_stop = True
-             continue
-         if token.isdigit() and int(token) > 0:
-             parsed_epochs.append(int(token))
- 
-     if not parsed_epochs and not use_cv_early_stop:
-         parsed_epochs = list(default_epochs)
-     return sorted(set(parsed_epochs)), use_cv_early_stop
- 
-@@ -747,78 +811,99 @@ def repeat_fit_model(model_class, num_repeats,
- 
-         r2_list.append(r2*100)
-         mse_list.append(mse)
-     if display_steps:
-         print(r2_list)
- 
-     mean_r2 = np.mean(r2_list) if r2_list else None
-     mean_mse = np.mean(mse_list) if mse_list else None
-     std_r2 = np.std(r2_list) if r2_list else None
-     std_mse = np.std(mse_list) if mse_list else None
- 
-     return mean_r2, std_r2, mean_mse, best_preds, max_r2*100, r2_list, max_run
- 
- ############################### Start of Program ###################
- # Sync prep_data with current dataset (NN/data.csv by default).
- dataset_path="convert/sugar_all_days_clean_7.csv"
- print("====================================") 
- print("DATASET PATH: " + dataset_path)
- print("====================================") 
- data = pd.read_csv(dataset_path)
- output_features, input_features = resolve_data_columns(
-     data,
-     output_feature=None,
-     input_features=None
- )
--# User input for selecting the model and number of epochs
--answer = input("\n".join([str(i) + ")" + name for i,name in enumerate(input_features)]) \
--        + "\nSelect one or several input_features (separated with space), [all], or [auto]:")
--
--use_auto_feature_selection = answer.strip().lower() == "auto"
--if use_auto_feature_selection:
--    selected_input_features = None
--else:
--    try:
--        selected_input_features = parse_multi_select(answer, input_features, allow_all=True)
--    except ValueError as err:
--        print(f"Invalid input feature selection: {err}")
--        exit()
-+print_selection_guide()
- 
- answer = input(
-     "\n".join([str(i) + ")" + name for i, name in enumerate(data.columns)])
-     + "\nSelect one or several output features (separated with space) [last column]:"
- )
- try:
-     selected_output_features = (
-         [data.columns[-1]]
-         if not answer
-         else parse_multi_select(answer, data.columns.tolist(), allow_all=False)
-     )
- except ValueError as err:
-     print(f"Invalid output feature selection: {err}")
-     exit()
- 
-+available_input_features = [col for col in data.columns if col not in selected_output_features]
-+print("\nAvailable input features (output columns are excluded):")
-+print("\n".join([str(i) + ")" + name for i, name in enumerate(available_input_features)]))
-+
-+answer = input(
-+    "\nSelect one or several input features (indexes/ranges), [all], or [auto]: "
-+).strip()
-+
-+use_auto_feature_selection = answer.lower() == "auto"
-+if use_auto_feature_selection:
-+    auto_pool_answer = input(
-+        "Auto mode candidate pool [all] (use ! to exclude, e.g. !0 !3-5): "
-+    ).strip()
-+    try:
-+        selected_input_features = parse_multi_select(
-+            auto_pool_answer,
-+            available_input_features,
-+            allow_all=True,
-+        )
-+    except ValueError as err:
-+        print(f"Invalid auto candidate selection: {err}")
-+        exit()
-+else:
-+    try:
-+        selected_input_features = parse_multi_select(
-+            answer,
-+            available_input_features,
-+            allow_all=True,
-+        )
-+    except ValueError as err:
-+        print(f"Invalid input feature selection: {err}")
-+        exit()
-+
- sync_prep_data_with_dataset(
-     dataset_path=dataset_path,
-     prep_folder="prep_data",
-     input_features=selected_input_features,
-     output_feature=selected_output_features
- )
- 
- # Load data from prep_data after schema sync.
- X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder="prep_data")
- 
- # After loading, get the column names from X_train
- inputs = X_train.columns.tolist()
- outputs = y_train.columns.tolist()
- output = outputs
- 
- data = X_train
- print("inputs:", inputs)
- print("outputs:", outputs)
- active_features = list(inputs)
- ans = input("Are these inputs and outputs for files in prep_data folder correct?(y/n):")
- if ans.strip().lower() not in ("y", "yes"):
-     print("Please re-run and choose your preferred input/output features.")
-     exit()
- 
- # Dynamically collect all neural-network model classes from the module
+ def _expand_index_token(token, options_len):
+     """Expand a token like '3' or '1-4' into a list of indexes."""
+     if "-" in token:
+         bounds = token.split("-", 1)
+         if len(bounds) != 2 or not bounds[0].isdigit() or not bounds[1].isdigit():
+             raise ValueError(f"Invalid range '{token}'. Use syntax like 1-4.")
+         start = int(bounds[0])
+         end = int(bounds[1])
+         if start > end:
+             raise ValueError(f"Invalid range '{token}'. Start must be <= end.")
+         indexes = list(range(start, end + 1))
+     else:
+         if not token.isdigit():
+             raise ValueError(f"Invalid input '{token}'. Please use indexes or ranges like 1-4.")
+         indexes = [int(token)]
