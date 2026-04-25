@@ -20,6 +20,7 @@ from sklearn.multioutput import MultiOutputRegressor
 import pandas as pd
 import numpy as np
 import torch.nn as nn
+import re
 from sklearn.metrics import r2_score
 from tabulate import tabulate
 import os
@@ -235,17 +236,14 @@ def print_selection_guide():
 def prompt_temporal_options(input_features):
     print("\nTemporal/sequential feature options:")
     print("Enter indexes/ranges for sequential columns if any (empty for none).")
+    print("Optional grouped dependencies: [2 4] [3 11 13] or 2>4>6,3>11>13")
     print("\n".join([str(i) + ")" + name for i, name in enumerate(input_features)]))
-    seq_answer = input("Sequential feature columns [none]: ").strip()
+    seq_answer = input("Sequential feature columns/groups [none]: ").strip()
     if not seq_answer:
-        return [], False, 1, False, 3
+        return [], [], False, 1, False, 3
 
     try:
-        sequential_features = parse_multi_select(
-            seq_answer,
-            input_features,
-            allow_all=False,
-        )
+        sequential_features, sequential_groups = parse_sequential_layout(seq_answer, input_features)
     except ValueError as err:
         print(f"Invalid sequential feature selection: {err}")
         exit()
@@ -260,7 +258,42 @@ def prompt_temporal_options(input_features):
     if create_rnn_windows:
         rnn_window_size = int(input("Lag window size [3]: ").strip() or "3")
 
-    return sequential_features, add_differences, difference_order, create_rnn_windows, rnn_window_size
+    return (
+        sequential_features,
+        sequential_groups,
+        add_differences,
+        difference_order,
+        create_rnn_windows,
+        rnn_window_size,
+    )
+
+
+def parse_sequential_layout(answer, options):
+    """Parse independent sequential columns and optional ordered dependency groups."""
+    grouped_layout = (
+        "[" in answer or "]" in answer or "(" in answer or ")" in answer or ">" in answer
+    )
+    if not grouped_layout:
+        sequential_features = parse_multi_select(answer, options, allow_all=False)
+        return sequential_features, []
+
+    groups = []
+    bracket_groups = re.findall(r"[\[\(]([^\]\)]+)[\]\)]", answer)
+    raw_groups = bracket_groups if bracket_groups else [item.strip() for item in answer.split(",") if item.strip()]
+
+    for raw_group in raw_groups:
+        normalized = raw_group.replace(">", " ")
+        group_values = parse_multi_select(normalized, options, allow_all=False)
+        if len(group_values) < 2:
+            raise ValueError("Each sequential group must contain at least two columns.")
+        groups.append(group_values)
+
+    flat_features = []
+    for group in groups:
+        for feature in group:
+            if feature not in flat_features:
+                flat_features.append(feature)
+    return flat_features, groups
 
 
 def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", prep_folder="prep_data"):
@@ -345,6 +378,7 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
     )
     (
         sequential_features,
+        sequential_groups,
         add_differences,
         difference_order,
         create_rnn_windows,
@@ -357,6 +391,7 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
         input_features=selected_input_features,
         output_feature=selected_output_features,
         sequential_features=sequential_features,
+        sequential_groups=sequential_groups,
         add_differences=add_differences,
         difference_order=difference_order,
         create_rnn_windows=create_rnn_windows,

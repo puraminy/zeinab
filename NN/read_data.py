@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
@@ -48,6 +49,31 @@ def resolve_data_columns(data, output_feature=None, input_features=None):
     return output_features, input_features
 
 
+TEMPORAL_DERIVED_COLUMN_PATTERN = re.compile(
+    r".+__(diff|lag|seqdiff)_\d+$"
+)
+
+
+def split_base_and_derived_input_features(data_columns, input_features):
+    """Split user-provided inputs into dataset columns and temporal-derived columns."""
+    if input_features is None:
+        return None, []
+
+    base_input_features = [col for col in input_features if col in data_columns]
+    derived_input_features = [col for col in input_features if col not in data_columns]
+
+    invalid_derived = [
+        col for col in derived_input_features if not TEMPORAL_DERIVED_COLUMN_PATTERN.match(col)
+    ]
+    if invalid_derived:
+        raise ValueError(
+            f"Input columns not found in dataset and not recognized as temporal-derived columns: "
+            f"{invalid_derived}. Available columns: {list(data_columns)}"
+        )
+
+    return base_input_features, derived_input_features
+
+
 def prep_data_file_paths(prep_folder="prep_data"):
     """Return canonical prep_data file paths."""
     return {
@@ -91,6 +117,7 @@ def apply_temporal_feature_engineering(
     data,
     input_features,
     sequential_features=None,
+    sequential_groups=None,
     add_differences=False,
     difference_order=1,
     create_rnn_windows=False,
@@ -100,12 +127,17 @@ def apply_temporal_feature_engineering(
     transformed = data.copy()
     resolved_inputs = list(input_features)
 
-    if not sequential_features:
+    if not sequential_features and not sequential_groups:
         return transformed, resolved_inputs
 
     sequential_features = [
         col for col in sequential_features if col in transformed.columns and col in resolved_inputs
     ]
+    normalized_groups = []
+    for group in sequential_groups or []:
+        normalized_group = [col for col in group if col in transformed.columns and col in resolved_inputs]
+        if len(normalized_group) >= 2:
+            normalized_groups.append(normalized_group)
 
     if add_differences:
         if difference_order < 1:
@@ -118,6 +150,16 @@ def apply_temporal_feature_engineering(
                 source_col = diff_col
                 if diff_col not in resolved_inputs:
                     resolved_inputs.append(diff_col)
+        for group in normalized_groups:
+            for prev_feature, curr_feature in zip(group[:-1], group[1:]):
+                source_col = transformed[curr_feature] - transformed[prev_feature]
+                for order in range(1, difference_order + 1):
+                    seq_diff_col = f"{curr_feature}__minus_{prev_feature}__seqdiff_{order}"
+                    transformed[seq_diff_col] = source_col if order == 1 else transformed[
+                        f"{curr_feature}__minus_{prev_feature}__seqdiff_{order - 1}"
+                    ].diff()
+                    if seq_diff_col not in resolved_inputs:
+                        resolved_inputs.append(seq_diff_col)
 
     if create_rnn_windows:
         if rnn_window_size < 2:
@@ -228,6 +270,7 @@ def prepare_data_from_file(
     test_size=0.2,
     random_state=123,
     sequential_features=None,
+    sequential_groups=None,
     add_differences=False,
     difference_order=1,
     create_rnn_windows=False,
@@ -238,16 +281,28 @@ def prepare_data_from_file(
         raise FileNotFoundError(f"Dataset file '{dataset_path}' not found.")
 
     data = pd.read_csv(dataset_path)
-    output_features, input_features = resolve_data_columns(data, output_feature, input_features)
+    base_input_features, requested_derived_features = split_base_and_derived_input_features(
+        data.columns, input_features
+    )
+    output_features, input_features = resolve_data_columns(data, output_feature, base_input_features)
     data, input_features = apply_temporal_feature_engineering(
         data=data,
         input_features=input_features,
         sequential_features=sequential_features,
+        sequential_groups=sequential_groups,
         add_differences=add_differences,
         difference_order=difference_order,
         create_rnn_windows=create_rnn_windows,
         rnn_window_size=rnn_window_size,
     )
+    if requested_derived_features:
+        missing_requested = [col for col in requested_derived_features if col not in data.columns]
+        if missing_requested:
+            raise ValueError(
+                f"Requested temporal-derived columns were not generated: {missing_requested}. "
+                f"Generated columns: {list(data.columns)}"
+            )
+        input_features = list(base_input_features) + list(requested_derived_features)
 
     X = data[input_features]
     y = data[output_features]
@@ -261,6 +316,7 @@ def prepare_data_from_file(
         "output_features": list(output_features),
         "input_features": list(input_features),
         "sequential_features": list(sequential_features or []),
+        "sequential_groups": [list(group) for group in (sequential_groups or [])],
         "add_differences": bool(add_differences),
         "difference_order": int(difference_order),
         "create_rnn_windows": bool(create_rnn_windows),
@@ -278,6 +334,7 @@ def sync_prep_data_with_dataset(
     output_feature="rate",
     input_features=None,
     sequential_features=None,
+    sequential_groups=None,
     add_differences=False,
     difference_order=1,
     create_rnn_windows=False,
@@ -288,16 +345,22 @@ def sync_prep_data_with_dataset(
         raise FileNotFoundError(f"Dataset file '{dataset_path}' not found.")
 
     data = pd.read_csv(dataset_path)
-    output_features, input_features = resolve_data_columns(data, output_feature, input_features)
+    base_input_features, requested_derived_features = split_base_and_derived_input_features(
+        data.columns, input_features
+    )
+    output_features, input_features = resolve_data_columns(data, output_feature, base_input_features)
     _, input_features = apply_temporal_feature_engineering(
         data=data,
         input_features=input_features,
         sequential_features=sequential_features,
+        sequential_groups=sequential_groups,
         add_differences=add_differences,
         difference_order=difference_order,
         create_rnn_windows=create_rnn_windows,
         rnn_window_size=rnn_window_size,
     )
+    if requested_derived_features:
+        input_features = list(base_input_features) + list(requested_derived_features)
 
     paths = prep_data_file_paths(prep_folder)
     expected_files = [paths["X_train"], paths["X_test"], paths["y_train"], paths["y_test"]]
@@ -320,6 +383,7 @@ def sync_prep_data_with_dataset(
             input_features=input_features,
             prep_folder=prep_folder,
             sequential_features=sequential_features,
+            sequential_groups=sequential_groups,
             add_differences=add_differences,
             difference_order=difference_order,
             create_rnn_windows=create_rnn_windows,

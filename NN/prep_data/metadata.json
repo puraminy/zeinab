@@ -1,0 +1,79 @@
+{
+  "dataset_path": "convert/sugar_all_days_clean_7.csv",
+  "output_features": [
+    "white_total_points"
+  ],
+  "input_features": [
+    "sheet_name",
+    "shift_name",
+    "raw_sugar_color",
+    "raw_syrup_brix",
+    "raw_syrup_color",
+    "lime_alkalinity",
+    "co2_percent",
+    "carbonated_alkalinity",
+    "carbonated_pH",
+    "filtercake_moisture",
+    "filtercake_sugar",
+    "sweetwater_brix",
+    "sulphited_pH",
+    "sulphited_brix",
+    "sulphited_color",
+    "standard_liquor_pH",
+    "standard_liquor_brix",
+    "standard_liquor_color",
+    "raw_sugar_color__diff_1",
+    "raw_syrup_color__diff_1",
+    "standard_liquor_color__diff_1",
+    "raw_syrup_brix__diff_1",
+    "sweetwater_brix__diff_1",
+    "sulphited_brix__diff_1",
+    "standard_liquor_brix__diff_1",
+    "carbonated_pH__diff_1",
+    "sulphited_pH__diff_1",
+    "standard_liquor_pH__diff_1",
+    "raw_syrup_color__minus_raw_sugar_color__seqdiff_1",
+    "standard_liquor_color__minus_raw_syrup_color__seqdiff_1",
+    "sweetwater_brix__minus_raw_syrup_brix__seqdiff_1",
+    "sulphited_brix__minus_sweetwater_brix__seqdiff_1",
+    "standard_liquor_brix__minus_sulphited_brix__seqdiff_1",
+    "sulphited_pH__minus_carbonated_pH__seqdiff_1",
+    "standard_liquor_pH__minus_sulphited_pH__seqdiff_1"
+  ],
+  "sequential_features": [
+    "raw_sugar_color",
+    "raw_syrup_color",
+    "standard_liquor_color",
+    "raw_syrup_brix",
+    "sweetwater_brix",
+    "sulphited_brix",
+    "standard_liquor_brix",
+    "carbonated_pH",
+    "sulphited_pH",
+    "standard_liquor_pH"
+  ],
+  "sequential_groups": [
+    [
+      "raw_sugar_color",
+      "raw_syrup_color",
+      "standard_liquor_color"
+    ],
+    [
+      "raw_syrup_brix",
+      "sweetwater_brix",
+      "sulphited_brix",
+      "standard_liquor_brix"
+    ],
+    [
+      "carbonated_pH",
+      "sulphited_pH",
+      "standard_liquor_pH"
+    ]
+  ],
+  "add_differences": true,
+  "difference_order": 1,
+  "create_rnn_windows": false,
+  "rnn_window_size": 3,
+  "test_size": 0.2,
+  "random_state": 123
+}

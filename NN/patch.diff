@@ -1,11 +1,97 @@
 diff --git a/NN/run.py b/NN/run.py
-index f7cb31c7a59cbee8996879033cca2c2c0ad95b6f..9e9f085b101f37d913effad57d4bc4c5e8e905a7 100644
+index 9e9f085b101f37d913effad57d4bc4c5e8e905a7..78e96f2ee8c30bfb68d1d933ee23390567fb79e2 100644
 --- a/NN/run.py
 +++ b/NN/run.py
-@@ -246,67 +246,71 @@ def prompt_temporal_options(input_features):
-             input_features,
-             allow_all=False,
-         )
+@@ -1,47 +1,48 @@
+ from matplotlib import pyplot as plt
+ from matplotlib import pyplot as plt
+ import torch
+ import torch.nn as nn
+ import torch.optim as optim
+ from sklearn.preprocessing import StandardScaler
+ from sklearn.model_selection import KFold
+ from sklearn.ensemble import (
+     RandomForestRegressor,
+     ExtraTreesRegressor,
+     GradientBoostingRegressor,
+     AdaBoostRegressor,
+     HistGradientBoostingRegressor,
+ )
+ from sklearn.neighbors import KNeighborsRegressor
+ from sklearn.svm import SVR
+ from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
+ from sklearn.tree import DecisionTreeRegressor
+ from sklearn.multioutput import MultiOutputRegressor
+ import pandas as pd
+ import numpy as np
+ import torch.nn as nn
++import re
+ from sklearn.metrics import r2_score
+ from tabulate import tabulate
+ import os
+ from latex import *
+ from plot import *
+ from models import *
+ from read_data import (
+     read_prep_data,
+     sync_prep_data_with_dataset,
+     prep_data_exists,
+     read_prep_metadata,
+ )
+ import inspect
+ import models
+ 
+ try:
+     from xgboost import XGBRegressor
+ except ImportError:
+     XGBRegressor = None
+ 
+ try:
+     from lightgbm import LGBMRegressor
+ except ImportError:
+     LGBMRegressor = None
+ 
+@@ -213,76 +214,108 @@ def parse_multi_select(answer, options, allow_all=True):
+         elif allow_all:
+             return None
+         else:
+             final_indexes = []
+ 
+     if not final_indexes:
+         raise ValueError("Selection is empty after applying include/exclude filters.")
+ 
+     selected_values = [options[index] for index in final_indexes]
+     return selected_values
+ 
+ 
+ def print_selection_guide():
+     print("\nSelection guide:")
+     print("- Single indexes: 0 3 5")
+     print("- Range syntax: 1-9")
+     print("- Mixed syntax: 0 2-4 7")
+     print("- Commas are also allowed: 0,2-4,7")
+     print("- Exclude indexes/ranges with ! : !0 !5-8")
+     print("- In auto mode, exclude-only means all features except those indexes.")
+ 
+ 
+ def prompt_temporal_options(input_features):
+     print("\nTemporal/sequential feature options:")
+     print("Enter indexes/ranges for sequential columns if any (empty for none).")
++    print("Optional grouped dependencies: [2 4] [3 11 13] or 2>4>6,3>11>13")
+     print("\n".join([str(i) + ")" + name for i, name in enumerate(input_features)]))
+-    seq_answer = input("Sequential feature columns [none]: ").strip()
++    seq_answer = input("Sequential feature columns/groups [none]: ").strip()
+     if not seq_answer:
+-        return [], False, 1, False, 3
++        return [], [], False, 1, False, 3
+ 
+     try:
+-        sequential_features = parse_multi_select(
+-            seq_answer,
+-            input_features,
+-            allow_all=False,
+-        )
++        sequential_features, sequential_groups = parse_sequential_layout(seq_answer, input_features)
      except ValueError as err:
          print(f"Invalid sequential feature selection: {err}")
          exit()
@@ -20,7 +106,43 @@ index f7cb31c7a59cbee8996879033cca2c2c0ad95b6f..9e9f085b101f37d913effad57d4bc4c5
      if create_rnn_windows:
          rnn_window_size = int(input("Lag window size [3]: ").strip() or "3")
  
-     return sequential_features, add_differences, difference_order, create_rnn_windows, rnn_window_size
+-    return sequential_features, add_differences, difference_order, create_rnn_windows, rnn_window_size
++    return (
++        sequential_features,
++        sequential_groups,
++        add_differences,
++        difference_order,
++        create_rnn_windows,
++        rnn_window_size,
++    )
++
++
++def parse_sequential_layout(answer, options):
++    """Parse independent sequential columns and optional ordered dependency groups."""
++    grouped_layout = (
++        "[" in answer or "]" in answer or "(" in answer or ")" in answer or ">" in answer
++    )
++    if not grouped_layout:
++        sequential_features = parse_multi_select(answer, options, allow_all=False)
++        return sequential_features, []
++
++    groups = []
++    bracket_groups = re.findall(r"[\[\(]([^\]\)]+)[\]\)]", answer)
++    raw_groups = bracket_groups if bracket_groups else [item.strip() for item in answer.split(",") if item.strip()]
++
++    for raw_group in raw_groups:
++        normalized = raw_group.replace(">", " ")
++        group_values = parse_multi_select(normalized, options, allow_all=False)
++        if len(group_values) < 2:
++            raise ValueError("Each sequential group must contain at least two columns.")
++        groups.append(group_values)
++
++    flat_features = []
++    for group in groups:
++        for feature in group:
++            if feature not in flat_features:
++                flat_features.append(feature)
++    return flat_features, groups
  
  
  def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", prep_folder="prep_data"):
@@ -28,9 +150,9 @@ index f7cb31c7a59cbee8996879033cca2c2c0ad95b6f..9e9f085b101f37d913effad57d4bc4c5
      print("DATASET PATH: " + dataset_path)
      print("====================================")
  
-+    use_auto_feature_selection = False
-+    reused_prep_data = False
-+
+     use_auto_feature_selection = False
+     reused_prep_data = False
+ 
      if prep_data_exists(prep_folder):
          X_train_existing, _, y_train_existing, _ = read_prep_data(inputs=None, prep_folder=prep_folder)
          existing_inputs = X_train_existing.columns.tolist()
@@ -46,41 +168,33 @@ index f7cb31c7a59cbee8996879033cca2c2c0ad95b6f..9e9f085b101f37d913effad57d4bc4c5
          reuse_answer = input(
              "Use existing prepared data from prep_data and continue to models? [y]: "
          ).strip().lower()
-         if reuse_answer in ("", "y", "yes"):
--            return X_train_existing, existing_outputs
-+            reused_prep_data = True
-+            return X_train_existing, existing_outputs, use_auto_feature_selection, reused_prep_data
+@@ -323,62 +356,64 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
+         try:
+             selected_input_features = parse_multi_select(
+                 auto_pool_answer,
+                 available_input_features,
+                 allow_all=True,
+             )
+         except ValueError as err:
+             print(f"Invalid auto candidate selection: {err}")
+             exit()
+     else:
+         try:
+             selected_input_features = parse_multi_select(
+                 answer,
+                 available_input_features,
+                 allow_all=True,
+             )
+         except ValueError as err:
+             print(f"Invalid input feature selection: {err}")
+             exit()
  
-     data = pd.read_csv(dataset_path)
-     print_selection_guide()
- 
-     answer = input(
-         "\n".join([str(i) + ")" + name for i, name in enumerate(data.columns)])
-         + "\nSelect one or several output features (separated with space) [last column]:"
-     )
-     try:
-         selected_output_features = (
-             [data.columns[-1]]
-             if not answer
-             else parse_multi_select(answer, data.columns.tolist(), allow_all=False)
-         )
-     except ValueError as err:
-         print(f"Invalid output feature selection: {err}")
-         exit()
- 
-     available_input_features = [col for col in data.columns if col not in selected_output_features]
-     print("\nAvailable input features (output columns are excluded):")
-     print("\n".join([str(i) + ")" + name for i, name in enumerate(available_input_features)]))
- 
-     answer = input(
-         "\nSelect one or several input features (indexes/ranges), [all], or [auto]: "
-     ).strip()
-@@ -339,51 +343,51 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
      resolved_inputs = (
          available_input_features if selected_input_features is None else selected_input_features
      )
      (
          sequential_features,
++        sequential_groups,
          add_differences,
          difference_order,
          create_rnn_windows,
@@ -93,6 +207,7 @@ index f7cb31c7a59cbee8996879033cca2c2c0ad95b6f..9e9f085b101f37d913effad57d4bc4c5
          input_features=selected_input_features,
          output_feature=selected_output_features,
          sequential_features=sequential_features,
++        sequential_groups=sequential_groups,
          add_differences=add_differences,
          difference_order=difference_order,
          create_rnn_windows=create_rnn_windows,
@@ -101,8 +216,7 @@ index f7cb31c7a59cbee8996879033cca2c2c0ad95b6f..9e9f085b101f37d913effad57d4bc4c5
  
      X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder=prep_folder)
      _ = (X_test, y_test)
--    return X_train, y_train.columns.tolist()
-+    return X_train, y_train.columns.tolist(), use_auto_feature_selection, reused_prep_data
+     return X_train, y_train.columns.tolist(), use_auto_feature_selection, reused_prep_data
  
  
  def ask_with_default(prompt, default):
@@ -119,88 +233,3 @@ index f7cb31c7a59cbee8996879033cca2c2c0ad95b6f..9e9f085b101f37d913effad57d4bc4c5
      use_cv_early_stop = False
      parsed_epochs = []
      for token in answer.split():
-         lowered = token.lower()
-         if lowered in ("cv", "auto"):
-             use_cv_early_stop = True
-             continue
-         if token.isdigit() and int(token) > 0:
-             parsed_epochs.append(int(token))
- 
-     if not parsed_epochs and not use_cv_early_stop:
-         parsed_epochs = list(default_epochs)
-@@ -1032,66 +1036,70 @@ def repeat_fit_model(model_class, num_repeats,
-             predictions, mse, r2, model = fit_sklearn_model(
-                 model, X_train, X_test, y_train, y_test
-             )
-         if r2 is None:
-             continue
- 
-         if r2 > max_r2:
-             max_r2 = r2
-             max_run = i
-             best_preds = predictions
- 
-         r2_list.append(r2*100)
-         mse_list.append(mse)
-     if display_steps:
-         print(r2_list)
- 
-     mean_r2 = np.mean(r2_list) if r2_list else None
-     mean_mse = np.mean(mse_list) if mse_list else None
-     std_r2 = np.std(r2_list) if r2_list else None
-     std_mse = np.std(mse_list) if mse_list else None
- 
-     return mean_r2, std_r2, mean_mse, best_preds, max_r2*100, r2_list, max_run
- 
- ############################### Start of Program ###################
- dataset_path = "convert/sugar_all_days_clean_7.csv"
--prepare_or_reuse_data(dataset_path=dataset_path, prep_folder="prep_data")
-+_, _, use_auto_feature_selection, reused_prep_data = prepare_or_reuse_data(
-+    dataset_path=dataset_path,
-+    prep_folder="prep_data",
-+)
- X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder="prep_data")
- 
- # After loading, get the column names from X_train
- inputs = X_train.columns.tolist()
- outputs = y_train.columns.tolist()
- output = outputs
- 
- data = X_train
- print_numbered_feature_list("Selected Input Features", inputs, ANSI_GREEN)
- print_numbered_feature_list("Selected Output Features", outputs, ANSI_BLUE)
- active_features = list(inputs)
--ans = input("Confirm these numbered inputs/outputs from prep_data folder (y/n): ")
--if ans.strip().lower() not in ("y", "yes"):
--    print("Please re-run and choose your preferred input/output features.")
--    exit()
-+if not reused_prep_data:
-+    ans = input("Confirm these numbered inputs/outputs from prep_data folder [y]: ").strip().lower()
-+    if ans not in ("", "y", "yes"):
-+        print("Please re-run and choose your preferred input/output features.")
-+        exit()
- 
- # Dynamically collect all neural-network model classes from the module
- nn_models = [
-     member for name, member in inspect.getmembers(models, inspect.isclass)
-     if issubclass(member, models.nn.Module) and member.__module__ == models.__name__
- ]
- sklearn_models = [
-     (name, factory) for name, factory in SKLEARN_MODEL_FACTORIES.items()
- ]
- models = nn_models + [factory for _, factory in sklearn_models]
- model_names = [model.__name__ for model in nn_models] + [name for name, _ in sklearn_models]
- # User input for selecting the model and number of epochs
- answer = input("\n".join([str(i) + ")" + name for i,name in enumerate(model_names)]) \
-         + "\nSelect one or several models (separated with space) [all]:")
- 
- if not answer:
-     answer = "all"
- 
- try:
-     selected_model_names = parse_multi_select(answer, model_names, allow_all=True)
- except ValueError as err:
-     print(f"Invalid model selection: {err}")
-     exit()
- 
- if selected_model_names is None:
