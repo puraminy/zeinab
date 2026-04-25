@@ -5,7 +5,7 @@ import pandas as pd
 # ==========================================
 
 input_file = "gozaresh.xlsx"
-output_file = "sugar_all_days_clean_6.csv"
+output_file = "sugar_all_days_clean_7.csv"
 
 # ==========================================
 # 2️⃣ CLEAN NUMBER FUNCTION
@@ -149,7 +149,7 @@ def find_day_night_columns(df):
     return None, None
 
 
-def extract_number_near_column(df, row_idx, target_col_idx, max_row_lookahead=2, max_col_offset=2):
+def extract_number_near_column(df, row_idx, target_col_idx, max_row_lookahead=0, max_col_offset=2):
     """
     Extract a numeric value close to a target column anchor for a specific row.
     """
@@ -184,7 +184,8 @@ def find_section_shift_values(
     property_keyword,
     day_col_idx,
     night_col_idx,
-    search_depth=6
+    search_depth=6,
+    max_row_lookahead=0
 ):
     """
     Find values for both day and night shifts for a section/property pair.
@@ -198,8 +199,12 @@ def find_section_shift_values(
                 subrow = df.iloc[j].astype(str)
 
                 if any(property_keyword in cell for cell in subrow):
-                    day_value = extract_number_near_column(df, j, day_col_idx)
-                    night_value = extract_number_near_column(df, j, night_col_idx)
+                    day_value = extract_number_near_column(
+                        df, j, day_col_idx, max_row_lookahead=max_row_lookahead
+                    )
+                    night_value = extract_number_near_column(
+                        df, j, night_col_idx, max_row_lookahead=max_row_lookahead
+                    )
 
                     # Fallback if anchors fail: pick first two numeric values in row
                     if day_value is None or night_value is None:
