@@ -47,6 +47,53 @@ def resolve_data_columns(data, output_feature=None, input_features=None):
     return output_features, input_features
 
 
+
+
+def apply_temporal_feature_engineering(
+    data,
+    input_features,
+    sequential_features=None,
+    add_differences=False,
+    difference_order=1,
+    create_rnn_windows=False,
+    rnn_window_size=3,
+):
+    """Create temporal columns (differences and lag windows) for selected features."""
+    transformed = data.copy()
+    resolved_inputs = list(input_features)
+
+    if not sequential_features:
+        return transformed, resolved_inputs
+
+    sequential_features = [
+        col for col in sequential_features if col in transformed.columns and col in resolved_inputs
+    ]
+
+    if add_differences:
+        if difference_order < 1:
+            raise ValueError("difference_order must be >= 1.")
+        for feature in sequential_features:
+            source_col = feature
+            for order in range(1, difference_order + 1):
+                diff_col = f"{feature}__diff_{order}"
+                transformed[diff_col] = transformed[source_col].diff()
+                source_col = diff_col
+                if diff_col not in resolved_inputs:
+                    resolved_inputs.append(diff_col)
+
+    if create_rnn_windows:
+        if rnn_window_size < 2:
+            raise ValueError("rnn_window_size must be >= 2.")
+        for feature in sequential_features:
+            for lag_step in range(1, rnn_window_size):
+                lag_col = f"{feature}__lag_{lag_step}"
+                transformed[lag_col] = transformed[feature].shift(lag_step)
+                if lag_col not in resolved_inputs:
+                    resolved_inputs.append(lag_col)
+
+    transformed = transformed.dropna().reset_index(drop=True)
+    return transformed, resolved_inputs
+
 def read_data(default_train_file="data.csv"):
     """Interactive reader that stores selected split in prep_data/."""
     prep_data_dir = "prep_data"
@@ -140,6 +187,11 @@ def prepare_data_from_file(
     prep_folder="prep_data",
     test_size=0.2,
     random_state=123,
+    sequential_features=None,
+    add_differences=False,
+    difference_order=1,
+    create_rnn_windows=False,
+    rnn_window_size=3,
 ):
     """Prepare prep_data files directly from a raw CSV dataset."""
     if not os.path.isfile(dataset_path):
@@ -147,6 +199,15 @@ def prepare_data_from_file(
 
     data = pd.read_csv(dataset_path)
     output_features, input_features = resolve_data_columns(data, output_feature, input_features)
+    data, input_features = apply_temporal_feature_engineering(
+        data=data,
+        input_features=input_features,
+        sequential_features=sequential_features,
+        add_differences=add_differences,
+        difference_order=difference_order,
+        create_rnn_windows=create_rnn_windows,
+        rnn_window_size=rnn_window_size,
+    )
 
     X = data[input_features]
     y = data[output_features]
@@ -164,6 +225,11 @@ def sync_prep_data_with_dataset(
     prep_folder="prep_data",
     output_feature="rate",
     input_features=None,
+    sequential_features=None,
+    add_differences=False,
+    difference_order=1,
+    create_rnn_windows=False,
+    rnn_window_size=3,
 ):
     """Rebuild prep_data if files are missing or schema differs from dataset."""
     if not os.path.isfile(dataset_path):
@@ -171,6 +237,15 @@ def sync_prep_data_with_dataset(
 
     data = pd.read_csv(dataset_path)
     output_features, input_features = resolve_data_columns(data, output_feature, input_features)
+    _, input_features = apply_temporal_feature_engineering(
+        data=data,
+        input_features=input_features,
+        sequential_features=sequential_features,
+        add_differences=add_differences,
+        difference_order=difference_order,
+        create_rnn_windows=create_rnn_windows,
+        rnn_window_size=rnn_window_size,
+    )
 
     expected_files = [
         os.path.join(prep_folder, "X_train.csv"),
@@ -196,6 +271,11 @@ def sync_prep_data_with_dataset(
             output_feature=output_features,
             input_features=input_features,
             prep_folder=prep_folder,
+            sequential_features=sequential_features,
+            add_differences=add_differences,
+            difference_order=difference_order,
+            create_rnn_windows=create_rnn_windows,
+            rnn_window_size=rnn_window_size,
         )
     else:
         print("prep_data matches dataset columns. Reusing existing files.")

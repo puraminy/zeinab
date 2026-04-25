@@ -1,148 +1,242 @@
-diff --git a/NN/run.py b/NN/run.py
-index 37b5b0c14361b03ea3c98ebc8c566db9c60239d6..4cfacf3b4c12f8943a68a38ccc4adeba5d8d0237 100644
---- a/NN/run.py
-+++ b/NN/run.py
-@@ -8,50 +8,60 @@ from sklearn.model_selection import KFold
- from sklearn.ensemble import (
-     RandomForestRegressor,
-     ExtraTreesRegressor,
-     GradientBoostingRegressor,
-     AdaBoostRegressor,
-     HistGradientBoostingRegressor,
- )
- from sklearn.neighbors import KNeighborsRegressor
- from sklearn.svm import SVR
- from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
- from sklearn.tree import DecisionTreeRegressor
- from sklearn.multioutput import MultiOutputRegressor
- import pandas as pd
- import numpy as np
- import torch.nn as nn
- from sklearn.metrics import r2_score
- from tabulate import tabulate
- import os
- from latex import *
- from plot import *
- from models import *
- from read_data import read_prep_data, sync_prep_data_with_dataset, resolve_data_columns
- import inspect
- import models
+diff --git a/NN/read_data.py b/NN/read_data.py
+index 7df3f5bdf477fcaaf174a02284d186c79a076e44..d671151549ee20f945b251d675f496152d942fd7 100644
+--- a/NN/read_data.py
++++ b/NN/read_data.py
+@@ -25,50 +25,97 @@ def _normalize_output_features(output_feature, all_columns):
+         )
  
-+try:
-+    from xgboost import XGBRegressor
-+except ImportError:
-+    XGBRegressor = None
+     if len(output_features) == 0:
+         raise ValueError("At least one output feature must be selected.")
+ 
+     return output_features
+ 
+ 
+ def resolve_data_columns(data, output_feature=None, input_features=None):
+     """Resolve and validate target/input columns."""
+     output_features = _normalize_output_features(output_feature, data.columns)
+ 
+     if input_features is None:
+         input_features = [col for col in data.columns if col not in output_features]
+ 
+     missing_inputs = [col for col in input_features if col not in data.columns]
+     if missing_inputs:
+         raise ValueError(
+             f"Input columns not found in dataset: {missing_inputs}. "
+             f"Available columns: {list(data.columns)}"
+         )
+ 
+     return output_features, input_features
+ 
+ 
 +
-+try:
-+    from lightgbm import LGBMRegressor
-+except ImportError:
-+    LGBMRegressor = None
 +
- ANSI_RESET = "\033[0m"
- ANSI_GREEN = "\033[92m"
- ANSI_BLUE = "\033[94m"
- 
- 
- def color_text(text, color):
-     return f"{color}{text}{ANSI_RESET}"
- 
- 
- def print_divider(char="=", width=68):
-     print(char * width)
- 
- 
- def print_numbered_feature_list(title, features, color):
-     print_divider("=")
-     print(title)
-     print_divider("-")
-     for idx, feature_name in enumerate(features, start=1):
-         print(color_text(f"{idx:>2}. {feature_name}", color))
-     print_divider("=")
- 
- list_epochs = [20, 50, 100 , 200]
- best_epochs = 100 
- 
- exp_df = pd.DataFrame()
-@@ -73,63 +83,82 @@ learning_rate = 0.05
- # The learnign rate used in ANN
- #hidden_size1 = 10
- hidden_size1 = 15
- hidden_size2 = 10
- 
- # the number of neurons in hidden layers
- 
- # https://alexlenail.me/NN-SVG/
- # use the site above to draw the following network
- #
- hidden_sizes = [15, 10, 3 ]
- # nn.ReLU(), nn.Tanh(), nn.Identity()
- 
- list_hidden_sizes = [[10], [15, 10, 3], [8, 4], [15, 5]]
- normalization_type = "z_score"
- 
- 
- SKLEARN_MODEL_FACTORIES = {
-     "RandomForestRegressor": lambda seed: RandomForestRegressor(
-         n_estimators=300, random_state=seed
-     ),
-     "ExtraTreesRegressor": lambda seed: ExtraTreesRegressor(
-         n_estimators=300, random_state=seed
-     ),
-     "GradientBoostingRegressor": lambda seed: GradientBoostingRegressor(random_state=seed),
-+    "GBMRegressor": lambda seed: GradientBoostingRegressor(random_state=seed),
-     "HistGradientBoostingRegressor": lambda seed: HistGradientBoostingRegressor(
-         random_state=seed
-     ),
-     "AdaBoostRegressor": lambda seed: AdaBoostRegressor(random_state=seed),
-     "DecisionTreeRegressor": lambda seed: DecisionTreeRegressor(random_state=seed),
-     "KNeighborsRegressor": lambda seed: KNeighborsRegressor(n_neighbors=5),
-     "SVR_RBF": lambda seed: SVR(kernel="rbf"),
-     "LinearRegression": lambda seed: LinearRegression(),
-     "Ridge": lambda seed: Ridge(random_state=seed),
-     "Lasso": lambda seed: Lasso(random_state=seed),
-     "ElasticNet": lambda seed: ElasticNet(random_state=seed),
- }
- 
-+if XGBRegressor is not None:
-+    SKLEARN_MODEL_FACTORIES["XGBoostRegressor"] = lambda seed: XGBRegressor(
-+        n_estimators=300,
-+        random_state=seed,
-+        objective="reg:squarederror",
-+    )
-+else:
-+    print("Optional dependency not found: xgboost. Skipping XGBoostRegressor.")
++def apply_temporal_feature_engineering(
++    data,
++    input_features,
++    sequential_features=None,
++    add_differences=False,
++    difference_order=1,
++    create_rnn_windows=False,
++    rnn_window_size=3,
++):
++    """Create temporal columns (differences and lag windows) for selected features."""
++    transformed = data.copy()
++    resolved_inputs = list(input_features)
 +
-+if LGBMRegressor is not None:
-+    SKLEARN_MODEL_FACTORIES["LightGBMRegressor"] = lambda seed: LGBMRegressor(
-+        n_estimators=300,
-+        random_state=seed,
-+        verbose=-1,
-+    )
-+else:
-+    print("Optional dependency not found: lightgbm. Skipping LightGBMRegressor.")
++    if not sequential_features:
++        return transformed, resolved_inputs
 +
++    sequential_features = [
++        col for col in sequential_features if col in transformed.columns and col in resolved_inputs
++    ]
++
++    if add_differences:
++        if difference_order < 1:
++            raise ValueError("difference_order must be >= 1.")
++        for feature in sequential_features:
++            source_col = feature
++            for order in range(1, difference_order + 1):
++                diff_col = f"{feature}__diff_{order}"
++                transformed[diff_col] = transformed[source_col].diff()
++                source_col = diff_col
++                if diff_col not in resolved_inputs:
++                    resolved_inputs.append(diff_col)
++
++    if create_rnn_windows:
++        if rnn_window_size < 2:
++            raise ValueError("rnn_window_size must be >= 2.")
++        for feature in sequential_features:
++            for lag_step in range(1, rnn_window_size):
++                lag_col = f"{feature}__lag_{lag_step}"
++                transformed[lag_col] = transformed[feature].shift(lag_step)
++                if lag_col not in resolved_inputs:
++                    resolved_inputs.append(lag_col)
++
++    transformed = transformed.dropna().reset_index(drop=True)
++    return transformed, resolved_inputs
++
+ def read_data(default_train_file="data.csv"):
+     """Interactive reader that stores selected split in prep_data/."""
+     prep_data_dir = "prep_data"
+     os.makedirs(prep_data_dir, exist_ok=True)
  
- def _expand_index_token(token, options_len):
-     """Expand a token like '3' or '1-4' into a list of indexes."""
-     if "-" in token:
-         bounds = token.split("-", 1)
-         if len(bounds) != 2 or not bounds[0].isdigit() or not bounds[1].isdigit():
-             raise ValueError(f"Invalid range '{token}'. Use syntax like 1-4.")
-         start = int(bounds[0])
-         end = int(bounds[1])
-         if start > end:
-             raise ValueError(f"Invalid range '{token}'. Start must be <= end.")
-         indexes = list(range(start, end + 1))
+     train_file = input(
+         f"Enter the path to the training file [{default_train_file}]: "
+     ).strip()
+     if not train_file:
+         train_file = default_train_file
+     if not os.path.isfile(train_file):
+         raise FileNotFoundError("The specified training file does not exist.")
+ 
+     train_data = pd.read_csv(train_file)
+ 
+     test_file = input("Enter the path to the testing file (leave empty for auto split): ").strip()
+     if test_file and os.path.isfile(test_file):
+         test_data = pd.read_csv(test_file)
+         auto_split = False
      else:
-         if not token.isdigit():
-             raise ValueError(f"Invalid input '{token}'. Please use indexes or ranges like 1-4.")
-         indexes = [int(token)]
+         test_data = None
+         auto_split = True
  
-     for index in indexes:
-         if index < 0 or index >= options_len:
-             raise ValueError(
-                 f"Invalid selection '{index}'. Valid range is 0 to {options_len - 1}."
-             )
-     return indexes
+     output_features, input_features = select_features(train_data)
+ 
+@@ -118,106 +165,139 @@ def select_features(data):
+         input_features = default_inputs
+     else:
+         input_features = [col.strip() for col in input_features.split(",")]
+ 
+     return output_features, input_features
  
  
+ def save_data(folder, X_train, X_test, y_train, y_test):
+     """Save train/test splits to prep_data files."""
+     os.makedirs(folder, exist_ok=True)
+     print(f"\nSaving processed data to '{folder}'...")
+     X_train.to_csv(os.path.join(folder, "X_train.csv"), index=False)
+     X_test.to_csv(os.path.join(folder, "X_test.csv"), index=False)
+     y_train.to_csv(os.path.join(folder, "y_train.csv"), index=False)
+     y_test.to_csv(os.path.join(folder, "y_test.csv"), index=False)
+     print("Data saved successfully!")
+ 
+ 
+ def prepare_data_from_file(
+     dataset_path="data.csv",
+     output_feature="rate",
+     input_features=None,
+     prep_folder="prep_data",
+     test_size=0.2,
+     random_state=123,
++    sequential_features=None,
++    add_differences=False,
++    difference_order=1,
++    create_rnn_windows=False,
++    rnn_window_size=3,
+ ):
+     """Prepare prep_data files directly from a raw CSV dataset."""
+     if not os.path.isfile(dataset_path):
+         raise FileNotFoundError(f"Dataset file '{dataset_path}' not found.")
+ 
+     data = pd.read_csv(dataset_path)
+     output_features, input_features = resolve_data_columns(data, output_feature, input_features)
++    data, input_features = apply_temporal_feature_engineering(
++        data=data,
++        input_features=input_features,
++        sequential_features=sequential_features,
++        add_differences=add_differences,
++        difference_order=difference_order,
++        create_rnn_windows=create_rnn_windows,
++        rnn_window_size=rnn_window_size,
++    )
+ 
+     X = data[input_features]
+     y = data[output_features]
+ 
+     X_train, X_test, y_train, y_test = train_test_split(
+         X, y, test_size=test_size, random_state=random_state
+     )
+ 
+     save_data(prep_folder, X_train, X_test, y_train, y_test)
+     return X_train, X_test, y_train, y_test
+ 
+ 
+ def sync_prep_data_with_dataset(
+     dataset_path="data.csv",
+     prep_folder="prep_data",
+     output_feature="rate",
+     input_features=None,
++    sequential_features=None,
++    add_differences=False,
++    difference_order=1,
++    create_rnn_windows=False,
++    rnn_window_size=3,
+ ):
+     """Rebuild prep_data if files are missing or schema differs from dataset."""
+     if not os.path.isfile(dataset_path):
+         raise FileNotFoundError(f"Dataset file '{dataset_path}' not found.")
+ 
+     data = pd.read_csv(dataset_path)
+     output_features, input_features = resolve_data_columns(data, output_feature, input_features)
++    _, input_features = apply_temporal_feature_engineering(
++        data=data,
++        input_features=input_features,
++        sequential_features=sequential_features,
++        add_differences=add_differences,
++        difference_order=difference_order,
++        create_rnn_windows=create_rnn_windows,
++        rnn_window_size=rnn_window_size,
++    )
+ 
+     expected_files = [
+         os.path.join(prep_folder, "X_train.csv"),
+         os.path.join(prep_folder, "X_test.csv"),
+         os.path.join(prep_folder, "y_train.csv"),
+         os.path.join(prep_folder, "y_test.csv"),
+     ]
+ 
+     should_rebuild = not all(os.path.isfile(path) for path in expected_files)
+ 
+     if not should_rebuild:
+         current_x = pd.read_csv(expected_files[0])
+         current_y = pd.read_csv(expected_files[2])
+         should_rebuild = (
+             list(current_x.columns) != input_features
+             or list(current_y.columns) != output_features
+         )
+ 
+     if should_rebuild:
+         print("prep_data is missing or outdated. Rebuilding from dataset...")
+         prepare_data_from_file(
+             dataset_path=dataset_path,
+             output_feature=output_features,
+             input_features=input_features,
+             prep_folder=prep_folder,
++            sequential_features=sequential_features,
++            add_differences=add_differences,
++            difference_order=difference_order,
++            create_rnn_windows=create_rnn_windows,
++            rnn_window_size=rnn_window_size,
+         )
+     else:
+         print("prep_data matches dataset columns. Reusing existing files.")
+ 
+ 
+ def read_prep_data(inputs=None, prep_folder="prep_data"):
+     """Read preprocessed train/test files, optionally filtering input columns."""
+     print(f"Reading data from '{prep_folder}'...")
+ 
+     X_train_path = os.path.join(prep_folder, "X_train.csv")
+     X_test_path = os.path.join(prep_folder, "X_test.csv")
+     y_train_path = os.path.join(prep_folder, "y_train.csv")
+     y_test_path = os.path.join(prep_folder, "y_test.csv")
+ 
+     for file_path in [X_train_path, X_test_path, y_train_path, y_test_path]:
+         if not os.path.isfile(file_path):
+             raise FileNotFoundError(f"Required file '{file_path}' not found in '{prep_folder}'.")
+ 
+     X_train_full = pd.read_csv(X_train_path)
+     X_test_full = pd.read_csv(X_test_path)
+     y_train = pd.read_csv(y_train_path)
+     y_test = pd.read_csv(y_test_path)
+ 
+     if inputs is not None:
+         print(f"Filtering inputs: {inputs}")
