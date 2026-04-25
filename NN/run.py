@@ -29,6 +29,27 @@ from read_data import read_prep_data, sync_prep_data_with_dataset, resolve_data_
 import inspect
 import models
 
+ANSI_RESET = "\033[0m"
+ANSI_GREEN = "\033[92m"
+ANSI_BLUE = "\033[94m"
+
+
+def color_text(text, color):
+    return f"{color}{text}{ANSI_RESET}"
+
+
+def print_divider(char="=", width=68):
+    print(char * width)
+
+
+def print_numbered_feature_list(title, features, color):
+    print_divider("=")
+    print(title)
+    print_divider("-")
+    for idx, feature_name in enumerate(features, start=1):
+        print(color_text(f"{idx:>2}. {feature_name}", color))
+    print_divider("=")
+
 list_epochs = [20, 50, 100 , 200]
 best_epochs = 100 
 
@@ -908,10 +929,10 @@ outputs = y_train.columns.tolist()
 output = outputs
 
 data = X_train
-print("inputs:", inputs)
-print("outputs:", outputs)
+print_numbered_feature_list("Selected Input Features", inputs, ANSI_GREEN)
+print_numbered_feature_list("Selected Output Features", outputs, ANSI_BLUE)
 active_features = list(inputs)
-ans = input("Are these inputs and outputs for files in prep_data folder correct?(y/n):")
+ans = input("Confirm these numbered inputs/outputs from prep_data folder (y/n): ")
 if ans.strip().lower() not in ("y", "yes"):
     print("Please re-run and choose your preferred input/output features.")
     exit()
@@ -1174,6 +1195,7 @@ if answer != "0":
     best_model_metrics = compute_regression_report_metrics(y_test_values, best_predictions)
     if best_model_metrics:
         print("===================== Best Selected Model Report =====================")
+        print(f"Selected model name                    {max_model_name}")
         print(f"R-Squared                              {best_r2/100:.4f}")
         print(
             f"Correlation coefficient                {best_model_metrics['Correlation coefficient']:.4f}"

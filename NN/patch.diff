@@ -1,23 +1,16 @@
 diff --git a/NN/run.py b/NN/run.py
-index 971e80f1c273095c71bb34cc2361484b2b763629..e3a073da3aeeb84f50ae28fbe6b779044e54de8d 100644
+index e3a073da3aeeb84f50ae28fbe6b779044e54de8d..6ef26ed15dff044b51503cc5ab72a339a5166b6b 100644
 --- a/NN/run.py
 +++ b/NN/run.py
-@@ -1,33 +1,39 @@
- from matplotlib import pyplot as plt
- from matplotlib import pyplot as plt
- import torch
- import torch.nn as nn
- import torch.optim as optim
- from sklearn.preprocessing import StandardScaler
+@@ -7,50 +7,71 @@ from sklearn.preprocessing import StandardScaler
  from sklearn.model_selection import KFold
--from sklearn.ensemble import RandomForestRegressor, ExtraTreesRegressor, GradientBoostingRegressor
-+from sklearn.ensemble import (
-+    RandomForestRegressor,
-+    ExtraTreesRegressor,
-+    GradientBoostingRegressor,
-+    AdaBoostRegressor,
-+    HistGradientBoostingRegressor,
-+)
+ from sklearn.ensemble import (
+     RandomForestRegressor,
+     ExtraTreesRegressor,
+     GradientBoostingRegressor,
+     AdaBoostRegressor,
+     HistGradientBoostingRegressor,
+ )
  from sklearn.neighbors import KNeighborsRegressor
  from sklearn.svm import SVR
  from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
@@ -35,6 +28,27 @@ index 971e80f1c273095c71bb34cc2361484b2b763629..e3a073da3aeeb84f50ae28fbe6b77904
  import inspect
  import models
  
++ANSI_RESET = "\033[0m"
++ANSI_GREEN = "\033[92m"
++ANSI_BLUE = "\033[94m"
++
++
++def color_text(text, color):
++    return f"{color}{text}{ANSI_RESET}"
++
++
++def print_divider(char="=", width=68):
++    print(char * width)
++
++
++def print_numbered_feature_list(title, features, color):
++    print_divider("=")
++    print(title)
++    print_divider("-")
++    for idx, feature_name in enumerate(features, start=1):
++        print(color_text(f"{idx:>2}. {feature_name}", color))
++    print_divider("=")
++
  list_epochs = [20, 50, 100 , 200]
  best_epochs = 100 
  
@@ -43,58 +57,130 @@ index 971e80f1c273095c71bb34cc2361484b2b763629..e3a073da3aeeb84f50ae28fbe6b77904
  num_repeats = 5
  # num_repeats shows the number of times to repeat the experiment to get its average values
  # changing model_seed generates different results for each run for each model
-@@ -45,50 +51,54 @@ learning_rate = 0.05
+ # The same model_seed produces the same results in each run which is good for reporducability of experiments
+ # Dont change it if you want to reproduce the same results
+ data_seed = 123 # it is used for random_state of splitting data into source and train sets
+ # changing it creates different source and train sets.
+ # Since the number of data is low changing it can largely affect the results
+ model_seed = 123 # it is used for random_state of models
+ def set_model_seed(model_seed):
+     torch.manual_seed(model_seed)
+     np.random.seed(model_seed)
+ 
+ learning_rate = 0.05
  # The learnign rate used in ANN
  #hidden_size1 = 10
  hidden_size1 = 15
  hidden_size2 = 10
  
  # the number of neurons in hidden layers
+@@ -886,54 +907,54 @@ else:
+         selected_input_features = parse_multi_select(
+             answer,
+             available_input_features,
+             allow_all=True,
+         )
+     except ValueError as err:
+         print(f"Invalid input feature selection: {err}")
+         exit()
  
- # https://alexlenail.me/NN-SVG/
- # use the site above to draw the following network
- #
- hidden_sizes = [15, 10, 3 ]
- # nn.ReLU(), nn.Tanh(), nn.Identity()
+ sync_prep_data_with_dataset(
+     dataset_path=dataset_path,
+     prep_folder="prep_data",
+     input_features=selected_input_features,
+     output_feature=selected_output_features
+ )
  
- list_hidden_sizes = [[10], [15, 10, 3], [8, 4], [15, 5]]
- normalization_type = "z_score"
+ # Load data from prep_data after schema sync.
+ X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder="prep_data")
  
+ # After loading, get the column names from X_train
+ inputs = X_train.columns.tolist()
+ outputs = y_train.columns.tolist()
+ output = outputs
  
- SKLEARN_MODEL_FACTORIES = {
-     "RandomForestRegressor": lambda seed: RandomForestRegressor(
-         n_estimators=300, random_state=seed
-     ),
-     "ExtraTreesRegressor": lambda seed: ExtraTreesRegressor(
-         n_estimators=300, random_state=seed
-     ),
-     "GradientBoostingRegressor": lambda seed: GradientBoostingRegressor(random_state=seed),
-+    "HistGradientBoostingRegressor": lambda seed: HistGradientBoostingRegressor(
-+        random_state=seed
-+    ),
-+    "AdaBoostRegressor": lambda seed: AdaBoostRegressor(random_state=seed),
-     "DecisionTreeRegressor": lambda seed: DecisionTreeRegressor(random_state=seed),
-     "KNeighborsRegressor": lambda seed: KNeighborsRegressor(n_neighbors=5),
-     "SVR_RBF": lambda seed: SVR(kernel="rbf"),
-     "LinearRegression": lambda seed: LinearRegression(),
-     "Ridge": lambda seed: Ridge(random_state=seed),
-     "Lasso": lambda seed: Lasso(random_state=seed),
-     "ElasticNet": lambda seed: ElasticNet(random_state=seed),
- }
+ data = X_train
+-print("inputs:", inputs)
+-print("outputs:", outputs)
++print_numbered_feature_list("Selected Input Features", inputs, ANSI_GREEN)
++print_numbered_feature_list("Selected Output Features", outputs, ANSI_BLUE)
+ active_features = list(inputs)
+-ans = input("Are these inputs and outputs for files in prep_data folder correct?(y/n):")
++ans = input("Confirm these numbered inputs/outputs from prep_data folder (y/n): ")
+ if ans.strip().lower() not in ("y", "yes"):
+     print("Please re-run and choose your preferred input/output features.")
+     exit()
  
+ # Dynamically collect all neural-network model classes from the module
+ nn_models = [
+     member for name, member in inspect.getmembers(models, inspect.isclass)
+     if issubclass(member, models.nn.Module) and member.__module__ == models.__name__
+ ]
+ sklearn_models = [
+     (name, factory) for name, factory in SKLEARN_MODEL_FACTORIES.items()
+ ]
+ models = nn_models + [factory for _, factory in sklearn_models]
+ model_names = [model.__name__ for model in nn_models] + [name for name, _ in sklearn_models]
+ # User input for selecting the model and number of epochs
+ answer = input("\n".join([str(i) + ")" + name for i,name in enumerate(model_names)]) \
+         + "\nSelect one or several models (separated with space) [all]:")
  
- def _expand_index_token(token, options_len):
-     """Expand a token like '3' or '1-4' into a list of indexes."""
-     if "-" in token:
-         bounds = token.split("-", 1)
-         if len(bounds) != 2 or not bounds[0].isdigit() or not bounds[1].isdigit():
-             raise ValueError(f"Invalid range '{token}'. Use syntax like 1-4.")
-         start = int(bounds[0])
-         end = int(bounds[1])
-         if start > end:
-             raise ValueError(f"Invalid range '{token}'. Start must be <= end.")
-         indexes = list(range(start, end + 1))
-     else:
-         if not token.isdigit():
-             raise ValueError(f"Invalid input '{token}'. Please use indexes or ranges like 1-4.")
-         indexes = [int(token)]
+ if not answer:
+     answer = "all"
+ 
+ try:
+     selected_model_names = parse_multi_select(answer, model_names, allow_all=True)
+ except ValueError as err:
+     print(f"Invalid model selection: {err}")
+@@ -1152,50 +1173,51 @@ if answer != "0":
+     print("========================== Best Mean Model ===============================")
+     print("Best Mean R-Squred:", best_mean_r2)
+     print("Best model with better mean R-Squred:", best_model_name) 
+     print("Best Hidden sizes:", best_hidden_sizes) 
+     print("Best epochs:", best_epochs) 
+     print("=========================== Max Model ================================")
+     print("Best model with better max R-Squred:", max_model_name) 
+     print("Best Hidden sizes:", max_hidden_sizes) 
+     print("Best epochs:", max_epochs) 
+     print("Max R-Squred:", best_r2)
+  
+     results_table.to_csv("exp.csv")
+ 
+     X_train, X_test, y_train, y_test = read_prep_data(active_features)
+ 
+     # Show and save the plot for best results
+     best_predictions = model_best_predictions[max_model_name] 
+     output_title = ", ".join(outputs)
+     title = "Prediction of " + output_title + " with " + max_model_name + " epochs:" + str(max_epochs)
+     file_name = f"R2-{best_r2:.2f}-" + max_model_name + "-" + "-".join(outputs) + ".png"
+ 
+     y_test_values = y_test.values if hasattr(y_test, "values") else y_test
+     best_model_metrics = compute_regression_report_metrics(y_test_values, best_predictions)
+     if best_model_metrics:
+         print("===================== Best Selected Model Report =====================")
++        print(f"Selected model name                    {max_model_name}")
+         print(f"R-Squared                              {best_r2/100:.4f}")
+         print(
+             f"Correlation coefficient                {best_model_metrics['Correlation coefficient']:.4f}"
+         )
+         print(
+             f"Mean absolute error                    {best_model_metrics['Mean absolute error']:.4f}"
+         )
+         print(
+             f"Root mean squared error                {best_model_metrics['Root mean squared error']:.4f}"
+         )
+         print(
+             f"Relative absolute error                {best_model_metrics['Relative absolute error']:.4f} %"
+         )
+         print(
+             f"Root relative squared error            {best_model_metrics['Root relative squared error']:.4f} %"
+         )
+         print(
+             f"Total Number of Instances              {best_model_metrics['Total Number of Instances']}"
+         )
+         print("=====================================================================")
+ 
+     print("\n\n")
+     print("Plot was saved in plots folder")
+     answer = input("Do you want to see them? [y]:") 
+     if len(outputs) == 1:
