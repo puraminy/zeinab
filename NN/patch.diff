@@ -1,160 +1,139 @@
-diff --git a/NN/run.py b/NN/run.py
-index 78e96f2ee8c30bfb68d1d933ee23390567fb79e2..4cf9505cf8ca91bcd79a7a423ead3a3d218ec296 100644
---- a/NN/run.py
-+++ b/NN/run.py
-@@ -218,73 +218,84 @@ def parse_multi_select(answer, options, allow_all=True):
- 
-     if not final_indexes:
-         raise ValueError("Selection is empty after applying include/exclude filters.")
- 
-     selected_values = [options[index] for index in final_indexes]
-     return selected_values
- 
- 
- def print_selection_guide():
-     print("\nSelection guide:")
-     print("- Single indexes: 0 3 5")
-     print("- Range syntax: 1-9")
-     print("- Mixed syntax: 0 2-4 7")
-     print("- Commas are also allowed: 0,2-4,7")
-     print("- Exclude indexes/ranges with ! : !0 !5-8")
-     print("- In auto mode, exclude-only means all features except those indexes.")
- 
- 
- def prompt_temporal_options(input_features):
-     print("\nTemporal/sequential feature options:")
-     print("Enter indexes/ranges for sequential columns if any (empty for none).")
-     print("Optional grouped dependencies: [2 4] [3 11 13] or 2>4>6,3>11>13")
-     print("\n".join([str(i) + ")" + name for i, name in enumerate(input_features)]))
-     seq_answer = input("Sequential feature columns/groups [none]: ").strip()
-     if not seq_answer:
--        return [], [], False, 1, False, 3
-+        return [], [], False, 1, False, False, False, False, 3
- 
-     try:
-         sequential_features, sequential_groups = parse_sequential_layout(seq_answer, input_features)
-     except ValueError as err:
-         print(f"Invalid sequential feature selection: {err}")
-         exit()
- 
-     add_differences = input("Add difference features for sequential columns? [n]: ").strip().lower() in ("y", "yes")
-     difference_order = 1
-     if add_differences:
-         difference_order = int(input("Difference order [1]: ").strip() or "1")
- 
-+    add_ratio_features = input("Add ratio features (x_t / x_{t-1})? [n]: ").strip().lower() in ("y", "yes")
-+    add_acceleration_features = input(
-+        "Add acceleration features (x_t - 2*x_{t-1} + x_{t-2})? [n]: "
-+    ).strip().lower() in ("y", "yes")
-+    add_normalized_change_features = input(
-+        "Add normalized change features ((x_t - x_{t-1}) / x_{t-1})? [n]: "
-+    ).strip().lower() in ("y", "yes")
-+
-     create_rnn_windows = input("Add lag-window features for sequential columns? [n]: ").strip().lower() in ("y", "yes")
-     rnn_window_size = 3
-     if create_rnn_windows:
-         rnn_window_size = int(input("Lag window size [3]: ").strip() or "3")
- 
-     return (
-         sequential_features,
-         sequential_groups,
-         add_differences,
-         difference_order,
-+        add_ratio_features,
-+        add_acceleration_features,
-+        add_normalized_change_features,
-         create_rnn_windows,
-         rnn_window_size,
+diff --git a/NN/read_data.py b/NN/read_data.py
+index 9e30d7fdc9328599774c2727045b207be31f9166..1fcc3ae3b3f6b3705b93931261cd33f0c8408122 100644
+--- a/NN/read_data.py
++++ b/NN/read_data.py
+@@ -423,98 +423,130 @@ def sync_prep_data_with_dataset(
+         data.columns, input_features
      )
- 
- 
- def parse_sequential_layout(answer, options):
-     """Parse independent sequential columns and optional ordered dependency groups."""
-     grouped_layout = (
-         "[" in answer or "]" in answer or "(" in answer or ")" in answer or ">" in answer
-     )
-     if not grouped_layout:
-         sequential_features = parse_multi_select(answer, options, allow_all=False)
-         return sequential_features, []
- 
-     groups = []
-     bracket_groups = re.findall(r"[\[\(]([^\]\)]+)[\]\)]", answer)
-     raw_groups = bracket_groups if bracket_groups else [item.strip() for item in answer.split(",") if item.strip()]
- 
-     for raw_group in raw_groups:
-         normalized = raw_group.replace(">", " ")
-         group_values = parse_multi_select(normalized, options, allow_all=False)
-         if len(group_values) < 2:
-             raise ValueError("Each sequential group must contain at least two columns.")
-         groups.append(group_values)
- 
-@@ -359,63 +370,69 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
-                 available_input_features,
-                 allow_all=True,
-             )
-         except ValueError as err:
-             print(f"Invalid auto candidate selection: {err}")
-             exit()
-     else:
-         try:
-             selected_input_features = parse_multi_select(
-                 answer,
-                 available_input_features,
-                 allow_all=True,
-             )
-         except ValueError as err:
-             print(f"Invalid input feature selection: {err}")
-             exit()
- 
-     resolved_inputs = (
-         available_input_features if selected_input_features is None else selected_input_features
-     )
-     (
-         sequential_features,
-         sequential_groups,
-         add_differences,
-         difference_order,
-+        add_ratio_features,
-+        add_acceleration_features,
-+        add_normalized_change_features,
-         create_rnn_windows,
-         rnn_window_size,
-     ) = prompt_temporal_options(resolved_inputs)
- 
-     sync_prep_data_with_dataset(
-         dataset_path=dataset_path,
-         prep_folder=prep_folder,
-         input_features=selected_input_features,
-         output_feature=selected_output_features,
+     output_features, input_features = resolve_data_columns(data, output_feature, base_input_features)
+     _, input_features = apply_temporal_feature_engineering(
+         data=data,
+         input_features=input_features,
          sequential_features=sequential_features,
          sequential_groups=sequential_groups,
          add_differences=add_differences,
          difference_order=difference_order,
-+        add_ratio_features=add_ratio_features,
-+        add_acceleration_features=add_acceleration_features,
-+        add_normalized_change_features=add_normalized_change_features,
+         add_ratio_features=add_ratio_features,
+         add_acceleration_features=add_acceleration_features,
+         add_normalized_change_features=add_normalized_change_features,
          create_rnn_windows=create_rnn_windows,
          rnn_window_size=rnn_window_size,
      )
+     if requested_derived_features:
+         input_features = list(base_input_features) + list(requested_derived_features)
  
-     X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder=prep_folder)
-     _ = (X_test, y_test)
-     return X_train, y_train.columns.tolist(), use_auto_feature_selection, reused_prep_data
+     paths = prep_data_file_paths(prep_folder)
+     expected_files = [paths["X_train"], paths["X_test"], paths["y_train"], paths["y_test"]]
+ 
+     should_rebuild = not all(os.path.isfile(path) for path in expected_files)
+ 
+     if not should_rebuild:
+-        current_x = pd.read_csv(expected_files[0])
+-        current_y = pd.read_csv(expected_files[2])
++        current_x_train = pd.read_csv(expected_files[0], nrows=0)
++        current_x_test = pd.read_csv(expected_files[1], nrows=0)
++        current_y_train = pd.read_csv(expected_files[2], nrows=0)
++        current_y_test = pd.read_csv(expected_files[3], nrows=0)
++
++        x_train_columns = list(current_x_train.columns)
++        x_test_columns = list(current_x_test.columns)
++        y_train_columns = list(current_y_train.columns)
++        y_test_columns = list(current_y_test.columns)
++
+         should_rebuild = (
+-            list(current_x.columns) != input_features
+-            or list(current_y.columns) != output_features
++            x_train_columns != input_features
++            or x_test_columns != input_features
++            or y_train_columns != output_features
++            or y_test_columns != output_features
+         )
+ 
++        if should_rebuild:
++            print(
++                "prep_data schema mismatch detected. "
++                "Expected train/test feature and target columns to match current settings."
++            )
++
+     if should_rebuild:
+         print("prep_data is missing or outdated. Rebuilding from dataset...")
+         prepare_data_from_file(
+             dataset_path=dataset_path,
+             output_feature=output_features,
+             input_features=input_features,
+             prep_folder=prep_folder,
+             sequential_features=sequential_features,
+             sequential_groups=sequential_groups,
+             add_differences=add_differences,
+             difference_order=difference_order,
+             add_ratio_features=add_ratio_features,
+             add_acceleration_features=add_acceleration_features,
+             add_normalized_change_features=add_normalized_change_features,
+             create_rnn_windows=create_rnn_windows,
+             rnn_window_size=rnn_window_size,
+         )
+     else:
+         print("prep_data matches dataset columns. Reusing existing files.")
  
  
- def ask_with_default(prompt, default):
-     answer = input(f"{prompt} [{default}]:").strip()
-     return answer if answer else str(default)
+ def read_prep_data(inputs=None, prep_folder="prep_data"):
+     """Read preprocessed train/test files, optionally filtering input columns."""
+     print(f"Reading data from '{prep_folder}'...")
  
+     X_train_path = os.path.join(prep_folder, "X_train.csv")
+     X_test_path = os.path.join(prep_folder, "X_test.csv")
+     y_train_path = os.path.join(prep_folder, "y_train.csv")
+     y_test_path = os.path.join(prep_folder, "y_test.csv")
  
- def parse_epochs_input(answer, default_epochs):
-     """Parse epochs input and detect optional CV early-stop mode."""
-     text = answer.strip().lower()
-     if text == "0":
-         return [], False
+     for file_path in [X_train_path, X_test_path, y_train_path, y_test_path]:
+         if not os.path.isfile(file_path):
+             raise FileNotFoundError(f"Required file '{file_path}' not found in '{prep_folder}'.")
  
-     use_cv_early_stop = False
-     parsed_epochs = []
-     for token in answer.split():
-         lowered = token.lower()
-         if lowered in ("cv", "auto"):
+     X_train_full = pd.read_csv(X_train_path)
+     X_test_full = pd.read_csv(X_test_path)
+     y_train = pd.read_csv(y_train_path)
+     y_test = pd.read_csv(y_test_path)
+ 
++    if list(X_train_full.columns) != list(X_test_full.columns):
++        train_only = [col for col in X_train_full.columns if col not in X_test_full.columns]
++        test_only = [col for col in X_test_full.columns if col not in X_train_full.columns]
++        raise ValueError(
++            "prep_data schema mismatch between X_train and X_test. "
++            f"Columns only in X_train: {train_only}. "
++            f"Columns only in X_test: {test_only}. "
++            "Rebuild prep_data to keep train/test schemas aligned."
++        )
++
+     if inputs is not None:
+         print(f"Filtering inputs: {inputs}")
++        missing_inputs = [col for col in inputs if col not in X_train_full.columns]
++        if missing_inputs:
++            raise KeyError(
++                f"Requested input columns are missing from prep_data: {missing_inputs}. "
++                "Rebuild prep_data with the same feature-engineering settings used by the run."
++            )
+         X_train = X_train_full[inputs]
+         X_test = X_test_full[inputs]
+     else:
+         print("No specific inputs provided; returning all columns.")
+         X_train = X_train_full
+         X_test = X_test_full
+ 
+     def _nan_report(df, name):
+         nan_counts = df.isna().sum()
+         nan_counts = nan_counts[nan_counts > 0]
+         if nan_counts.empty:
+             print(f"{name}: no NaN values detected.")
+             return
+ 
+         total_nans = int(nan_counts.sum())
+         print(
+             f"{ANSI_RED}WARNING: {name} contains NaN values "
+             f"(total: {total_nans}).{ANSI_RESET}"
+         )
+         for col, cnt in nan_counts.items():
+             print(f"{ANSI_RED}  - {col}: {int(cnt)} NaN{ANSI_RESET}")
+ 
+     _nan_report(X_train, "X_train")
+     _nan_report(X_test, "X_test")
+     _nan_report(y_train, "y_train")

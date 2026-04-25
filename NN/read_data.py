@@ -445,12 +445,28 @@ def sync_prep_data_with_dataset(
     should_rebuild = not all(os.path.isfile(path) for path in expected_files)
 
     if not should_rebuild:
-        current_x = pd.read_csv(expected_files[0])
-        current_y = pd.read_csv(expected_files[2])
+        current_x_train = pd.read_csv(expected_files[0], nrows=0)
+        current_x_test = pd.read_csv(expected_files[1], nrows=0)
+        current_y_train = pd.read_csv(expected_files[2], nrows=0)
+        current_y_test = pd.read_csv(expected_files[3], nrows=0)
+
+        x_train_columns = list(current_x_train.columns)
+        x_test_columns = list(current_x_test.columns)
+        y_train_columns = list(current_y_train.columns)
+        y_test_columns = list(current_y_test.columns)
+
         should_rebuild = (
-            list(current_x.columns) != input_features
-            or list(current_y.columns) != output_features
+            x_train_columns != input_features
+            or x_test_columns != input_features
+            or y_train_columns != output_features
+            or y_test_columns != output_features
         )
+
+        if should_rebuild:
+            print(
+                "prep_data schema mismatch detected. "
+                "Expected train/test feature and target columns to match current settings."
+            )
 
     if should_rebuild:
         print("prep_data is missing or outdated. Rebuilding from dataset...")
@@ -491,8 +507,24 @@ def read_prep_data(inputs=None, prep_folder="prep_data"):
     y_train = pd.read_csv(y_train_path)
     y_test = pd.read_csv(y_test_path)
 
+    if list(X_train_full.columns) != list(X_test_full.columns):
+        train_only = [col for col in X_train_full.columns if col not in X_test_full.columns]
+        test_only = [col for col in X_test_full.columns if col not in X_train_full.columns]
+        raise ValueError(
+            "prep_data schema mismatch between X_train and X_test. "
+            f"Columns only in X_train: {train_only}. "
+            f"Columns only in X_test: {test_only}. "
+            "Rebuild prep_data to keep train/test schemas aligned."
+        )
+
     if inputs is not None:
         print(f"Filtering inputs: {inputs}")
+        missing_inputs = [col for col in inputs if col not in X_train_full.columns]
+        if missing_inputs:
+            raise KeyError(
+                f"Requested input columns are missing from prep_data: {missing_inputs}. "
+                "Rebuild prep_data with the same feature-engineering settings used by the run."
+            )
         X_train = X_train_full[inputs]
         X_test = X_test_full[inputs]
     else:
