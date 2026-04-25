@@ -26,7 +26,12 @@ import os
 from latex import *
 from plot import *
 from models import *
-from read_data import read_prep_data, sync_prep_data_with_dataset, resolve_data_columns
+from read_data import (
+    read_prep_data,
+    sync_prep_data_with_dataset,
+    prep_data_exists,
+    read_prep_metadata,
+)
 import inspect
 import models
 
@@ -225,6 +230,138 @@ def print_selection_guide():
     print("- Commas are also allowed: 0,2-4,7")
     print("- Exclude indexes/ranges with ! : !0 !5-8")
     print("- In auto mode, exclude-only means all features except those indexes.")
+
+
+def prompt_temporal_options(input_features):
+    print("\nTemporal/sequential feature options:")
+    print("Enter indexes/ranges for sequential columns if any (empty for none).")
+    print("\n".join([str(i) + ")" + name for i, name in enumerate(input_features)]))
+    seq_answer = input("Sequential feature columns [none]: ").strip()
+    if not seq_answer:
+        return [], False, 1, False, 3
+
+    try:
+        sequential_features = parse_multi_select(
+            seq_answer,
+            input_features,
+            allow_all=False,
+        )
+    except ValueError as err:
+        print(f"Invalid sequential feature selection: {err}")
+        exit()
+
+    add_differences = input("Add difference features for sequential columns? [n]: ").strip().lower() in ("y", "yes")
+    difference_order = 1
+    if add_differences:
+        difference_order = int(input("Difference order [1]: ").strip() or "1")
+
+    create_rnn_windows = input("Add lag-window features for sequential columns? [n]: ").strip().lower() in ("y", "yes")
+    rnn_window_size = 3
+    if create_rnn_windows:
+        rnn_window_size = int(input("Lag window size [3]: ").strip() or "3")
+
+    return sequential_features, add_differences, difference_order, create_rnn_windows, rnn_window_size
+
+
+def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", prep_folder="prep_data"):
+    print("====================================")
+    print("DATASET PATH: " + dataset_path)
+    print("====================================")
+
+    if prep_data_exists(prep_folder):
+        X_train_existing, _, y_train_existing, _ = read_prep_data(inputs=None, prep_folder=prep_folder)
+        existing_inputs = X_train_existing.columns.tolist()
+        existing_outputs = y_train_existing.columns.tolist()
+        print_numbered_feature_list("Prepared Input Features (prep_data)", existing_inputs, ANSI_GREEN)
+        print_numbered_feature_list("Prepared Output Features (prep_data)", existing_outputs, ANSI_BLUE)
+
+        metadata = read_prep_metadata(prep_folder)
+        if metadata:
+            print("prep_data metadata:")
+            print(metadata)
+
+        reuse_answer = input(
+            "Use existing prepared data from prep_data and continue to models? [y]: "
+        ).strip().lower()
+        if reuse_answer in ("", "y", "yes"):
+            return X_train_existing, existing_outputs
+
+    data = pd.read_csv(dataset_path)
+    print_selection_guide()
+
+    answer = input(
+        "\n".join([str(i) + ")" + name for i, name in enumerate(data.columns)])
+        + "\nSelect one or several output features (separated with space) [last column]:"
+    )
+    try:
+        selected_output_features = (
+            [data.columns[-1]]
+            if not answer
+            else parse_multi_select(answer, data.columns.tolist(), allow_all=False)
+        )
+    except ValueError as err:
+        print(f"Invalid output feature selection: {err}")
+        exit()
+
+    available_input_features = [col for col in data.columns if col not in selected_output_features]
+    print("\nAvailable input features (output columns are excluded):")
+    print("\n".join([str(i) + ")" + name for i, name in enumerate(available_input_features)]))
+
+    answer = input(
+        "\nSelect one or several input features (indexes/ranges), [all], or [auto]: "
+    ).strip()
+
+    use_auto_feature_selection = answer.lower() == "auto"
+    if use_auto_feature_selection:
+        auto_pool_answer = input(
+            "Auto mode candidate pool [all] (use ! to exclude, e.g. !0 !3-5): "
+        ).strip()
+        try:
+            selected_input_features = parse_multi_select(
+                auto_pool_answer,
+                available_input_features,
+                allow_all=True,
+            )
+        except ValueError as err:
+            print(f"Invalid auto candidate selection: {err}")
+            exit()
+    else:
+        try:
+            selected_input_features = parse_multi_select(
+                answer,
+                available_input_features,
+                allow_all=True,
+            )
+        except ValueError as err:
+            print(f"Invalid input feature selection: {err}")
+            exit()
+
+    resolved_inputs = (
+        available_input_features if selected_input_features is None else selected_input_features
+    )
+    (
+        sequential_features,
+        add_differences,
+        difference_order,
+        create_rnn_windows,
+        rnn_window_size,
+    ) = prompt_temporal_options(resolved_inputs)
+
+    sync_prep_data_with_dataset(
+        dataset_path=dataset_path,
+        prep_folder=prep_folder,
+        input_features=selected_input_features,
+        output_feature=selected_output_features,
+        sequential_features=sequential_features,
+        add_differences=add_differences,
+        difference_order=difference_order,
+        create_rnn_windows=create_rnn_windows,
+        rnn_window_size=rnn_window_size,
+    )
+
+    X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder=prep_folder)
+    _ = (X_test, y_test)
+    return X_train, y_train.columns.tolist()
 
 
 def ask_with_default(prompt, default):
@@ -916,74 +1053,8 @@ def repeat_fit_model(model_class, num_repeats,
     return mean_r2, std_r2, mean_mse, best_preds, max_r2*100, r2_list, max_run
 
 ############################### Start of Program ###################
-# Sync prep_data with current dataset (NN/data.csv by default).
-dataset_path="convert/sugar_all_days_clean_7.csv"
-print("====================================") 
-print("DATASET PATH: " + dataset_path)
-print("====================================") 
-data = pd.read_csv(dataset_path)
-output_features, input_features = resolve_data_columns(
-    data,
-    output_feature=None,
-    input_features=None
-)
-print_selection_guide()
-
-answer = input(
-    "\n".join([str(i) + ")" + name for i, name in enumerate(data.columns)])
-    + "\nSelect one or several output features (separated with space) [last column]:"
-)
-try:
-    selected_output_features = (
-        [data.columns[-1]]
-        if not answer
-        else parse_multi_select(answer, data.columns.tolist(), allow_all=False)
-    )
-except ValueError as err:
-    print(f"Invalid output feature selection: {err}")
-    exit()
-
-available_input_features = [col for col in data.columns if col not in selected_output_features]
-print("\nAvailable input features (output columns are excluded):")
-print("\n".join([str(i) + ")" + name for i, name in enumerate(available_input_features)]))
-
-answer = input(
-    "\nSelect one or several input features (indexes/ranges), [all], or [auto]: "
-).strip()
-
-use_auto_feature_selection = answer.lower() == "auto"
-if use_auto_feature_selection:
-    auto_pool_answer = input(
-        "Auto mode candidate pool [all] (use ! to exclude, e.g. !0 !3-5): "
-    ).strip()
-    try:
-        selected_input_features = parse_multi_select(
-            auto_pool_answer,
-            available_input_features,
-            allow_all=True,
-        )
-    except ValueError as err:
-        print(f"Invalid auto candidate selection: {err}")
-        exit()
-else:
-    try:
-        selected_input_features = parse_multi_select(
-            answer,
-            available_input_features,
-            allow_all=True,
-        )
-    except ValueError as err:
-        print(f"Invalid input feature selection: {err}")
-        exit()
-
-sync_prep_data_with_dataset(
-    dataset_path=dataset_path,
-    prep_folder="prep_data",
-    input_features=selected_input_features,
-    output_feature=selected_output_features
-)
-
-# Load data from prep_data after schema sync.
+dataset_path = "convert/sugar_all_days_clean_7.csv"
+prepare_or_reuse_data(dataset_path=dataset_path, prep_folder="prep_data")
 X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder="prep_data")
 
 # After loading, get the column names from X_train

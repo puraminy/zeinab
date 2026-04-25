@@ -1,4 +1,5 @@
 import os
+import json
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
@@ -45,6 +46,43 @@ def resolve_data_columns(data, output_feature=None, input_features=None):
         )
 
     return output_features, input_features
+
+
+def prep_data_file_paths(prep_folder="prep_data"):
+    """Return canonical prep_data file paths."""
+    return {
+        "X_train": os.path.join(prep_folder, "X_train.csv"),
+        "X_test": os.path.join(prep_folder, "X_test.csv"),
+        "y_train": os.path.join(prep_folder, "y_train.csv"),
+        "y_test": os.path.join(prep_folder, "y_test.csv"),
+        "metadata": os.path.join(prep_folder, "metadata.json"),
+    }
+
+
+def prep_data_exists(prep_folder="prep_data"):
+    """Check whether all required prep_data CSV files exist."""
+    paths = prep_data_file_paths(prep_folder)
+    required = [paths["X_train"], paths["X_test"], paths["y_train"], paths["y_test"]]
+    return all(os.path.isfile(path) for path in required)
+
+
+def save_prep_metadata(prep_folder="prep_data", metadata=None):
+    """Save prep-data configuration metadata as JSON."""
+    if metadata is None:
+        metadata = {}
+    os.makedirs(prep_folder, exist_ok=True)
+    metadata_path = prep_data_file_paths(prep_folder)["metadata"]
+    with open(metadata_path, "w", encoding="utf-8") as metadata_file:
+        json.dump(metadata, metadata_file, indent=2, ensure_ascii=False)
+
+
+def read_prep_metadata(prep_folder="prep_data"):
+    """Read prep-data metadata JSON if available."""
+    metadata_path = prep_data_file_paths(prep_folder)["metadata"]
+    if not os.path.isfile(metadata_path):
+        return {}
+    with open(metadata_path, "r", encoding="utf-8") as metadata_file:
+        return json.load(metadata_file)
 
 
 
@@ -169,7 +207,7 @@ def select_features(data):
     return output_features, input_features
 
 
-def save_data(folder, X_train, X_test, y_train, y_test):
+def save_data(folder, X_train, X_test, y_train, y_test, metadata=None):
     """Save train/test splits to prep_data files."""
     os.makedirs(folder, exist_ok=True)
     print(f"\nSaving processed data to '{folder}'...")
@@ -177,6 +215,8 @@ def save_data(folder, X_train, X_test, y_train, y_test):
     X_test.to_csv(os.path.join(folder, "X_test.csv"), index=False)
     y_train.to_csv(os.path.join(folder, "y_train.csv"), index=False)
     y_test.to_csv(os.path.join(folder, "y_test.csv"), index=False)
+    if metadata is not None:
+        save_prep_metadata(folder, metadata)
     print("Data saved successfully!")
 
 
@@ -216,7 +256,19 @@ def prepare_data_from_file(
         X, y, test_size=test_size, random_state=random_state
     )
 
-    save_data(prep_folder, X_train, X_test, y_train, y_test)
+    metadata = {
+        "dataset_path": dataset_path,
+        "output_features": list(output_features),
+        "input_features": list(input_features),
+        "sequential_features": list(sequential_features or []),
+        "add_differences": bool(add_differences),
+        "difference_order": int(difference_order),
+        "create_rnn_windows": bool(create_rnn_windows),
+        "rnn_window_size": int(rnn_window_size),
+        "test_size": float(test_size),
+        "random_state": int(random_state),
+    }
+    save_data(prep_folder, X_train, X_test, y_train, y_test, metadata=metadata)
     return X_train, X_test, y_train, y_test
 
 
@@ -247,12 +299,8 @@ def sync_prep_data_with_dataset(
         rnn_window_size=rnn_window_size,
     )
 
-    expected_files = [
-        os.path.join(prep_folder, "X_train.csv"),
-        os.path.join(prep_folder, "X_test.csv"),
-        os.path.join(prep_folder, "y_train.csv"),
-        os.path.join(prep_folder, "y_test.csv"),
-    ]
+    paths = prep_data_file_paths(prep_folder)
+    expected_files = [paths["X_train"], paths["X_test"], paths["y_train"], paths["y_test"]]
 
     should_rebuild = not all(os.path.isfile(path) for path in expected_files)
 
