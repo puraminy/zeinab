@@ -5,7 +5,7 @@ import pandas as pd
 # ==========================================
 
 input_file = "gozaresh.xlsx"
-output_file = "sugar_all_days_clean_4.csv"
+output_file = "sugar_all_days_clean_5.csv"
 
 # ==========================================
 # 2️⃣ CLEAN NUMBER FUNCTION
@@ -38,6 +38,65 @@ def clean_number(x):
 # 3️⃣ SECTION + PROPERTY FINDER
 # ==========================================
 
+def extract_number_near_property(df, row_idx, col_idx, max_row_lookahead=2, max_col_offset=2):
+    """
+    Extract a number that is most likely associated with a property label cell.
+    Priority:
+      1) Same cell
+      2) Same column in next rows (for header-above-value layouts, e.g. white_* section)
+      3) Nearby cells in same row (small horizontal window only)
+      4) Nearby columns in next rows (small horizontal window)
+    """
+
+    current_row = df.iloc[row_idx]
+
+    # 1) Same cell
+    num = clean_number(current_row.iloc[col_idx])
+    if num is not None:
+        return num
+
+    # 2) Same column in next rows
+    for r in range(row_idx + 1, min(row_idx + 1 + max_row_lookahead, len(df))):
+        next_row = df.iloc[r]
+        num = clean_number(next_row.iloc[col_idx])
+        if num is not None:
+            return num
+
+    # 3) Nearby cells in same row (closest first)
+    for offset in range(1, max_col_offset + 1):
+        right = col_idx + offset
+        left = col_idx - offset
+
+        if right < len(current_row):
+            num = clean_number(current_row.iloc[right])
+            if num is not None:
+                return num
+
+        if left >= 0:
+            num = clean_number(current_row.iloc[left])
+            if num is not None:
+                return num
+
+    # 4) Nearby columns in next rows (closest first)
+    for r in range(row_idx + 1, min(row_idx + 1 + max_row_lookahead, len(df))):
+        next_row = df.iloc[r]
+        for offset in range(1, max_col_offset + 1):
+            right = col_idx + offset
+            left = col_idx - offset
+
+            if right < len(next_row):
+                num = clean_number(next_row.iloc[right])
+                if num is not None:
+                    return num
+
+            if left >= 0:
+                num = clean_number(next_row.iloc[left])
+                if num is not None:
+                    return num
+
+    return None
+
+
 def find_section_value(df, section_keyword, property_keyword, search_depth=6):
     """
     Find section row (e.g., شربت خام)
@@ -55,8 +114,15 @@ def find_section_value(df, section_keyword, property_keyword, search_depth=6):
             for j in range(i, min(i + search_depth, len(df))):
                 subrow = df.iloc[j].astype(str)
 
-                if any(property_keyword in cell for cell in subrow):
+                for col_idx, cell in enumerate(subrow):
+                    if property_keyword in cell:
+                        value = extract_number_near_property(df, j, col_idx)
+                        if value is not None:
+                            return value
 
+                # Fallback: old behavior if property exists but
+                # no position-based number can be extracted
+                if any(property_keyword in cell for cell in subrow):
                     numbers = []
                     for cell in subrow:
                         num = clean_number(cell)
@@ -157,4 +223,3 @@ final_df.to_csv(output_file, index=False)
 
 print("\n✅ EXTRACTION COMPLETED SUCCESSFULLY")
 print("Output file:", output_file)
-

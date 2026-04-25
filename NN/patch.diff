@@ -1,116 +1,168 @@
-diff --git a/NN/read_data.py b/NN/read_data.py
-index 2ef6b0b4d4e5231d553808aa72a127202bee6578..7df3f5bdf477fcaaf174a02284d186c79a076e44 100644
---- a/NN/read_data.py
-+++ b/NN/read_data.py
-@@ -1,29 +1,33 @@
- import os
- import pandas as pd
- from sklearn.model_selection import train_test_split
+diff --git a/convert/convert2.py b/convert/convert2.py
+index 8ffa0977e56c89022e7657e5e34b3816f87d6f46..732e500645c976dbc5cf173b8d19a101b4459419 100644
+--- a/convert/convert2.py
++++ b/convert/convert2.py
+@@ -16,69 +16,135 @@ def clean_number(x):
+         return None
  
-+ANSI_RED = "\033[91m"
-+ANSI_YELLOW = "\033[93m"
-+ANSI_RESET = "\033[0m"
+     x = str(x)
+ 
+     # Persian → English digits
+     persian_digits = "۰۱۲۳۴۵۶۷۸۹"
+     english_digits = "0123456789"
+     for p, e in zip(persian_digits, english_digits):
+         x = x.replace(p, e)
+ 
+     x = x.replace(",", "")
+     x = x.replace("٫", ".")
+     x = x.replace("...", "")
+     x = x.strip()
+ 
+     try:
+         return float(x)
+     except:
+         return None
+ 
+ 
+ # ==========================================
+ # 3️⃣ SECTION + PROPERTY FINDER
+ # ==========================================
+ 
++def extract_number_near_property(df, row_idx, col_idx, max_row_lookahead=2, max_col_offset=2):
++    """
++    Extract a number that is most likely associated with a property label cell.
++    Priority:
++      1) Same cell
++      2) Same column in next rows (for header-above-value layouts, e.g. white_* section)
++      3) Nearby cells in same row (small horizontal window only)
++      4) Nearby columns in next rows (small horizontal window)
++    """
 +
- 
- def _normalize_output_features(output_feature, all_columns):
-     """Normalize output feature(s) to a validated list."""
-     if output_feature is None:
-         return [all_columns[-1]]
- 
-     if isinstance(output_feature, str):
-         output_features = [output_feature]
-     else:
-         output_features = list(output_feature)
- 
-     missing_outputs = [col for col in output_features if col not in all_columns]
-     if missing_outputs:
-         raise ValueError(
-             f"Target column(s) '{missing_outputs}' not found in dataset. "
-             f"Available columns: {list(all_columns)}"
-         )
- 
-     if len(output_features) == 0:
-         raise ValueError("At least one output feature must be selected.")
- 
-     return output_features
- 
- 
- def resolve_data_columns(data, output_feature=None, input_features=None):
-@@ -202,42 +206,77 @@ def read_prep_data(inputs=None, prep_folder="prep_data"):
-     print(f"Reading data from '{prep_folder}'...")
- 
-     X_train_path = os.path.join(prep_folder, "X_train.csv")
-     X_test_path = os.path.join(prep_folder, "X_test.csv")
-     y_train_path = os.path.join(prep_folder, "y_train.csv")
-     y_test_path = os.path.join(prep_folder, "y_test.csv")
- 
-     for file_path in [X_train_path, X_test_path, y_train_path, y_test_path]:
-         if not os.path.isfile(file_path):
-             raise FileNotFoundError(f"Required file '{file_path}' not found in '{prep_folder}'.")
- 
-     X_train_full = pd.read_csv(X_train_path)
-     X_test_full = pd.read_csv(X_test_path)
-     y_train = pd.read_csv(y_train_path)
-     y_test = pd.read_csv(y_test_path)
- 
-     if inputs is not None:
-         print(f"Filtering inputs: {inputs}")
-         X_train = X_train_full[inputs]
-         X_test = X_test_full[inputs]
-     else:
-         print("No specific inputs provided; returning all columns.")
-         X_train = X_train_full
-         X_test = X_test_full
- 
-+    def _nan_report(df, name):
-+        nan_counts = df.isna().sum()
-+        nan_counts = nan_counts[nan_counts > 0]
-+        if nan_counts.empty:
-+            print(f"{name}: no NaN values detected.")
-+            return
++    current_row = df.iloc[row_idx]
 +
-+        total_nans = int(nan_counts.sum())
-+        print(
-+            f"{ANSI_RED}WARNING: {name} contains NaN values "
-+            f"(total: {total_nans}).{ANSI_RESET}"
-+        )
-+        for col, cnt in nan_counts.items():
-+            print(f"{ANSI_RED}  - {col}: {int(cnt)} NaN{ANSI_RESET}")
++    # 1) Same cell
++    num = clean_number(current_row.iloc[col_idx])
++    if num is not None:
++        return num
 +
-+    _nan_report(X_train, "X_train")
-+    _nan_report(X_test, "X_test")
-+    _nan_report(y_train, "y_train")
-+    _nan_report(y_test, "y_test")
++    # 2) Same column in next rows
++    for r in range(row_idx + 1, min(row_idx + 1 + max_row_lookahead, len(df))):
++        next_row = df.iloc[r]
++        num = clean_number(next_row.iloc[col_idx])
++        if num is not None:
++            return num
 +
-+    # Fill missing values in inputs so sklearn regressors that do not support NaN can train.
-+    input_fill_values = X_train.median(numeric_only=True)
-+    X_train = X_train.fillna(input_fill_values)
-+    X_test = X_test.fillna(input_fill_values)
-+    remaining_train_nan = int(X_train.isna().sum().sum())
-+    remaining_test_nan = int(X_test.isna().sum().sum())
-+    if remaining_train_nan or remaining_test_nan:
-+        print(
-+            f"{ANSI_YELLOW}Some input NaNs remained after median-fill. "
-+            "Applying forward/backward fill as fallback for compatibility."
-+            f"{ANSI_RESET}"
-+        )
-+        X_train = X_train.ffill().bfill()
-+        X_test = X_test.ffill().bfill()
++    # 3) Nearby cells in same row (closest first)
++    for offset in range(1, max_col_offset + 1):
++        right = col_idx + offset
++        left = col_idx - offset
 +
-     print("Data loaded successfully!")
-     print(f"X_train shape: {X_train.shape}")
-     print(f"X_test shape: {X_test.shape}")
-     print(f"y_train shape: {y_train.shape}")
-     print(f"y_test shape: {y_test.shape}")
++        if right < len(current_row):
++            num = clean_number(current_row.iloc[right])
++            if num is not None:
++                return num
++
++        if left >= 0:
++            num = clean_number(current_row.iloc[left])
++            if num is not None:
++                return num
++
++    # 4) Nearby columns in next rows (closest first)
++    for r in range(row_idx + 1, min(row_idx + 1 + max_row_lookahead, len(df))):
++        next_row = df.iloc[r]
++        for offset in range(1, max_col_offset + 1):
++            right = col_idx + offset
++            left = col_idx - offset
++
++            if right < len(next_row):
++                num = clean_number(next_row.iloc[right])
++                if num is not None:
++                    return num
++
++            if left >= 0:
++                num = clean_number(next_row.iloc[left])
++                if num is not None:
++                    return num
++
++    return None
++
++
+ def find_section_value(df, section_keyword, property_keyword, search_depth=6):
+     """
+     Find section row (e.g., شربت خام)
+     Then search next rows for property (e.g., رنگ)
+     """
  
-     return X_train, X_test, y_train, y_test
+     for i in range(len(df)):
+ 
+         row = df.iloc[i].astype(str)
+ 
+         # Step 1: Find section
+         if any(section_keyword in cell for cell in row):
+ 
+             # Step 2: Search next few rows
+             for j in range(i, min(i + search_depth, len(df))):
+                 subrow = df.iloc[j].astype(str)
+ 
+-                if any(property_keyword in cell for cell in subrow):
++                for col_idx, cell in enumerate(subrow):
++                    if property_keyword in cell:
++                        value = extract_number_near_property(df, j, col_idx)
++                        if value is not None:
++                            return value
+ 
++                # Fallback: old behavior if property exists but
++                # no position-based number can be extracted
++                if any(property_keyword in cell for cell in subrow):
+                     numbers = []
+                     for cell in subrow:
+                         num = clean_number(cell)
+                         if num is not None:
+                             numbers.append(num)
+ 
+                     if numbers:
+                         return numbers[0]
+ 
+     return None
  
  
- if __name__ == "__main__":
-     X_train, X_test, y_train, y_test = read_data()
+ # ==========================================
+ # 4️⃣ EXCEL PROCESSING
+ # ==========================================
  
-     print("\nData processed successfully!")
-     print(f"X_train shape: {X_train.shape}")
-     print(f"X_test shape: {X_test.shape}")
-     print(f"y_train shape: {y_train.shape}")
-     print(f"y_test shape: {y_test.shape}")
+ xls = pd.ExcelFile(input_file)
+ all_sheets = xls.sheet_names
+ 
+ all_days_data = []
+ 
+ for sheet in all_sheets:
+ 
+     print(f"Processing sheet: {sheet}")
+ 
+@@ -135,26 +201,25 @@ for sheet in all_sheets:
+     day_data["standard_liquor_brix"] = find_section_value(df, "لیکور استاندارد", "بریکس")
+     day_data["standard_liquor_color"] = find_section_value(df, "لیکور استاندارد", "رنگ")
+ 
+     # -------------------------------
+     # FINAL WHITE SUGAR (AVERAGE TWO SHIFTS)
+     # -------------------------------
+     day_data["white_moisture"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "رطوبت")
+     day_data["white_invert"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "اینورت")
+     day_data["white_solution_color"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "رنگ محلول")
+     day_data["white_apparent_color"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "رنگ ظاهری")
+     day_data["white_ash"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "خاکستر")
+     day_data["white_total_points"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "جمع پوئن")
+ 
+     all_days_data.append(day_data)
+ 
+ 
+ # ==========================================
+ # 5️⃣ SAVE FINAL CSV
+ # ==========================================
+ 
+ final_df = pd.DataFrame(all_days_data)
+ final_df.to_csv(output_file, index=False)
+ 
+ print("\n✅ EXTRACTION COMPLETED SUCCESSFULLY")
+ print("Output file:", output_file)
+-
