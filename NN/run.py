@@ -32,6 +32,7 @@ from read_data import (
     sync_prep_data_with_dataset,
     prep_data_exists,
     read_prep_metadata,
+    save_data,
 )
 import inspect
 import models
@@ -328,11 +329,95 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
             print(metadata)
 
         reuse_answer = input(
-            "Use existing prepared data from prep_data and continue to models? [y]: "
+            "Continue with these prepared inputs/outputs? [y]: "
         ).strip().lower()
         if reuse_answer in ("", "y", "yes"):
             reused_prep_data = True
             return X_train_existing, existing_outputs, use_auto_feature_selection, reused_prep_data
+
+        prep_train_path = os.path.join(prep_folder, "train.csv")
+        prep_test_path = os.path.join(prep_folder, "test.csv")
+        if os.path.isfile(prep_train_path) and os.path.isfile(prep_test_path):
+            print("\nYou chose not to continue with current prep_data selection.")
+            print("1) Reselect input features from prep_data/train.csv and prep_data/test.csv")
+            print("2) Rebuild prep_data from the raw dataset and select input/output/sequential options again")
+            reselect_mode = input("Choose option [1]: ").strip()
+            if reselect_mode in ("", "1"):
+                train_df = pd.read_csv(prep_train_path)
+                test_df = pd.read_csv(prep_test_path)
+                available_inputs = [col for col in train_df.columns if col not in existing_outputs]
+                if not available_inputs:
+                    print("No candidate input columns found in prep_data/train.csv. Falling back to full prepare flow.")
+                else:
+                    print_numbered_feature_list(
+                        "Available Input Features from prep_data/train.csv",
+                        available_inputs,
+                        ANSI_GREEN,
+                    )
+                    reselect_answer = input(
+                        "\nSelect one or several input features (indexes/ranges), or [all]: "
+                    ).strip()
+                    try:
+                        selected_input_features = parse_multi_select(
+                            reselect_answer,
+                            available_inputs,
+                            allow_all=True,
+                        )
+                    except ValueError as err:
+                        print(f"Invalid input feature selection: {err}")
+                        exit()
+
+                    resolved_inputs = (
+                        available_inputs if selected_input_features is None else selected_input_features
+                    )
+                    missing_inputs_in_test = [
+                        col for col in resolved_inputs if col not in test_df.columns
+                    ]
+                    if missing_inputs_in_test:
+                        print(
+                            "Selected inputs are missing from prep_data/test.csv: "
+                            + str(missing_inputs_in_test)
+                        )
+                        print("Please rebuild prep_data from the raw dataset.")
+                        exit()
+
+                    missing_outputs_in_test = [
+                        col for col in existing_outputs if col not in test_df.columns
+                    ]
+                    if missing_outputs_in_test:
+                        print(
+                            "Prepared output columns are missing from prep_data/test.csv: "
+                            + str(missing_outputs_in_test)
+                        )
+                        print("Please rebuild prep_data from the raw dataset.")
+                        exit()
+
+                    X_train_selected = train_df[resolved_inputs]
+                    X_test_selected = test_df[resolved_inputs]
+                    y_train_selected = train_df[existing_outputs]
+                    y_test_selected = test_df[existing_outputs]
+                    save_data(
+                        prep_folder,
+                        X_train_selected,
+                        X_test_selected,
+                        y_train_selected,
+                        y_test_selected,
+                        metadata=metadata,
+                    )
+                    print("prep_data updated with the newly selected input features.")
+                    reused_prep_data = True
+                    return (
+                        X_train_selected,
+                        existing_outputs,
+                        use_auto_feature_selection,
+                        reused_prep_data,
+                    )
+            elif reselect_mode == "2":
+                print("Preparing data again from the raw dataset...")
+            else:
+                print("Invalid choice. Preparing data again from the raw dataset...")
+        else:
+            print("prep_data/train.csv or prep_data/test.csv not found. Preparing data again from the raw dataset...")
 
     data = pd.read_csv(dataset_path)
     print_selection_guide()
@@ -1125,11 +1210,10 @@ data = X_train
 print_numbered_feature_list("Selected Input Features", inputs, ANSI_GREEN)
 print_numbered_feature_list("Selected Output Features", outputs, ANSI_BLUE)
 active_features = list(inputs)
-if not reused_prep_data:
-    ans = input("Confirm these numbered inputs/outputs from prep_data folder [y]: ").strip().lower()
-    if ans not in ("", "y", "yes"):
-        print("Please re-run and choose your preferred input/output features.")
-        exit()
+ans = input("Confirm these numbered inputs/outputs from prep_data folder [y]: ").strip().lower()
+if ans not in ("", "y", "yes"):
+    print("Please re-run and choose your preferred input/output features.")
+    exit()
 
 # Dynamically collect all neural-network model classes from the module
 nn_models = [

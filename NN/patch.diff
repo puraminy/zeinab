@@ -1,139 +1,258 @@
-diff --git a/NN/read_data.py b/NN/read_data.py
-index 9e30d7fdc9328599774c2727045b207be31f9166..1fcc3ae3b3f6b3705b93931261cd33f0c8408122 100644
---- a/NN/read_data.py
-+++ b/NN/read_data.py
-@@ -423,98 +423,130 @@ def sync_prep_data_with_dataset(
-         data.columns, input_features
+diff --git a/NN/run.py b/NN/run.py
+index 4cf9505cf8ca91bcd79a7a423ead3a3d218ec296..c6457eb3d983b8324d3430a548196abca3e8e198 100644
+--- a/NN/run.py
++++ b/NN/run.py
+@@ -10,50 +10,51 @@ from sklearn.ensemble import (
+     ExtraTreesRegressor,
+     GradientBoostingRegressor,
+     AdaBoostRegressor,
+     HistGradientBoostingRegressor,
+ )
+ from sklearn.neighbors import KNeighborsRegressor
+ from sklearn.svm import SVR
+ from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
+ from sklearn.tree import DecisionTreeRegressor
+ from sklearn.multioutput import MultiOutputRegressor
+ import pandas as pd
+ import numpy as np
+ import torch.nn as nn
+ import re
+ from sklearn.metrics import r2_score
+ from tabulate import tabulate
+ import os
+ from latex import *
+ from plot import *
+ from models import *
+ from read_data import (
+     read_prep_data,
+     sync_prep_data_with_dataset,
+     prep_data_exists,
+     read_prep_metadata,
++    save_data,
+ )
+ import inspect
+ import models
+ 
+ try:
+     from xgboost import XGBRegressor
+ except ImportError:
+     XGBRegressor = None
+ 
+ try:
+     from lightgbm import LGBMRegressor
+ except ImportError:
+     LGBMRegressor = None
+ 
+ ANSI_RESET = "\033[0m"
+ ANSI_GREEN = "\033[92m"
+ ANSI_BLUE = "\033[94m"
+ 
+ 
+ def color_text(text, color):
+     return f"{color}{text}{ANSI_RESET}"
+ 
+ 
+ def print_divider(char="=", width=68):
+     print(char * width)
+@@ -306,56 +307,140 @@ def parse_sequential_layout(answer, options):
+                 flat_features.append(feature)
+     return flat_features, groups
+ 
+ 
+ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", prep_folder="prep_data"):
+     print("====================================")
+     print("DATASET PATH: " + dataset_path)
+     print("====================================")
+ 
+     use_auto_feature_selection = False
+     reused_prep_data = False
+ 
+     if prep_data_exists(prep_folder):
+         X_train_existing, _, y_train_existing, _ = read_prep_data(inputs=None, prep_folder=prep_folder)
+         existing_inputs = X_train_existing.columns.tolist()
+         existing_outputs = y_train_existing.columns.tolist()
+         print_numbered_feature_list("Prepared Input Features (prep_data)", existing_inputs, ANSI_GREEN)
+         print_numbered_feature_list("Prepared Output Features (prep_data)", existing_outputs, ANSI_BLUE)
+ 
+         metadata = read_prep_metadata(prep_folder)
+         if metadata:
+             print("prep_data metadata:")
+             print(metadata)
+ 
+         reuse_answer = input(
+-            "Use existing prepared data from prep_data and continue to models? [y]: "
++            "Continue with these prepared inputs/outputs? [y]: "
+         ).strip().lower()
+         if reuse_answer in ("", "y", "yes"):
+             reused_prep_data = True
+             return X_train_existing, existing_outputs, use_auto_feature_selection, reused_prep_data
+ 
++        prep_train_path = os.path.join(prep_folder, "train.csv")
++        prep_test_path = os.path.join(prep_folder, "test.csv")
++        if os.path.isfile(prep_train_path) and os.path.isfile(prep_test_path):
++            print("\nYou chose not to continue with current prep_data selection.")
++            print("1) Reselect input features from prep_data/train.csv and prep_data/test.csv")
++            print("2) Rebuild prep_data from the raw dataset and select input/output/sequential options again")
++            reselect_mode = input("Choose option [1]: ").strip()
++            if reselect_mode in ("", "1"):
++                train_df = pd.read_csv(prep_train_path)
++                test_df = pd.read_csv(prep_test_path)
++                available_inputs = [col for col in train_df.columns if col not in existing_outputs]
++                if not available_inputs:
++                    print("No candidate input columns found in prep_data/train.csv. Falling back to full prepare flow.")
++                else:
++                    print_numbered_feature_list(
++                        "Available Input Features from prep_data/train.csv",
++                        available_inputs,
++                        ANSI_GREEN,
++                    )
++                    reselect_answer = input(
++                        "\nSelect one or several input features (indexes/ranges), or [all]: "
++                    ).strip()
++                    try:
++                        selected_input_features = parse_multi_select(
++                            reselect_answer,
++                            available_inputs,
++                            allow_all=True,
++                        )
++                    except ValueError as err:
++                        print(f"Invalid input feature selection: {err}")
++                        exit()
++
++                    resolved_inputs = (
++                        available_inputs if selected_input_features is None else selected_input_features
++                    )
++                    missing_inputs_in_test = [
++                        col for col in resolved_inputs if col not in test_df.columns
++                    ]
++                    if missing_inputs_in_test:
++                        print(
++                            "Selected inputs are missing from prep_data/test.csv: "
++                            + str(missing_inputs_in_test)
++                        )
++                        print("Please rebuild prep_data from the raw dataset.")
++                        exit()
++
++                    missing_outputs_in_test = [
++                        col for col in existing_outputs if col not in test_df.columns
++                    ]
++                    if missing_outputs_in_test:
++                        print(
++                            "Prepared output columns are missing from prep_data/test.csv: "
++                            + str(missing_outputs_in_test)
++                        )
++                        print("Please rebuild prep_data from the raw dataset.")
++                        exit()
++
++                    X_train_selected = train_df[resolved_inputs]
++                    X_test_selected = test_df[resolved_inputs]
++                    y_train_selected = train_df[existing_outputs]
++                    y_test_selected = test_df[existing_outputs]
++                    save_data(
++                        prep_folder,
++                        X_train_selected,
++                        X_test_selected,
++                        y_train_selected,
++                        y_test_selected,
++                        metadata=metadata,
++                    )
++                    print("prep_data updated with the newly selected input features.")
++                    reused_prep_data = True
++                    return (
++                        X_train_selected,
++                        existing_outputs,
++                        use_auto_feature_selection,
++                        reused_prep_data,
++                    )
++            elif reselect_mode == "2":
++                print("Preparing data again from the raw dataset...")
++            else:
++                print("Invalid choice. Preparing data again from the raw dataset...")
++        else:
++            print("prep_data/train.csv or prep_data/test.csv not found. Preparing data again from the raw dataset...")
++
+     data = pd.read_csv(dataset_path)
+     print_selection_guide()
+ 
+     answer = input(
+         "\n".join([str(i) + ")" + name for i, name in enumerate(data.columns)])
+         + "\nSelect one or several output features (separated with space) [last column]:"
      )
-     output_features, input_features = resolve_data_columns(data, output_feature, base_input_features)
-     _, input_features = apply_temporal_feature_engineering(
-         data=data,
-         input_features=input_features,
-         sequential_features=sequential_features,
-         sequential_groups=sequential_groups,
-         add_differences=add_differences,
-         difference_order=difference_order,
-         add_ratio_features=add_ratio_features,
-         add_acceleration_features=add_acceleration_features,
-         add_normalized_change_features=add_normalized_change_features,
-         create_rnn_windows=create_rnn_windows,
-         rnn_window_size=rnn_window_size,
-     )
-     if requested_derived_features:
-         input_features = list(base_input_features) + list(requested_derived_features)
- 
-     paths = prep_data_file_paths(prep_folder)
-     expected_files = [paths["X_train"], paths["X_test"], paths["y_train"], paths["y_test"]]
- 
-     should_rebuild = not all(os.path.isfile(path) for path in expected_files)
- 
-     if not should_rebuild:
--        current_x = pd.read_csv(expected_files[0])
--        current_y = pd.read_csv(expected_files[2])
-+        current_x_train = pd.read_csv(expected_files[0], nrows=0)
-+        current_x_test = pd.read_csv(expected_files[1], nrows=0)
-+        current_y_train = pd.read_csv(expected_files[2], nrows=0)
-+        current_y_test = pd.read_csv(expected_files[3], nrows=0)
-+
-+        x_train_columns = list(current_x_train.columns)
-+        x_test_columns = list(current_x_test.columns)
-+        y_train_columns = list(current_y_train.columns)
-+        y_test_columns = list(current_y_test.columns)
-+
-         should_rebuild = (
--            list(current_x.columns) != input_features
--            or list(current_y.columns) != output_features
-+            x_train_columns != input_features
-+            or x_test_columns != input_features
-+            or y_train_columns != output_features
-+            or y_test_columns != output_features
+     try:
+         selected_output_features = (
+             [data.columns[-1]]
+             if not answer
+             else parse_multi_select(answer, data.columns.tolist(), allow_all=False)
          )
+     except ValueError as err:
+         print(f"Invalid output feature selection: {err}")
+         exit()
  
-+        if should_rebuild:
-+            print(
-+                "prep_data schema mismatch detected. "
-+                "Expected train/test feature and target columns to match current settings."
-+            )
-+
-     if should_rebuild:
-         print("prep_data is missing or outdated. Rebuilding from dataset...")
-         prepare_data_from_file(
-             dataset_path=dataset_path,
-             output_feature=output_features,
-             input_features=input_features,
-             prep_folder=prep_folder,
-             sequential_features=sequential_features,
-             sequential_groups=sequential_groups,
-             add_differences=add_differences,
-             difference_order=difference_order,
-             add_ratio_features=add_ratio_features,
-             add_acceleration_features=add_acceleration_features,
-             add_normalized_change_features=add_normalized_change_features,
-             create_rnn_windows=create_rnn_windows,
-             rnn_window_size=rnn_window_size,
-         )
-     else:
-         print("prep_data matches dataset columns. Reusing existing files.")
+     available_input_features = [col for col in data.columns if col not in selected_output_features]
+     print("\nAvailable input features (output columns are excluded):")
+     print("\n".join([str(i) + ")" + name for i, name in enumerate(available_input_features)]))
  
+     answer = input(
+         "\nSelect one or several input features (indexes/ranges), [all], or [auto]: "
+     ).strip()
  
- def read_prep_data(inputs=None, prep_folder="prep_data"):
-     """Read preprocessed train/test files, optionally filtering input columns."""
-     print(f"Reading data from '{prep_folder}'...")
+@@ -1103,55 +1188,54 @@ def repeat_fit_model(model_class, num_repeats,
  
-     X_train_path = os.path.join(prep_folder, "X_train.csv")
-     X_test_path = os.path.join(prep_folder, "X_test.csv")
-     y_train_path = os.path.join(prep_folder, "y_train.csv")
-     y_test_path = os.path.join(prep_folder, "y_test.csv")
+     mean_r2 = np.mean(r2_list) if r2_list else None
+     mean_mse = np.mean(mse_list) if mse_list else None
+     std_r2 = np.std(r2_list) if r2_list else None
+     std_mse = np.std(mse_list) if mse_list else None
  
-     for file_path in [X_train_path, X_test_path, y_train_path, y_test_path]:
-         if not os.path.isfile(file_path):
-             raise FileNotFoundError(f"Required file '{file_path}' not found in '{prep_folder}'.")
+     return mean_r2, std_r2, mean_mse, best_preds, max_r2*100, r2_list, max_run
  
-     X_train_full = pd.read_csv(X_train_path)
-     X_test_full = pd.read_csv(X_test_path)
-     y_train = pd.read_csv(y_train_path)
-     y_test = pd.read_csv(y_test_path)
+ ############################### Start of Program ###################
+ dataset_path = "convert/sugar_all_days_clean_7.csv"
+ _, _, use_auto_feature_selection, reused_prep_data = prepare_or_reuse_data(
+     dataset_path=dataset_path,
+     prep_folder="prep_data",
+ )
+ X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder="prep_data")
  
-+    if list(X_train_full.columns) != list(X_test_full.columns):
-+        train_only = [col for col in X_train_full.columns if col not in X_test_full.columns]
-+        test_only = [col for col in X_test_full.columns if col not in X_train_full.columns]
-+        raise ValueError(
-+            "prep_data schema mismatch between X_train and X_test. "
-+            f"Columns only in X_train: {train_only}. "
-+            f"Columns only in X_test: {test_only}. "
-+            "Rebuild prep_data to keep train/test schemas aligned."
-+        )
-+
-     if inputs is not None:
-         print(f"Filtering inputs: {inputs}")
-+        missing_inputs = [col for col in inputs if col not in X_train_full.columns]
-+        if missing_inputs:
-+            raise KeyError(
-+                f"Requested input columns are missing from prep_data: {missing_inputs}. "
-+                "Rebuild prep_data with the same feature-engineering settings used by the run."
-+            )
-         X_train = X_train_full[inputs]
-         X_test = X_test_full[inputs]
-     else:
-         print("No specific inputs provided; returning all columns.")
-         X_train = X_train_full
-         X_test = X_test_full
+ # After loading, get the column names from X_train
+ inputs = X_train.columns.tolist()
+ outputs = y_train.columns.tolist()
+ output = outputs
  
-     def _nan_report(df, name):
-         nan_counts = df.isna().sum()
-         nan_counts = nan_counts[nan_counts > 0]
-         if nan_counts.empty:
-             print(f"{name}: no NaN values detected.")
-             return
+ data = X_train
+ print_numbered_feature_list("Selected Input Features", inputs, ANSI_GREEN)
+ print_numbered_feature_list("Selected Output Features", outputs, ANSI_BLUE)
+ active_features = list(inputs)
+-if not reused_prep_data:
+-    ans = input("Confirm these numbered inputs/outputs from prep_data folder [y]: ").strip().lower()
+-    if ans not in ("", "y", "yes"):
+-        print("Please re-run and choose your preferred input/output features.")
+-        exit()
++ans = input("Confirm these numbered inputs/outputs from prep_data folder [y]: ").strip().lower()
++if ans not in ("", "y", "yes"):
++    print("Please re-run and choose your preferred input/output features.")
++    exit()
  
-         total_nans = int(nan_counts.sum())
-         print(
-             f"{ANSI_RED}WARNING: {name} contains NaN values "
-             f"(total: {total_nans}).{ANSI_RESET}"
-         )
-         for col, cnt in nan_counts.items():
-             print(f"{ANSI_RED}  - {col}: {int(cnt)} NaN{ANSI_RESET}")
+ # Dynamically collect all neural-network model classes from the module
+ nn_models = [
+     member for name, member in inspect.getmembers(models, inspect.isclass)
+     if issubclass(member, models.nn.Module) and member.__module__ == models.__name__
+ ]
+ sklearn_models = [
+     (name, factory) for name, factory in SKLEARN_MODEL_FACTORIES.items()
+ ]
+ models = nn_models + [factory for _, factory in sklearn_models]
+ model_names = [model.__name__ for model in nn_models] + [name for name, _ in sklearn_models]
+ # User input for selecting the model and number of epochs
+ answer = input("\n".join([str(i) + ")" + name for i,name in enumerate(model_names)]) \
+         + "\nSelect one or several models (separated with space) [all]:")
  
-     _nan_report(X_train, "X_train")
-     _nan_report(X_test, "X_test")
-     _nan_report(y_train, "y_train")
+ if not answer:
+     answer = "all"
+ 
+ try:
+     selected_model_names = parse_multi_select(answer, model_names, allow_all=True)
+ except ValueError as err:
+     print(f"Invalid model selection: {err}")
+     exit()
+ 
+ if selected_model_names is None:
