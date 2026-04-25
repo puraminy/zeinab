@@ -145,8 +145,8 @@ else:
     print("Optional dependency not found: lightgbm. Skipping LightGBMRegressor.")
 
 
-def _expand_index_token(token, options_len):
-    """Expand a token like '3' or '1-4' into a list of indexes."""
+def _expand_index_token(token, options_len, one_based=False):
+    """Expand a token like '3' or '1-4' into zero-based indexes."""
     if "-" in token:
         bounds = token.split("-", 1)
         if len(bounds) != 2 or not bounds[0].isdigit() or not bounds[1].isdigit():
@@ -155,21 +155,24 @@ def _expand_index_token(token, options_len):
         end = int(bounds[1])
         if start > end:
             raise ValueError(f"Invalid range '{token}'. Start must be <= end.")
-        indexes = list(range(start, end + 1))
+        raw_indexes = list(range(start, end + 1))
     else:
         if not token.isdigit():
             raise ValueError(f"Invalid input '{token}'. Please use indexes or ranges like 1-4.")
-        indexes = [int(token)]
+        raw_indexes = [int(token)]
 
-    for index in indexes:
+    indexes = [index - 1 for index in raw_indexes] if one_based else raw_indexes
+    min_valid = 1 if one_based else 0
+    max_valid = options_len if one_based else options_len - 1
+    for raw_index, index in zip(raw_indexes, indexes):
         if index < 0 or index >= options_len:
             raise ValueError(
-                f"Invalid selection '{index}'. Valid range is 0 to {options_len - 1}."
+                f"Invalid selection '{raw_index}'. Valid range is {min_valid} to {max_valid}."
             )
     return indexes
 
 
-def parse_multi_select(answer, options, allow_all=True):
+def parse_multi_select(answer, options, allow_all=True, one_based=False):
     """Parse indexes/ranges and return selected option values.
 
     Supported syntax examples:
@@ -200,7 +203,7 @@ def parse_multi_select(answer, options, allow_all=True):
             include_indexes.update(range(len(options)))
             continue
 
-        indexes = _expand_index_token(clean, len(options))
+        indexes = _expand_index_token(clean, len(options), one_based=one_based)
         if is_exclude:
             exclude_indexes.update(indexes)
         else:
@@ -226,11 +229,11 @@ def parse_multi_select(answer, options, allow_all=True):
 
 def print_selection_guide():
     print("\nSelection guide:")
-    print("- Single indexes: 0 3 5")
+    print("- Single indexes: 1 3 5")
     print("- Range syntax: 1-9")
-    print("- Mixed syntax: 0 2-4 7")
-    print("- Commas are also allowed: 0,2-4,7")
-    print("- Exclude indexes/ranges with ! : !0 !5-8")
+    print("- Mixed syntax: 1 2-4 7")
+    print("- Commas are also allowed: 1,2-4,7")
+    print("- Exclude indexes/ranges with ! : !1 !5-8")
     print("- In auto mode, exclude-only means all features except those indexes.")
 
 
@@ -238,13 +241,13 @@ def prompt_temporal_options(input_features):
     print("\nTemporal/sequential feature options:")
     print("Enter indexes/ranges for sequential columns if any (empty for none).")
     print("Optional grouped dependencies: [2 4] [3 11 13] or 2>4>6,3>11>13")
-    print("\n".join([str(i) + ")" + name for i, name in enumerate(input_features)]))
+    print("\n".join([str(i) + ")" + name for i, name in enumerate(input_features, start=1)]))
     seq_answer = input("Sequential feature columns/groups [none]: ").strip()
     if not seq_answer:
         return [], [], False, 1, False, False, False, False, 3
 
     try:
-        sequential_features, sequential_groups = parse_sequential_layout(seq_answer, input_features)
+        sequential_features, sequential_groups = parse_sequential_layout(seq_answer, input_features, one_based=True)
     except ValueError as err:
         print(f"Invalid sequential feature selection: {err}")
         exit()
@@ -280,13 +283,13 @@ def prompt_temporal_options(input_features):
     )
 
 
-def parse_sequential_layout(answer, options):
+def parse_sequential_layout(answer, options, one_based=False):
     """Parse independent sequential columns and optional ordered dependency groups."""
     grouped_layout = (
         "[" in answer or "]" in answer or "(" in answer or ")" in answer or ">" in answer
     )
     if not grouped_layout:
-        sequential_features = parse_multi_select(answer, options, allow_all=False)
+        sequential_features = parse_multi_select(answer, options, allow_all=False, one_based=one_based)
         return sequential_features, []
 
     groups = []
@@ -295,7 +298,7 @@ def parse_sequential_layout(answer, options):
 
     for raw_group in raw_groups:
         normalized = raw_group.replace(">", " ")
-        group_values = parse_multi_select(normalized, options, allow_all=False)
+        group_values = parse_multi_select(normalized, options, allow_all=False, one_based=one_based)
         if len(group_values) < 2:
             raise ValueError("Each sequential group must contain at least two columns.")
         groups.append(group_values)
@@ -362,6 +365,7 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
                             reselect_answer,
                             available_inputs,
                             allow_all=True,
+                            one_based=True,
                         )
                     except ValueError as err:
                         print(f"Invalid input feature selection: {err}")
@@ -423,14 +427,14 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
     print_selection_guide()
 
     answer = input(
-        "\n".join([str(i) + ")" + name for i, name in enumerate(data.columns)])
+        "\n".join([str(i) + ")" + name for i, name in enumerate(data.columns, start=1)])
         + "\nSelect one or several output features (separated with space) [last column]:"
     )
     try:
         selected_output_features = (
             [data.columns[-1]]
             if not answer
-            else parse_multi_select(answer, data.columns.tolist(), allow_all=False)
+            else parse_multi_select(answer, data.columns.tolist(), allow_all=False, one_based=True)
         )
     except ValueError as err:
         print(f"Invalid output feature selection: {err}")
@@ -438,7 +442,7 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
 
     available_input_features = [col for col in data.columns if col not in selected_output_features]
     print("\nAvailable input features (output columns are excluded):")
-    print("\n".join([str(i) + ")" + name for i, name in enumerate(available_input_features)]))
+    print("\n".join([str(i) + ")" + name for i, name in enumerate(available_input_features, start=1)]))
 
     answer = input(
         "\nSelect one or several input features (indexes/ranges), [all], or [auto]: "
@@ -447,13 +451,14 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
     use_auto_feature_selection = answer.lower() == "auto"
     if use_auto_feature_selection:
         auto_pool_answer = input(
-            "Auto mode candidate pool [all] (use ! to exclude, e.g. !0 !3-5): "
+            "Auto mode candidate pool [all] (use ! to exclude, e.g. !1 !3-5): "
         ).strip()
         try:
             selected_input_features = parse_multi_select(
                 auto_pool_answer,
                 available_input_features,
                 allow_all=True,
+                one_based=True,
             )
         except ValueError as err:
             print(f"Invalid auto candidate selection: {err}")
@@ -464,6 +469,7 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
                 answer,
                 available_input_features,
                 allow_all=True,
+                one_based=True,
             )
         except ValueError as err:
             print(f"Invalid input feature selection: {err}")

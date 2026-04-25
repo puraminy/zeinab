@@ -1,60 +1,212 @@
 diff --git a/NN/run.py b/NN/run.py
-index 4cf9505cf8ca91bcd79a7a423ead3a3d218ec296..c6457eb3d983b8324d3430a548196abca3e8e198 100644
+index c6457eb3d983b8324d3430a548196abca3e8e198..9e730169f75f6475d9e86dfda0c47e97577f721d 100644
 --- a/NN/run.py
 +++ b/NN/run.py
-@@ -10,50 +10,51 @@ from sklearn.ensemble import (
-     ExtraTreesRegressor,
-     GradientBoostingRegressor,
-     AdaBoostRegressor,
-     HistGradientBoostingRegressor,
- )
- from sklearn.neighbors import KNeighborsRegressor
- from sklearn.svm import SVR
- from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
- from sklearn.tree import DecisionTreeRegressor
- from sklearn.multioutput import MultiOutputRegressor
- import pandas as pd
- import numpy as np
- import torch.nn as nn
- import re
- from sklearn.metrics import r2_score
- from tabulate import tabulate
- import os
- from latex import *
- from plot import *
- from models import *
- from read_data import (
-     read_prep_data,
-     sync_prep_data_with_dataset,
-     prep_data_exists,
-     read_prep_metadata,
-+    save_data,
- )
- import inspect
- import models
+@@ -123,201 +123,204 @@ SKLEARN_MODEL_FACTORIES = {
+     "LinearRegression": lambda seed: LinearRegression(),
+     "Ridge": lambda seed: Ridge(random_state=seed),
+     "Lasso": lambda seed: Lasso(random_state=seed),
+     "ElasticNet": lambda seed: ElasticNet(random_state=seed),
+ }
  
- try:
-     from xgboost import XGBRegressor
- except ImportError:
-     XGBRegressor = None
+ if XGBRegressor is not None:
+     SKLEARN_MODEL_FACTORIES["XGBoostRegressor"] = lambda seed: XGBRegressor(
+         n_estimators=300,
+         random_state=seed,
+         objective="reg:squarederror",
+     )
+ else:
+     print("Optional dependency not found: xgboost. Skipping XGBoostRegressor.")
  
- try:
-     from lightgbm import LGBMRegressor
- except ImportError:
-     LGBMRegressor = None
- 
- ANSI_RESET = "\033[0m"
- ANSI_GREEN = "\033[92m"
- ANSI_BLUE = "\033[94m"
+ if LGBMRegressor is not None:
+     SKLEARN_MODEL_FACTORIES["LightGBMRegressor"] = lambda seed: LGBMRegressor(
+         n_estimators=300,
+         random_state=seed,
+         verbose=-1,
+     )
+ else:
+     print("Optional dependency not found: lightgbm. Skipping LightGBMRegressor.")
  
  
- def color_text(text, color):
-     return f"{color}{text}{ANSI_RESET}"
+-def _expand_index_token(token, options_len):
+-    """Expand a token like '3' or '1-4' into a list of indexes."""
++def _expand_index_token(token, options_len, one_based=False):
++    """Expand a token like '3' or '1-4' into zero-based indexes."""
+     if "-" in token:
+         bounds = token.split("-", 1)
+         if len(bounds) != 2 or not bounds[0].isdigit() or not bounds[1].isdigit():
+             raise ValueError(f"Invalid range '{token}'. Use syntax like 1-4.")
+         start = int(bounds[0])
+         end = int(bounds[1])
+         if start > end:
+             raise ValueError(f"Invalid range '{token}'. Start must be <= end.")
+-        indexes = list(range(start, end + 1))
++        raw_indexes = list(range(start, end + 1))
+     else:
+         if not token.isdigit():
+             raise ValueError(f"Invalid input '{token}'. Please use indexes or ranges like 1-4.")
+-        indexes = [int(token)]
++        raw_indexes = [int(token)]
+ 
+-    for index in indexes:
++    indexes = [index - 1 for index in raw_indexes] if one_based else raw_indexes
++    min_valid = 1 if one_based else 0
++    max_valid = options_len if one_based else options_len - 1
++    for raw_index, index in zip(raw_indexes, indexes):
+         if index < 0 or index >= options_len:
+             raise ValueError(
+-                f"Invalid selection '{index}'. Valid range is 0 to {options_len - 1}."
++                f"Invalid selection '{raw_index}'. Valid range is {min_valid} to {max_valid}."
+             )
+     return indexes
  
  
- def print_divider(char="=", width=68):
-     print(char * width)
-@@ -306,56 +307,140 @@ def parse_sequential_layout(answer, options):
+-def parse_multi_select(answer, options, allow_all=True):
++def parse_multi_select(answer, options, allow_all=True, one_based=False):
+     """Parse indexes/ranges and return selected option values.
+ 
+     Supported syntax examples:
+     - 0 2 4
+     - 1-5
+     - 1,3,6-9
+     - !0 !4-6 (exclude indexes/ranges from current pool)
+     """
+     if not answer:
+         return None if allow_all else []
+ 
+     answer = answer.strip().lower()
+     if allow_all and answer == "all":
+         return None
+ 
+     include_indexes = set()
+     exclude_indexes = set()
+     tokens = [token for token in answer.replace(",", " ").split() if token]
+     if not tokens:
+         return None if allow_all else []
+ 
+     for token in tokens:
+         is_exclude = token.startswith("!")
+         clean = token[1:] if is_exclude else token
+         if clean == "all":
+             if not allow_all:
+                 raise ValueError("'all' is not allowed for this selection.")
+             include_indexes.update(range(len(options)))
+             continue
+ 
+-        indexes = _expand_index_token(clean, len(options))
++        indexes = _expand_index_token(clean, len(options), one_based=one_based)
+         if is_exclude:
+             exclude_indexes.update(indexes)
+         else:
+             include_indexes.update(indexes)
+ 
+     if include_indexes:
+         final_indexes = sorted(include_indexes.difference(exclude_indexes))
+     else:
+         # Exclude-only syntax means "all except excluded".
+         if exclude_indexes:
+             final_indexes = [i for i in range(len(options)) if i not in exclude_indexes]
+         elif allow_all:
+             return None
+         else:
+             final_indexes = []
+ 
+     if not final_indexes:
+         raise ValueError("Selection is empty after applying include/exclude filters.")
+ 
+     selected_values = [options[index] for index in final_indexes]
+     return selected_values
+ 
+ 
+ def print_selection_guide():
+     print("\nSelection guide:")
+-    print("- Single indexes: 0 3 5")
++    print("- Single indexes: 1 3 5")
+     print("- Range syntax: 1-9")
+-    print("- Mixed syntax: 0 2-4 7")
+-    print("- Commas are also allowed: 0,2-4,7")
+-    print("- Exclude indexes/ranges with ! : !0 !5-8")
++    print("- Mixed syntax: 1 2-4 7")
++    print("- Commas are also allowed: 1,2-4,7")
++    print("- Exclude indexes/ranges with ! : !1 !5-8")
+     print("- In auto mode, exclude-only means all features except those indexes.")
+ 
+ 
+ def prompt_temporal_options(input_features):
+     print("\nTemporal/sequential feature options:")
+     print("Enter indexes/ranges for sequential columns if any (empty for none).")
+     print("Optional grouped dependencies: [2 4] [3 11 13] or 2>4>6,3>11>13")
+-    print("\n".join([str(i) + ")" + name for i, name in enumerate(input_features)]))
++    print("\n".join([str(i) + ")" + name for i, name in enumerate(input_features, start=1)]))
+     seq_answer = input("Sequential feature columns/groups [none]: ").strip()
+     if not seq_answer:
+         return [], [], False, 1, False, False, False, False, 3
+ 
+     try:
+-        sequential_features, sequential_groups = parse_sequential_layout(seq_answer, input_features)
++        sequential_features, sequential_groups = parse_sequential_layout(seq_answer, input_features, one_based=True)
+     except ValueError as err:
+         print(f"Invalid sequential feature selection: {err}")
+         exit()
+ 
+     add_differences = input("Add difference features for sequential columns? [n]: ").strip().lower() in ("y", "yes")
+     difference_order = 1
+     if add_differences:
+         difference_order = int(input("Difference order [1]: ").strip() or "1")
+ 
+     add_ratio_features = input("Add ratio features (x_t / x_{t-1})? [n]: ").strip().lower() in ("y", "yes")
+     add_acceleration_features = input(
+         "Add acceleration features (x_t - 2*x_{t-1} + x_{t-2})? [n]: "
+     ).strip().lower() in ("y", "yes")
+     add_normalized_change_features = input(
+         "Add normalized change features ((x_t - x_{t-1}) / x_{t-1})? [n]: "
+     ).strip().lower() in ("y", "yes")
+ 
+     create_rnn_windows = input("Add lag-window features for sequential columns? [n]: ").strip().lower() in ("y", "yes")
+     rnn_window_size = 3
+     if create_rnn_windows:
+         rnn_window_size = int(input("Lag window size [3]: ").strip() or "3")
+ 
+     return (
+         sequential_features,
+         sequential_groups,
+         add_differences,
+         difference_order,
+         add_ratio_features,
+         add_acceleration_features,
+         add_normalized_change_features,
+         create_rnn_windows,
+         rnn_window_size,
+     )
+ 
+ 
+-def parse_sequential_layout(answer, options):
++def parse_sequential_layout(answer, options, one_based=False):
+     """Parse independent sequential columns and optional ordered dependency groups."""
+     grouped_layout = (
+         "[" in answer or "]" in answer or "(" in answer or ")" in answer or ">" in answer
+     )
+     if not grouped_layout:
+-        sequential_features = parse_multi_select(answer, options, allow_all=False)
++        sequential_features = parse_multi_select(answer, options, allow_all=False, one_based=one_based)
+         return sequential_features, []
+ 
+     groups = []
+     bracket_groups = re.findall(r"[\[\(]([^\]\)]+)[\]\)]", answer)
+     raw_groups = bracket_groups if bracket_groups else [item.strip() for item in answer.split(",") if item.strip()]
+ 
+     for raw_group in raw_groups:
+         normalized = raw_group.replace(">", " ")
+-        group_values = parse_multi_select(normalized, options, allow_all=False)
++        group_values = parse_multi_select(normalized, options, allow_all=False, one_based=one_based)
+         if len(group_values) < 2:
+             raise ValueError("Each sequential group must contain at least two columns.")
+         groups.append(group_values)
+ 
+     flat_features = []
+     for group in groups:
+         for feature in group:
+             if feature not in flat_features:
                  flat_features.append(feature)
      return flat_features, groups
  
@@ -72,117 +224,94 @@ index 4cf9505cf8ca91bcd79a7a423ead3a3d218ec296..c6457eb3d983b8324d3430a548196abc
          existing_inputs = X_train_existing.columns.tolist()
          existing_outputs = y_train_existing.columns.tolist()
          print_numbered_feature_list("Prepared Input Features (prep_data)", existing_inputs, ANSI_GREEN)
-         print_numbered_feature_list("Prepared Output Features (prep_data)", existing_outputs, ANSI_BLUE)
+@@ -340,50 +343,51 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
+         if os.path.isfile(prep_train_path) and os.path.isfile(prep_test_path):
+             print("\nYou chose not to continue with current prep_data selection.")
+             print("1) Reselect input features from prep_data/train.csv and prep_data/test.csv")
+             print("2) Rebuild prep_data from the raw dataset and select input/output/sequential options again")
+             reselect_mode = input("Choose option [1]: ").strip()
+             if reselect_mode in ("", "1"):
+                 train_df = pd.read_csv(prep_train_path)
+                 test_df = pd.read_csv(prep_test_path)
+                 available_inputs = [col for col in train_df.columns if col not in existing_outputs]
+                 if not available_inputs:
+                     print("No candidate input columns found in prep_data/train.csv. Falling back to full prepare flow.")
+                 else:
+                     print_numbered_feature_list(
+                         "Available Input Features from prep_data/train.csv",
+                         available_inputs,
+                         ANSI_GREEN,
+                     )
+                     reselect_answer = input(
+                         "\nSelect one or several input features (indexes/ranges), or [all]: "
+                     ).strip()
+                     try:
+                         selected_input_features = parse_multi_select(
+                             reselect_answer,
+                             available_inputs,
+                             allow_all=True,
++                            one_based=True,
+                         )
+                     except ValueError as err:
+                         print(f"Invalid input feature selection: {err}")
+                         exit()
  
-         metadata = read_prep_metadata(prep_folder)
-         if metadata:
-             print("prep_data metadata:")
-             print(metadata)
+                     resolved_inputs = (
+                         available_inputs if selected_input_features is None else selected_input_features
+                     )
+                     missing_inputs_in_test = [
+                         col for col in resolved_inputs if col not in test_df.columns
+                     ]
+                     if missing_inputs_in_test:
+                         print(
+                             "Selected inputs are missing from prep_data/test.csv: "
+                             + str(missing_inputs_in_test)
+                         )
+                         print("Please rebuild prep_data from the raw dataset.")
+                         exit()
  
-         reuse_answer = input(
--            "Use existing prepared data from prep_data and continue to models? [y]: "
-+            "Continue with these prepared inputs/outputs? [y]: "
-         ).strip().lower()
-         if reuse_answer in ("", "y", "yes"):
-             reused_prep_data = True
-             return X_train_existing, existing_outputs, use_auto_feature_selection, reused_prep_data
+                     missing_outputs_in_test = [
+                         col for col in existing_outputs if col not in test_df.columns
+                     ]
+                     if missing_outputs_in_test:
+                         print(
+                             "Prepared output columns are missing from prep_data/test.csv: "
+@@ -401,91 +405,93 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
+                         X_train_selected,
+                         X_test_selected,
+                         y_train_selected,
+                         y_test_selected,
+                         metadata=metadata,
+                     )
+                     print("prep_data updated with the newly selected input features.")
+                     reused_prep_data = True
+                     return (
+                         X_train_selected,
+                         existing_outputs,
+                         use_auto_feature_selection,
+                         reused_prep_data,
+                     )
+             elif reselect_mode == "2":
+                 print("Preparing data again from the raw dataset...")
+             else:
+                 print("Invalid choice. Preparing data again from the raw dataset...")
+         else:
+             print("prep_data/train.csv or prep_data/test.csv not found. Preparing data again from the raw dataset...")
  
-+        prep_train_path = os.path.join(prep_folder, "train.csv")
-+        prep_test_path = os.path.join(prep_folder, "test.csv")
-+        if os.path.isfile(prep_train_path) and os.path.isfile(prep_test_path):
-+            print("\nYou chose not to continue with current prep_data selection.")
-+            print("1) Reselect input features from prep_data/train.csv and prep_data/test.csv")
-+            print("2) Rebuild prep_data from the raw dataset and select input/output/sequential options again")
-+            reselect_mode = input("Choose option [1]: ").strip()
-+            if reselect_mode in ("", "1"):
-+                train_df = pd.read_csv(prep_train_path)
-+                test_df = pd.read_csv(prep_test_path)
-+                available_inputs = [col for col in train_df.columns if col not in existing_outputs]
-+                if not available_inputs:
-+                    print("No candidate input columns found in prep_data/train.csv. Falling back to full prepare flow.")
-+                else:
-+                    print_numbered_feature_list(
-+                        "Available Input Features from prep_data/train.csv",
-+                        available_inputs,
-+                        ANSI_GREEN,
-+                    )
-+                    reselect_answer = input(
-+                        "\nSelect one or several input features (indexes/ranges), or [all]: "
-+                    ).strip()
-+                    try:
-+                        selected_input_features = parse_multi_select(
-+                            reselect_answer,
-+                            available_inputs,
-+                            allow_all=True,
-+                        )
-+                    except ValueError as err:
-+                        print(f"Invalid input feature selection: {err}")
-+                        exit()
-+
-+                    resolved_inputs = (
-+                        available_inputs if selected_input_features is None else selected_input_features
-+                    )
-+                    missing_inputs_in_test = [
-+                        col for col in resolved_inputs if col not in test_df.columns
-+                    ]
-+                    if missing_inputs_in_test:
-+                        print(
-+                            "Selected inputs are missing from prep_data/test.csv: "
-+                            + str(missing_inputs_in_test)
-+                        )
-+                        print("Please rebuild prep_data from the raw dataset.")
-+                        exit()
-+
-+                    missing_outputs_in_test = [
-+                        col for col in existing_outputs if col not in test_df.columns
-+                    ]
-+                    if missing_outputs_in_test:
-+                        print(
-+                            "Prepared output columns are missing from prep_data/test.csv: "
-+                            + str(missing_outputs_in_test)
-+                        )
-+                        print("Please rebuild prep_data from the raw dataset.")
-+                        exit()
-+
-+                    X_train_selected = train_df[resolved_inputs]
-+                    X_test_selected = test_df[resolved_inputs]
-+                    y_train_selected = train_df[existing_outputs]
-+                    y_test_selected = test_df[existing_outputs]
-+                    save_data(
-+                        prep_folder,
-+                        X_train_selected,
-+                        X_test_selected,
-+                        y_train_selected,
-+                        y_test_selected,
-+                        metadata=metadata,
-+                    )
-+                    print("prep_data updated with the newly selected input features.")
-+                    reused_prep_data = True
-+                    return (
-+                        X_train_selected,
-+                        existing_outputs,
-+                        use_auto_feature_selection,
-+                        reused_prep_data,
-+                    )
-+            elif reselect_mode == "2":
-+                print("Preparing data again from the raw dataset...")
-+            else:
-+                print("Invalid choice. Preparing data again from the raw dataset...")
-+        else:
-+            print("prep_data/train.csv or prep_data/test.csv not found. Preparing data again from the raw dataset...")
-+
      data = pd.read_csv(dataset_path)
      print_selection_guide()
  
      answer = input(
-         "\n".join([str(i) + ")" + name for i, name in enumerate(data.columns)])
+-        "\n".join([str(i) + ")" + name for i, name in enumerate(data.columns)])
++        "\n".join([str(i) + ")" + name for i, name in enumerate(data.columns, start=1)])
          + "\nSelect one or several output features (separated with space) [last column]:"
      )
      try:
          selected_output_features = (
              [data.columns[-1]]
              if not answer
-             else parse_multi_select(answer, data.columns.tolist(), allow_all=False)
+-            else parse_multi_select(answer, data.columns.tolist(), allow_all=False)
++            else parse_multi_select(answer, data.columns.tolist(), allow_all=False, one_based=True)
          )
      except ValueError as err:
          print(f"Invalid output feature selection: {err}")
@@ -190,69 +319,58 @@ index 4cf9505cf8ca91bcd79a7a423ead3a3d218ec296..c6457eb3d983b8324d3430a548196abc
  
      available_input_features = [col for col in data.columns if col not in selected_output_features]
      print("\nAvailable input features (output columns are excluded):")
-     print("\n".join([str(i) + ")" + name for i, name in enumerate(available_input_features)]))
+-    print("\n".join([str(i) + ")" + name for i, name in enumerate(available_input_features)]))
++    print("\n".join([str(i) + ")" + name for i, name in enumerate(available_input_features, start=1)]))
  
      answer = input(
          "\nSelect one or several input features (indexes/ranges), [all], or [auto]: "
      ).strip()
  
-@@ -1103,55 +1188,54 @@ def repeat_fit_model(model_class, num_repeats,
+     use_auto_feature_selection = answer.lower() == "auto"
+     if use_auto_feature_selection:
+         auto_pool_answer = input(
+-            "Auto mode candidate pool [all] (use ! to exclude, e.g. !0 !3-5): "
++            "Auto mode candidate pool [all] (use ! to exclude, e.g. !1 !3-5): "
+         ).strip()
+         try:
+             selected_input_features = parse_multi_select(
+                 auto_pool_answer,
+                 available_input_features,
+                 allow_all=True,
++                one_based=True,
+             )
+         except ValueError as err:
+             print(f"Invalid auto candidate selection: {err}")
+             exit()
+     else:
+         try:
+             selected_input_features = parse_multi_select(
+                 answer,
+                 available_input_features,
+                 allow_all=True,
++                one_based=True,
+             )
+         except ValueError as err:
+             print(f"Invalid input feature selection: {err}")
+             exit()
  
-     mean_r2 = np.mean(r2_list) if r2_list else None
-     mean_mse = np.mean(mse_list) if mse_list else None
-     std_r2 = np.std(r2_list) if r2_list else None
-     std_mse = np.std(mse_list) if mse_list else None
+     resolved_inputs = (
+         available_input_features if selected_input_features is None else selected_input_features
+     )
+     (
+         sequential_features,
+         sequential_groups,
+         add_differences,
+         difference_order,
+         add_ratio_features,
+         add_acceleration_features,
+         add_normalized_change_features,
+         create_rnn_windows,
+         rnn_window_size,
+     ) = prompt_temporal_options(resolved_inputs)
  
-     return mean_r2, std_r2, mean_mse, best_preds, max_r2*100, r2_list, max_run
- 
- ############################### Start of Program ###################
- dataset_path = "convert/sugar_all_days_clean_7.csv"
- _, _, use_auto_feature_selection, reused_prep_data = prepare_or_reuse_data(
-     dataset_path=dataset_path,
-     prep_folder="prep_data",
- )
- X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder="prep_data")
- 
- # After loading, get the column names from X_train
- inputs = X_train.columns.tolist()
- outputs = y_train.columns.tolist()
- output = outputs
- 
- data = X_train
- print_numbered_feature_list("Selected Input Features", inputs, ANSI_GREEN)
- print_numbered_feature_list("Selected Output Features", outputs, ANSI_BLUE)
- active_features = list(inputs)
--if not reused_prep_data:
--    ans = input("Confirm these numbered inputs/outputs from prep_data folder [y]: ").strip().lower()
--    if ans not in ("", "y", "yes"):
--        print("Please re-run and choose your preferred input/output features.")
--        exit()
-+ans = input("Confirm these numbered inputs/outputs from prep_data folder [y]: ").strip().lower()
-+if ans not in ("", "y", "yes"):
-+    print("Please re-run and choose your preferred input/output features.")
-+    exit()
- 
- # Dynamically collect all neural-network model classes from the module
- nn_models = [
-     member for name, member in inspect.getmembers(models, inspect.isclass)
-     if issubclass(member, models.nn.Module) and member.__module__ == models.__name__
- ]
- sklearn_models = [
-     (name, factory) for name, factory in SKLEARN_MODEL_FACTORIES.items()
- ]
- models = nn_models + [factory for _, factory in sklearn_models]
- model_names = [model.__name__ for model in nn_models] + [name for name, _ in sklearn_models]
- # User input for selecting the model and number of epochs
- answer = input("\n".join([str(i) + ")" + name for i,name in enumerate(model_names)]) \
-         + "\nSelect one or several models (separated with space) [all]:")
- 
- if not answer:
-     answer = "all"
- 
- try:
-     selected_model_names = parse_multi_select(answer, model_names, allow_all=True)
- except ValueError as err:
-     print(f"Invalid model selection: {err}")
-     exit()
- 
- if selected_model_names is None:
+     sync_prep_data_with_dataset(
+         dataset_path=dataset_path,
+         prep_folder=prep_folder,
+         input_features=selected_input_features,
+         output_feature=selected_output_features,
