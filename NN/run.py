@@ -240,7 +240,7 @@ def prompt_temporal_options(input_features):
     print("\n".join([str(i) + ")" + name for i, name in enumerate(input_features)]))
     seq_answer = input("Sequential feature columns/groups [none]: ").strip()
     if not seq_answer:
-        return [], [], False, 1, False, 3
+        return [], [], False, 1, False, False, False, False, 3
 
     try:
         sequential_features, sequential_groups = parse_sequential_layout(seq_answer, input_features)
@@ -253,6 +253,14 @@ def prompt_temporal_options(input_features):
     if add_differences:
         difference_order = int(input("Difference order [1]: ").strip() or "1")
 
+    add_ratio_features = input("Add ratio features (x_t / x_{t-1})? [n]: ").strip().lower() in ("y", "yes")
+    add_acceleration_features = input(
+        "Add acceleration features (x_t - 2*x_{t-1} + x_{t-2})? [n]: "
+    ).strip().lower() in ("y", "yes")
+    add_normalized_change_features = input(
+        "Add normalized change features ((x_t - x_{t-1}) / x_{t-1})? [n]: "
+    ).strip().lower() in ("y", "yes")
+
     create_rnn_windows = input("Add lag-window features for sequential columns? [n]: ").strip().lower() in ("y", "yes")
     rnn_window_size = 3
     if create_rnn_windows:
@@ -263,6 +271,9 @@ def prompt_temporal_options(input_features):
         sequential_groups,
         add_differences,
         difference_order,
+        add_ratio_features,
+        add_acceleration_features,
+        add_normalized_change_features,
         create_rnn_windows,
         rnn_window_size,
     )
@@ -381,6 +392,9 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
         sequential_groups,
         add_differences,
         difference_order,
+        add_ratio_features,
+        add_acceleration_features,
+        add_normalized_change_features,
         create_rnn_windows,
         rnn_window_size,
     ) = prompt_temporal_options(resolved_inputs)
@@ -394,6 +408,9 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
         sequential_groups=sequential_groups,
         add_differences=add_differences,
         difference_order=difference_order,
+        add_ratio_features=add_ratio_features,
+        add_acceleration_features=add_acceleration_features,
+        add_normalized_change_features=add_normalized_change_features,
         create_rnn_windows=create_rnn_windows,
         rnn_window_size=rnn_window_size,
     )

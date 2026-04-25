@@ -50,7 +50,7 @@ def resolve_data_columns(data, output_feature=None, input_features=None):
 
 
 TEMPORAL_DERIVED_COLUMN_PATTERN = re.compile(
-    r".+__(diff|lag|seqdiff)_\d+$"
+    r".+__(diff|lag|seqdiff|ratio|accel|normchg)_\d+$"
 )
 
 
@@ -120,6 +120,9 @@ def apply_temporal_feature_engineering(
     sequential_groups=None,
     add_differences=False,
     difference_order=1,
+    add_ratio_features=False,
+    add_acceleration_features=False,
+    add_normalized_change_features=False,
     create_rnn_windows=False,
     rnn_window_size=3,
 ):
@@ -160,6 +163,59 @@ def apply_temporal_feature_engineering(
                     ].diff()
                     if seq_diff_col not in resolved_inputs:
                         resolved_inputs.append(seq_diff_col)
+
+    if add_ratio_features:
+        for feature in sequential_features:
+            ratio_col = f"{feature}__ratio_1"
+            transformed[ratio_col] = transformed[feature] / transformed[feature].shift(1)
+            if ratio_col not in resolved_inputs:
+                resolved_inputs.append(ratio_col)
+        for group in normalized_groups:
+            for prev_feature, curr_feature in zip(group[:-1], group[1:]):
+                ratio_col = f"{curr_feature}__over_{prev_feature}__ratio_1"
+                transformed[ratio_col] = transformed[curr_feature] / transformed[prev_feature]
+                if ratio_col not in resolved_inputs:
+                    resolved_inputs.append(ratio_col)
+
+    if add_acceleration_features:
+        for feature in sequential_features:
+            accel_col = f"{feature}__accel_1"
+            transformed[accel_col] = (
+                transformed[feature]
+                - 2 * transformed[feature].shift(1)
+                + transformed[feature].shift(2)
+            )
+            if accel_col not in resolved_inputs:
+                resolved_inputs.append(accel_col)
+        for group in normalized_groups:
+            for prev2_feature, prev1_feature, curr_feature in zip(group[:-2], group[1:-1], group[2:]):
+                accel_col = (
+                    f"{curr_feature}__accel_from_{prev1_feature}_{prev2_feature}__accel_1"
+                )
+                transformed[accel_col] = (
+                    transformed[curr_feature]
+                    - 2 * transformed[prev1_feature]
+                    + transformed[prev2_feature]
+                )
+                if accel_col not in resolved_inputs:
+                    resolved_inputs.append(accel_col)
+
+    if add_normalized_change_features:
+        for feature in sequential_features:
+            normchg_col = f"{feature}__normchg_1"
+            transformed[normchg_col] = (
+                transformed[feature] - transformed[feature].shift(1)
+            ) / transformed[feature].shift(1)
+            if normchg_col not in resolved_inputs:
+                resolved_inputs.append(normchg_col)
+        for group in normalized_groups:
+            for prev_feature, curr_feature in zip(group[:-1], group[1:]):
+                normchg_col = f"{curr_feature}__minus_{prev_feature}__normchg_1"
+                transformed[normchg_col] = (
+                    transformed[curr_feature] - transformed[prev_feature]
+                ) / transformed[prev_feature]
+                if normchg_col not in resolved_inputs:
+                    resolved_inputs.append(normchg_col)
 
     if create_rnn_windows:
         if rnn_window_size < 2:
@@ -257,6 +313,12 @@ def save_data(folder, X_train, X_test, y_train, y_test, metadata=None):
     X_test.to_csv(os.path.join(folder, "X_test.csv"), index=False)
     y_train.to_csv(os.path.join(folder, "y_train.csv"), index=False)
     y_test.to_csv(os.path.join(folder, "y_test.csv"), index=False)
+    pd.concat([X_train.reset_index(drop=True), y_train.reset_index(drop=True)], axis=1).to_csv(
+        os.path.join(folder, "train.csv"), index=False
+    )
+    pd.concat([X_test.reset_index(drop=True), y_test.reset_index(drop=True)], axis=1).to_csv(
+        os.path.join(folder, "test.csv"), index=False
+    )
     if metadata is not None:
         save_prep_metadata(folder, metadata)
     print("Data saved successfully!")
@@ -273,6 +335,9 @@ def prepare_data_from_file(
     sequential_groups=None,
     add_differences=False,
     difference_order=1,
+    add_ratio_features=False,
+    add_acceleration_features=False,
+    add_normalized_change_features=False,
     create_rnn_windows=False,
     rnn_window_size=3,
 ):
@@ -292,6 +357,9 @@ def prepare_data_from_file(
         sequential_groups=sequential_groups,
         add_differences=add_differences,
         difference_order=difference_order,
+        add_ratio_features=add_ratio_features,
+        add_acceleration_features=add_acceleration_features,
+        add_normalized_change_features=add_normalized_change_features,
         create_rnn_windows=create_rnn_windows,
         rnn_window_size=rnn_window_size,
     )
@@ -319,6 +387,9 @@ def prepare_data_from_file(
         "sequential_groups": [list(group) for group in (sequential_groups or [])],
         "add_differences": bool(add_differences),
         "difference_order": int(difference_order),
+        "add_ratio_features": bool(add_ratio_features),
+        "add_acceleration_features": bool(add_acceleration_features),
+        "add_normalized_change_features": bool(add_normalized_change_features),
         "create_rnn_windows": bool(create_rnn_windows),
         "rnn_window_size": int(rnn_window_size),
         "test_size": float(test_size),
@@ -337,6 +408,9 @@ def sync_prep_data_with_dataset(
     sequential_groups=None,
     add_differences=False,
     difference_order=1,
+    add_ratio_features=False,
+    add_acceleration_features=False,
+    add_normalized_change_features=False,
     create_rnn_windows=False,
     rnn_window_size=3,
 ):
@@ -356,6 +430,9 @@ def sync_prep_data_with_dataset(
         sequential_groups=sequential_groups,
         add_differences=add_differences,
         difference_order=difference_order,
+        add_ratio_features=add_ratio_features,
+        add_acceleration_features=add_acceleration_features,
+        add_normalized_change_features=add_normalized_change_features,
         create_rnn_windows=create_rnn_windows,
         rnn_window_size=rnn_window_size,
     )
@@ -386,6 +463,9 @@ def sync_prep_data_with_dataset(
             sequential_groups=sequential_groups,
             add_differences=add_differences,
             difference_order=difference_order,
+            add_ratio_features=add_ratio_features,
+            add_acceleration_features=add_acceleration_features,
+            add_normalized_change_features=add_normalized_change_features,
             create_rnn_windows=create_rnn_windows,
             rnn_window_size=rnn_window_size,
         )

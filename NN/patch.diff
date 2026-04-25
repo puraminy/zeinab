@@ -1,61 +1,8 @@
 diff --git a/NN/run.py b/NN/run.py
-index 9e9f085b101f37d913effad57d4bc4c5e8e905a7..78e96f2ee8c30bfb68d1d933ee23390567fb79e2 100644
+index 78e96f2ee8c30bfb68d1d933ee23390567fb79e2..4cf9505cf8ca91bcd79a7a423ead3a3d218ec296 100644
 --- a/NN/run.py
 +++ b/NN/run.py
-@@ -1,47 +1,48 @@
- from matplotlib import pyplot as plt
- from matplotlib import pyplot as plt
- import torch
- import torch.nn as nn
- import torch.optim as optim
- from sklearn.preprocessing import StandardScaler
- from sklearn.model_selection import KFold
- from sklearn.ensemble import (
-     RandomForestRegressor,
-     ExtraTreesRegressor,
-     GradientBoostingRegressor,
-     AdaBoostRegressor,
-     HistGradientBoostingRegressor,
- )
- from sklearn.neighbors import KNeighborsRegressor
- from sklearn.svm import SVR
- from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
- from sklearn.tree import DecisionTreeRegressor
- from sklearn.multioutput import MultiOutputRegressor
- import pandas as pd
- import numpy as np
- import torch.nn as nn
-+import re
- from sklearn.metrics import r2_score
- from tabulate import tabulate
- import os
- from latex import *
- from plot import *
- from models import *
- from read_data import (
-     read_prep_data,
-     sync_prep_data_with_dataset,
-     prep_data_exists,
-     read_prep_metadata,
- )
- import inspect
- import models
- 
- try:
-     from xgboost import XGBRegressor
- except ImportError:
-     XGBRegressor = None
- 
- try:
-     from lightgbm import LGBMRegressor
- except ImportError:
-     LGBMRegressor = None
- 
-@@ -213,76 +214,108 @@ def parse_multi_select(answer, options, allow_all=True):
-         elif allow_all:
-             return None
-         else:
-             final_indexes = []
+@@ -218,73 +218,84 @@ def parse_multi_select(answer, options, allow_all=True):
  
      if not final_indexes:
          raise ValueError("Selection is empty after applying include/exclude filters.")
@@ -77,21 +24,15 @@ index 9e9f085b101f37d913effad57d4bc4c5e8e905a7..78e96f2ee8c30bfb68d1d933ee233905
  def prompt_temporal_options(input_features):
      print("\nTemporal/sequential feature options:")
      print("Enter indexes/ranges for sequential columns if any (empty for none).")
-+    print("Optional grouped dependencies: [2 4] [3 11 13] or 2>4>6,3>11>13")
+     print("Optional grouped dependencies: [2 4] [3 11 13] or 2>4>6,3>11>13")
      print("\n".join([str(i) + ")" + name for i, name in enumerate(input_features)]))
--    seq_answer = input("Sequential feature columns [none]: ").strip()
-+    seq_answer = input("Sequential feature columns/groups [none]: ").strip()
+     seq_answer = input("Sequential feature columns/groups [none]: ").strip()
      if not seq_answer:
--        return [], False, 1, False, 3
-+        return [], [], False, 1, False, 3
+-        return [], [], False, 1, False, 3
++        return [], [], False, 1, False, False, False, False, 3
  
      try:
--        sequential_features = parse_multi_select(
--            seq_answer,
--            input_features,
--            allow_all=False,
--        )
-+        sequential_features, sequential_groups = parse_sequential_layout(seq_answer, input_features)
+         sequential_features, sequential_groups = parse_sequential_layout(seq_answer, input_features)
      except ValueError as err:
          print(f"Invalid sequential feature selection: {err}")
          exit()
@@ -101,77 +42,53 @@ index 9e9f085b101f37d913effad57d4bc4c5e8e905a7..78e96f2ee8c30bfb68d1d933ee233905
      if add_differences:
          difference_order = int(input("Difference order [1]: ").strip() or "1")
  
++    add_ratio_features = input("Add ratio features (x_t / x_{t-1})? [n]: ").strip().lower() in ("y", "yes")
++    add_acceleration_features = input(
++        "Add acceleration features (x_t - 2*x_{t-1} + x_{t-2})? [n]: "
++    ).strip().lower() in ("y", "yes")
++    add_normalized_change_features = input(
++        "Add normalized change features ((x_t - x_{t-1}) / x_{t-1})? [n]: "
++    ).strip().lower() in ("y", "yes")
++
      create_rnn_windows = input("Add lag-window features for sequential columns? [n]: ").strip().lower() in ("y", "yes")
      rnn_window_size = 3
      if create_rnn_windows:
          rnn_window_size = int(input("Lag window size [3]: ").strip() or "3")
  
--    return sequential_features, add_differences, difference_order, create_rnn_windows, rnn_window_size
-+    return (
-+        sequential_features,
-+        sequential_groups,
-+        add_differences,
-+        difference_order,
-+        create_rnn_windows,
-+        rnn_window_size,
-+    )
-+
-+
-+def parse_sequential_layout(answer, options):
-+    """Parse independent sequential columns and optional ordered dependency groups."""
-+    grouped_layout = (
-+        "[" in answer or "]" in answer or "(" in answer or ")" in answer or ">" in answer
-+    )
-+    if not grouped_layout:
-+        sequential_features = parse_multi_select(answer, options, allow_all=False)
-+        return sequential_features, []
-+
-+    groups = []
-+    bracket_groups = re.findall(r"[\[\(]([^\]\)]+)[\]\)]", answer)
-+    raw_groups = bracket_groups if bracket_groups else [item.strip() for item in answer.split(",") if item.strip()]
-+
-+    for raw_group in raw_groups:
-+        normalized = raw_group.replace(">", " ")
-+        group_values = parse_multi_select(normalized, options, allow_all=False)
-+        if len(group_values) < 2:
-+            raise ValueError("Each sequential group must contain at least two columns.")
-+        groups.append(group_values)
-+
-+    flat_features = []
-+    for group in groups:
-+        for feature in group:
-+            if feature not in flat_features:
-+                flat_features.append(feature)
-+    return flat_features, groups
+     return (
+         sequential_features,
+         sequential_groups,
+         add_differences,
+         difference_order,
++        add_ratio_features,
++        add_acceleration_features,
++        add_normalized_change_features,
+         create_rnn_windows,
+         rnn_window_size,
+     )
  
  
- def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", prep_folder="prep_data"):
-     print("====================================")
-     print("DATASET PATH: " + dataset_path)
-     print("====================================")
+ def parse_sequential_layout(answer, options):
+     """Parse independent sequential columns and optional ordered dependency groups."""
+     grouped_layout = (
+         "[" in answer or "]" in answer or "(" in answer or ")" in answer or ">" in answer
+     )
+     if not grouped_layout:
+         sequential_features = parse_multi_select(answer, options, allow_all=False)
+         return sequential_features, []
  
-     use_auto_feature_selection = False
-     reused_prep_data = False
+     groups = []
+     bracket_groups = re.findall(r"[\[\(]([^\]\)]+)[\]\)]", answer)
+     raw_groups = bracket_groups if bracket_groups else [item.strip() for item in answer.split(",") if item.strip()]
  
-     if prep_data_exists(prep_folder):
-         X_train_existing, _, y_train_existing, _ = read_prep_data(inputs=None, prep_folder=prep_folder)
-         existing_inputs = X_train_existing.columns.tolist()
-         existing_outputs = y_train_existing.columns.tolist()
-         print_numbered_feature_list("Prepared Input Features (prep_data)", existing_inputs, ANSI_GREEN)
-         print_numbered_feature_list("Prepared Output Features (prep_data)", existing_outputs, ANSI_BLUE)
+     for raw_group in raw_groups:
+         normalized = raw_group.replace(">", " ")
+         group_values = parse_multi_select(normalized, options, allow_all=False)
+         if len(group_values) < 2:
+             raise ValueError("Each sequential group must contain at least two columns.")
+         groups.append(group_values)
  
-         metadata = read_prep_metadata(prep_folder)
-         if metadata:
-             print("prep_data metadata:")
-             print(metadata)
- 
-         reuse_answer = input(
-             "Use existing prepared data from prep_data and continue to models? [y]: "
-         ).strip().lower()
-@@ -323,62 +356,64 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
-         try:
-             selected_input_features = parse_multi_select(
-                 auto_pool_answer,
+@@ -359,63 +370,69 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
                  available_input_features,
                  allow_all=True,
              )
@@ -194,9 +111,12 @@ index 9e9f085b101f37d913effad57d4bc4c5e8e905a7..78e96f2ee8c30bfb68d1d933ee233905
      )
      (
          sequential_features,
-+        sequential_groups,
+         sequential_groups,
          add_differences,
          difference_order,
++        add_ratio_features,
++        add_acceleration_features,
++        add_normalized_change_features,
          create_rnn_windows,
          rnn_window_size,
      ) = prompt_temporal_options(resolved_inputs)
@@ -207,9 +127,12 @@ index 9e9f085b101f37d913effad57d4bc4c5e8e905a7..78e96f2ee8c30bfb68d1d933ee233905
          input_features=selected_input_features,
          output_feature=selected_output_features,
          sequential_features=sequential_features,
-+        sequential_groups=sequential_groups,
+         sequential_groups=sequential_groups,
          add_differences=add_differences,
          difference_order=difference_order,
++        add_ratio_features=add_ratio_features,
++        add_acceleration_features=add_acceleration_features,
++        add_normalized_change_features=add_normalized_change_features,
          create_rnn_windows=create_rnn_windows,
          rnn_window_size=rnn_window_size,
      )
@@ -233,3 +156,5 @@ index 9e9f085b101f37d913effad57d4bc4c5e8e905a7..78e96f2ee8c30bfb68d1d933ee233905
      use_cv_early_stop = False
      parsed_epochs = []
      for token in answer.split():
+         lowered = token.lower()
+         if lowered in ("cv", "auto"):
