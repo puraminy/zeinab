@@ -127,6 +127,27 @@ def parse_epochs_input(answer, default_epochs):
         parsed_epochs = list(default_epochs)
     return sorted(set(parsed_epochs)), use_cv_early_stop
 
+
+def infer_selected_features_from_table(table, fallback_features):
+    """Infer selected features from the best-R2 row in a feature-selection table."""
+    if table is None or table.empty:
+        return list(fallback_features)
+
+    if "R2" not in table.columns or "features" not in table.columns:
+        return list(fallback_features)
+
+    ranked = table.dropna(subset=["R2"])
+    if ranked.empty:
+        return list(fallback_features)
+
+    best_row = ranked.loc[ranked["R2"].astype(float).idxmax()]
+    features_text = str(best_row["features"]).strip()
+    if not features_text:
+        return list(fallback_features)
+
+    selected = [f.strip() for f in features_text.split(",") if f.strip()]
+    return selected if selected else list(fallback_features)
+
 # Define the normalization function
 def normalize(data, normalization_type):
     if normalization_type == 'z_score':
@@ -697,13 +718,17 @@ output_features, input_features = resolve_data_columns(
 )
 # User input for selecting the model and number of epochs
 answer = input("\n".join([str(i) + ")" + name for i,name in enumerate(input_features)]) \
-        + "\nSelect one or several input_features (separated with space) [all]:")
+        + "\nSelect one or several input_features (separated with space), [all], or [auto]:")
 
-try:
-    selected_input_features = parse_multi_select(answer, input_features, allow_all=True)
-except ValueError as err:
-    print(f"Invalid input feature selection: {err}")
-    exit()
+use_auto_feature_selection = answer.strip().lower() == "auto"
+if use_auto_feature_selection:
+    selected_input_features = None
+else:
+    try:
+        selected_input_features = parse_multi_select(answer, input_features, allow_all=True)
+    except ValueError as err:
+        print(f"Invalid input feature selection: {err}")
+        exit()
 
 answer = input(
     "\n".join([str(i) + ")" + name for i, name in enumerate(data.columns)])
@@ -737,6 +762,7 @@ output = outputs
 data = X_train
 print("inputs:", inputs)
 print("outputs:", outputs)
+active_features = list(inputs)
 ans = input("Are these inputs and outputs for files in prep_data folder correct?(y/n):")
 if ans.strip().lower() not in ("y", "yes"):
     print("Please re-run and choose your preferred input/output features.")
@@ -820,6 +846,45 @@ if answer != "0":
            print("Repeat count must be at least 1.")
            exit()
 
+    if use_auto_feature_selection:
+        print("\n================= Auto Feature Selection =================")
+        print("1. Backward Feature Elimination")
+        print("2. Forward Feature Selection")
+        auto_method = input("Select method [1]: ").strip() or "1"
+
+        reference_model = models[selected_models[0]]
+        reference_model_name = model_names[selected_models[0]]
+        reference_epochs = list_epochs[0] if list_epochs else best_epochs
+        reference_hidden_sizes = list_hidden_sizes[0] if is_torch_model(reference_model) else []
+
+        print(
+            f"Running feature selection with {reference_model_name}, "
+            f"epochs={reference_epochs}, hidden_sizes={reference_hidden_sizes if reference_hidden_sizes else 'N/A'}"
+        )
+
+        if auto_method == "2":
+            auto_table = forward_feature_selection(
+                reference_model,
+                data,
+                list(inputs),
+                output,
+                reference_epochs,
+                reference_hidden_sizes
+            )
+        else:
+            auto_table = backward_feature_elimination(
+                reference_model,
+                data,
+                list(inputs),
+                output,
+                reference_epochs,
+                reference_hidden_sizes
+            )
+
+        active_features = infer_selected_features_from_table(auto_table, inputs)
+        print(f"Auto-selected features: {active_features}")
+        print("==========================================================\n")
+
 
     best_mean_r2 = -1000
     best_mse = -1000
@@ -843,7 +908,7 @@ if answer != "0":
                 cv_epoch = select_epochs_with_cv_early_stopping(
                     model_class,
                     hidden_sizes,
-                    features=None,
+                    features=active_features,
                 )
                 if cv_epoch is not None and cv_epoch > 0:
                     epoch_candidates.append(cv_epoch)
@@ -860,7 +925,7 @@ if answer != "0":
                 # Apply model on data for N repeats and get predictions, mse and r2
                 mean_r2, std_r2, mean_mse, model_best_preds, max_r2, r2_list, max_run = repeat_fit_model(
                     model_class,
-                    num_repeats, num_epochs, hidden_sizes, display_steps=True)
+                    num_repeats, num_epochs, hidden_sizes, display_steps=True, features=active_features)
 
                 # Keep best seed to generate the same predictions later
                 if mean_r2 is None:
@@ -949,7 +1014,7 @@ if answer != "0":
  
     results_table.to_csv("exp.csv")
 
-    X_train, X_test, y_train, y_test = read_prep_data()
+    X_train, X_test, y_train, y_test = read_prep_data(active_features)
 
     # Show and save the plot for best results
     best_predictions = model_best_predictions[max_model_name] 

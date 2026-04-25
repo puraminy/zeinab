@@ -1,168 +1,494 @@
-diff --git a/convert/convert2.py b/convert/convert2.py
-index 8ffa0977e56c89022e7657e5e34b3816f87d6f46..732e500645c976dbc5cf173b8d19a101b4459419 100644
---- a/convert/convert2.py
-+++ b/convert/convert2.py
-@@ -16,69 +16,135 @@ def clean_number(x):
-         return None
- 
-     x = str(x)
- 
-     # Persian → English digits
-     persian_digits = "۰۱۲۳۴۵۶۷۸۹"
-     english_digits = "0123456789"
-     for p, e in zip(persian_digits, english_digits):
-         x = x.replace(p, e)
- 
-     x = x.replace(",", "")
-     x = x.replace("٫", ".")
-     x = x.replace("...", "")
-     x = x.strip()
- 
-     try:
-         return float(x)
-     except:
-         return None
+diff --git a/NN/run.py b/NN/run.py
+index 471206a50008bcfae86899f2bc8d468554cfdcc6..48a46d92de3b3c2b1fa04592f80f78d114d6b7f4 100644
+--- a/NN/run.py
++++ b/NN/run.py
+@@ -105,50 +105,71 @@ def parse_multi_select(answer, options, allow_all=True):
+ def ask_with_default(prompt, default):
+     answer = input(f"{prompt} [{default}]:").strip()
+     return answer if answer else str(default)
  
  
- # ==========================================
- # 3️⃣ SECTION + PROPERTY FINDER
- # ==========================================
+ def parse_epochs_input(answer, default_epochs):
+     """Parse epochs input and detect optional CV early-stop mode."""
+     text = answer.strip().lower()
+     if text == "0":
+         return [], False
  
-+def extract_number_near_property(df, row_idx, col_idx, max_row_lookahead=2, max_col_offset=2):
-+    """
-+    Extract a number that is most likely associated with a property label cell.
-+    Priority:
-+      1) Same cell
-+      2) Same column in next rows (for header-above-value layouts, e.g. white_* section)
-+      3) Nearby cells in same row (small horizontal window only)
-+      4) Nearby columns in next rows (small horizontal window)
-+    """
+     use_cv_early_stop = False
+     parsed_epochs = []
+     for token in answer.split():
+         lowered = token.lower()
+         if lowered in ("cv", "auto"):
+             use_cv_early_stop = True
+             continue
+         if token.isdigit() and int(token) > 0:
+             parsed_epochs.append(int(token))
+ 
+     if not parsed_epochs and not use_cv_early_stop:
+         parsed_epochs = list(default_epochs)
+     return sorted(set(parsed_epochs)), use_cv_early_stop
+ 
 +
-+    current_row = df.iloc[row_idx]
++def infer_selected_features_from_table(table, fallback_features):
++    """Infer selected features from the best-R2 row in a feature-selection table."""
++    if table is None or table.empty:
++        return list(fallback_features)
 +
-+    # 1) Same cell
-+    num = clean_number(current_row.iloc[col_idx])
-+    if num is not None:
-+        return num
++    if "R2" not in table.columns or "features" not in table.columns:
++        return list(fallback_features)
 +
-+    # 2) Same column in next rows
-+    for r in range(row_idx + 1, min(row_idx + 1 + max_row_lookahead, len(df))):
-+        next_row = df.iloc[r]
-+        num = clean_number(next_row.iloc[col_idx])
-+        if num is not None:
-+            return num
++    ranked = table.dropna(subset=["R2"])
++    if ranked.empty:
++        return list(fallback_features)
 +
-+    # 3) Nearby cells in same row (closest first)
-+    for offset in range(1, max_col_offset + 1):
-+        right = col_idx + offset
-+        left = col_idx - offset
++    best_row = ranked.loc[ranked["R2"].astype(float).idxmax()]
++    features_text = str(best_row["features"]).strip()
++    if not features_text:
++        return list(fallback_features)
 +
-+        if right < len(current_row):
-+            num = clean_number(current_row.iloc[right])
-+            if num is not None:
-+                return num
++    selected = [f.strip() for f in features_text.split(",") if f.strip()]
++    return selected if selected else list(fallback_features)
 +
-+        if left >= 0:
-+            num = clean_number(current_row.iloc[left])
-+            if num is not None:
-+                return num
+ # Define the normalization function
+ def normalize(data, normalization_type):
+     if normalization_type == 'z_score':
+         return (data - data.mean()) / data.std()
+     elif normalization_type == 'minmax':
+         return (data - data.min()) / (data.max() - data.min())
+     else:
+         raise ValueError("Unsupported normalization type. Choose 'z_score' or 'minmax'.")
+ 
+ # Function to apply model on data and generate predictions
+ # Return predictions, MSE and R-Squared
+ import torch.nn.init as init
+ 
+ def fit_model(model, X_train, X_test, y_train, y_test, 
+         num_epochs, display_steps=False, run=0):
+ 
+     set_model_seed(model_seed + run)
+     scaler = StandardScaler()
+     X_train = torch.tensor(scaler.fit_transform(X_train), dtype=torch.float32)
+     X_test = torch.tensor(scaler.transform(X_test), dtype=torch.float32)
+     y_train_values = y_train.values if hasattr(y_train, "values") else y_train
+     y_test_values = y_test.values if hasattr(y_test, "values") else y_test
+     y_train = torch.tensor(y_train_values, dtype=torch.float32)
+     y_test = torch.tensor(y_test_values, dtype=torch.float32)
+     if y_train.ndim == 1:
+@@ -510,117 +531,127 @@ def jackknife_sensitivity_analysis(model_class, data, inputs, output, num_epochs
+     for input_feature in inputs:
+         reduced_inputs = [f for f in inputs if f != input_feature]
+         reduced_r2_list = []
+         for _ in range(_num_repeats):
+             reduced_r2, _, _, _, _, _, _run = repeat_fit_model(model_class,
+                     1, num_epochs, hidden_sizes, features= reduced_inputs)
+             reduced_r2_list.append(reduced_r2)
+         reduced_r2_mean = np.mean(reduced_r2_list)
+         sensitivity = base_model_r2 - reduced_r2_mean
+         variance = np.var(reduced_r2_list)
+         sensitivities[input_feature] = sensitivity
+         variances.append(variance)
+ 
+     sensitivity_table = pd.DataFrame(list(sensitivities.items()), columns=['Feature', 'Sensitivity'])
+     sensitivity_table['Variance'] = variances
+     return sensitivity_table
+ 
+ def backward_feature_elimination(model_class, data, inputs, output, num_epochs, hidden_sizes):
+     mean_r2, _, _, _, _,_, _run = repeat_fit_model(model_class,
+             num_repeats, num_epochs, hidden_sizes,features=inputs)
+     best_r2 = mean_r2
+     print("Using all features")
+     print("Features:", inputs)
+     print("R2:", mean_r2)
+     candidates = inputs
+-    results = {}
+     rows = [] # Rows of a table to show the features and the result
+     rows.append({"features": ", ".join(inputs), "R2": round(mean_r2,2)})
+     while(True):
++        results = {}
+         for feature in candidates:
+             # Selet other features except for current feature
+             features = [f for f in candidates if f != feature]
+             mean_r2, _, _, _,_,_, _run = repeat_fit_model(model_class, num_repeats, num_epochs, hidden_sizes, features=features)
++            if mean_r2 is None:
++                continue
+             results[feature] = mean_r2
+             print("---------------------------------------")
+             # Results of removing the feature
+             print("Removing:", feature)
+             print("Features:", features)
+             print("R2:", mean_r2)
+             rows.append({"features": ", ".join(features), "R2": round(mean_r2,2)})
+ 
++        if not results:
++            print("No valid feature-elimination candidates produced R2. Stopping backward selection.")
++            break
 +
-+    # 4) Nearby columns in next rows (closest first)
-+    for r in range(row_idx + 1, min(row_idx + 1 + max_row_lookahead, len(df))):
-+        next_row = df.iloc[r]
-+        for offset in range(1, max_col_offset + 1):
-+            right = col_idx + offset
-+            left = col_idx - offset
+         max_results =  max(results.values())
+         max_results_key = max(results, key=results.get)
+ 
+         if max_results > best_r2:
+             candidates.remove(max_results_key)
+             best_r2 = max_results
+             print('=================================')
+             print('step: ' + str(len(inputs) - len(candidates)))
+             print(candidates)
+             print('Best R2: ' + str(max_results))
+             print('================================')
+         else:
+             break
+ 
+     print('\n\n')
+     print('=============== Final Features ==================')
+     print('Selected Features: ')
+     print(candidates)
+     print('Final R2: ' + str(best_r2))
+     print('Elminated Features: ')
+     print(set(data.columns).difference(candidates))
+ 
+     table = pd.DataFrame(data=rows)
+     return table
+ 
+ # Finds the combinaiton of features that best predict y
+ # This method add features one by one
+ # Search about Forward Feature Selction
+ def forward_feature_selection(model_class, data, inputs, output, num_epochs, hidden_sizes):
+     candidates = []
+     best_r2 = -1
+-    results = {}
+     rows = [] # Rows of a table to show the features and the result
+     while(True):
++        results = {}
+         # for all features except for the candidates
+         for feature in data.drop(candidates, axis=1).columns:
+             if len(candidates) == 0:
+                 features = [feature]
+             else:
+                 features = [feature] + candidates 
+ 
+             mean_r2, _, _, _,_,_, _run = repeat_fit_model(model_class, num_repeats, num_epochs, hidden_sizes, features=features)
+             if mean_r2 is None:
+                 continue
+             results[feature] = mean_r2
+             print("--------------------------------")
+             print("Adding feature ", feature)
+             print("Features:", features)
+             print("R2:", mean_r2)
+             rows.append({"features": ", ".join(features), "R2": round(mean_r2,2)})
+ 
++        if not results:
++            print("No valid feature-addition candidates produced R2. Stopping forward selection.")
++            break
 +
-+            if right < len(next_row):
-+                num = clean_number(next_row.iloc[right])
-+                if num is not None:
-+                    return num
+         max_results =  max(results.values())
+         max_results_key = max(results, key=results.get)
+ 
+         if max_results > best_r2:
+             candidates.append(max_results_key)
+             best_r2 = max_results
+             print('=================================')
+             print('step: ' + str(len(candidates)))
+             print(candidates)
+             print('Best R2: ' + str(max_results))
+             print('================================')
+         else:
+             break
+ 
+     print('\n\n')
+     print('=============== Final Features ==================')
+     print('Selected Features: ')
+     print(candidates)
+     print('Final R2: ' + str(best_r2))
+     print('Elminated Features: ')
+     print(set(data.columns).difference(candidates))
+ 
+     table = pd.DataFrame(data=rows)
+     return table
+ 
+@@ -675,90 +706,95 @@ def repeat_fit_model(model_class, num_repeats,
+         mse_list.append(mse)
+     if display_steps:
+         print(r2_list)
+ 
+     mean_r2 = np.mean(r2_list) if r2_list else None
+     mean_mse = np.mean(mse_list) if mse_list else None
+     std_r2 = np.std(r2_list) if r2_list else None
+     std_mse = np.std(mse_list) if mse_list else None
+ 
+     return mean_r2, std_r2, mean_mse, best_preds, max_r2*100, r2_list, max_run
+ 
+ ############################### Start of Program ###################
+ # Sync prep_data with current dataset (NN/data.csv by default).
+ dataset_path="convert/sugar_all_days_clean_7.csv"
+ print("====================================") 
+ print("DATASET PATH: " + dataset_path)
+ print("====================================") 
+ data = pd.read_csv(dataset_path)
+ output_features, input_features = resolve_data_columns(
+     data,
+     output_feature=None,
+     input_features=None
+ )
+ # User input for selecting the model and number of epochs
+ answer = input("\n".join([str(i) + ")" + name for i,name in enumerate(input_features)]) \
+-        + "\nSelect one or several input_features (separated with space) [all]:")
++        + "\nSelect one or several input_features (separated with space), [all], or [auto]:")
+ 
+-try:
+-    selected_input_features = parse_multi_select(answer, input_features, allow_all=True)
+-except ValueError as err:
+-    print(f"Invalid input feature selection: {err}")
+-    exit()
++use_auto_feature_selection = answer.strip().lower() == "auto"
++if use_auto_feature_selection:
++    selected_input_features = None
++else:
++    try:
++        selected_input_features = parse_multi_select(answer, input_features, allow_all=True)
++    except ValueError as err:
++        print(f"Invalid input feature selection: {err}")
++        exit()
+ 
+ answer = input(
+     "\n".join([str(i) + ")" + name for i, name in enumerate(data.columns)])
+     + "\nSelect one or several output features (separated with space) [last column]:"
+ )
+ try:
+     selected_output_features = (
+         [data.columns[-1]]
+         if not answer
+         else parse_multi_select(answer, data.columns.tolist(), allow_all=False)
+     )
+ except ValueError as err:
+     print(f"Invalid output feature selection: {err}")
+     exit()
+ 
+ sync_prep_data_with_dataset(
+     dataset_path=dataset_path,
+     prep_folder="prep_data",
+     input_features=selected_input_features,
+     output_feature=selected_output_features
+ )
+ 
+ # Load data from prep_data after schema sync.
+ X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder="prep_data")
+ 
+ # After loading, get the column names from X_train
+ inputs = X_train.columns.tolist()
+ outputs = y_train.columns.tolist()
+ output = outputs
+ 
+ data = X_train
+ print("inputs:", inputs)
+ print("outputs:", outputs)
++active_features = list(inputs)
+ ans = input("Are these inputs and outputs for files in prep_data folder correct?(y/n):")
+ if ans.strip().lower() not in ("y", "yes"):
+     print("Please re-run and choose your preferred input/output features.")
+     exit()
+ 
+ # Dynamically collect all neural-network model classes from the module
+ nn_models = [
+     member for name, member in inspect.getmembers(models, inspect.isclass)
+     if issubclass(member, models.nn.Module) and member.__module__ == models.__name__
+ ]
+ sklearn_models = [
+     (name, factory) for name, factory in SKLEARN_MODEL_FACTORIES.items()
+ ]
+ models = nn_models + [factory for _, factory in sklearn_models]
+ model_names = [model.__name__ for model in nn_models] + [name for name, _ in sklearn_models]
+ # User input for selecting the model and number of epochs
+ answer = input("\n".join([str(i) + ")" + name for i,name in enumerate(model_names)]) \
+         + "\nSelect one or several models (separated with space) [all]:")
+ 
+ if not answer:
+     answer = "all"
+ 
+ try:
+     selected_model_names = parse_multi_select(answer, model_names, allow_all=True)
+ except ValueError as err:
+@@ -798,91 +834,130 @@ if answer != "0":
+         )
+         if answer:
+            list_hidden_sizes = []
+            hs = answer.split("#")
+            for ans in hs:
+               ans = ans.strip()
+               if not ans:
+                   continue
+               h = [int(a) for a in ans.split() if a.isdigit() and int(a) > 0]
+               if h:
+                   list_hidden_sizes.append(h)
+         if not list_hidden_sizes:
+            print("No valid hidden size values were provided.")
+            exit()
+     else:
+         list_hidden_sizes = [[]]
+         use_cv_early_stop = False
+ 
+     answer = ask_with_default("Enter the number of repeating predictions", num_repeats)
+     if answer:
+        num_repeats = int(answer)
+        if num_repeats < 1:
+            print("Repeat count must be at least 1.")
+            exit()
+ 
++    if use_auto_feature_selection:
++        print("\n================= Auto Feature Selection =================")
++        print("1. Backward Feature Elimination")
++        print("2. Forward Feature Selection")
++        auto_method = input("Select method [1]: ").strip() or "1"
 +
-+            if left >= 0:
-+                num = clean_number(next_row.iloc[left])
-+                if num is not None:
-+                    return num
++        reference_model = models[selected_models[0]]
++        reference_model_name = model_names[selected_models[0]]
++        reference_epochs = list_epochs[0] if list_epochs else best_epochs
++        reference_hidden_sizes = list_hidden_sizes[0] if is_torch_model(reference_model) else []
 +
-+    return None
++        print(
++            f"Running feature selection with {reference_model_name}, "
++            f"epochs={reference_epochs}, hidden_sizes={reference_hidden_sizes if reference_hidden_sizes else 'N/A'}"
++        )
 +
++        if auto_method == "2":
++            auto_table = forward_feature_selection(
++                reference_model,
++                data,
++                list(inputs),
++                output,
++                reference_epochs,
++                reference_hidden_sizes
++            )
++        else:
++            auto_table = backward_feature_elimination(
++                reference_model,
++                data,
++                list(inputs),
++                output,
++                reference_epochs,
++                reference_hidden_sizes
++            )
 +
- def find_section_value(df, section_keyword, property_keyword, search_depth=6):
-     """
-     Find section row (e.g., شربت خام)
-     Then search next rows for property (e.g., رنگ)
-     """
++        active_features = infer_selected_features_from_table(auto_table, inputs)
++        print(f"Auto-selected features: {active_features}")
++        print("==========================================================\n")
++
  
-     for i in range(len(df)):
+     best_mean_r2 = -1000
+     best_mse = -1000
+     best_hidden_sizes = []
+     best_r2 = -1000
+     best_run = 0
+     max_epochs = -1
+     max_hidden_sizes = []
+     best_epochs = -1
+     results = []
+     model_best_predictions = {}
+     # for all models
+     for model_index in selected_models:
+         model_class = models[model_index]
+         model_name = model_names[model_index]
+         is_nn = is_torch_model(model_class)
+         hidden_size_candidates = list_hidden_sizes if is_nn else [[]]
+         for hidden_sizes in hidden_size_candidates:
+             epoch_candidates = sorted(set(list_epochs)) if is_nn else [1]
+             if is_nn and use_cv_early_stop:
+                 cv_epoch = select_epochs_with_cv_early_stopping(
+                     model_class,
+                     hidden_sizes,
+-                    features=None,
++                    features=active_features,
+                 )
+                 if cv_epoch is not None and cv_epoch > 0:
+                     epoch_candidates.append(cv_epoch)
+                     print(
+                         f"[{model_name} | {hidden_sizes}] CV early-stop suggested epochs: {cv_epoch}"
+                     )
+                 else:
+                     print(
+                         f"[{model_name} | {hidden_sizes}] CV early-stop failed; using manual epochs only."
+                     )
  
-         row = df.iloc[i].astype(str)
+             epoch_candidates = sorted(set(epoch_candidates))
+             for num_epochs in epoch_candidates:
+                 # Apply model on data for N repeats and get predictions, mse and r2
+                 mean_r2, std_r2, mean_mse, model_best_preds, max_r2, r2_list, max_run = repeat_fit_model(
+                     model_class,
+-                    num_repeats, num_epochs, hidden_sizes, display_steps=True)
++                    num_repeats, num_epochs, hidden_sizes, display_steps=True, features=active_features)
  
-         # Step 1: Find section
-         if any(section_keyword in cell for cell in row):
+                 # Keep best seed to generate the same predictions later
+                 if mean_r2 is None:
+                     continue
  
-             # Step 2: Search next few rows
-             for j in range(i, min(i + search_depth, len(df))):
-                 subrow = df.iloc[j].astype(str)
+                 if max_r2 > best_r2:
+                     best_r2 = max_r2
+                     model_best_predictions[model_name] = model_best_preds
+                     max_model_index = model_index
+                     max_epochs = num_epochs
+                     max_hidden_sizes = hidden_sizes
+                     best_run = max_run
  
--                if any(property_keyword in cell for cell in subrow):
-+                for col_idx, cell in enumerate(subrow):
-+                    if property_keyword in cell:
-+                        value = extract_number_near_property(df, j, col_idx)
-+                        if value is not None:
-+                            return value
+                 if mean_r2 > best_mean_r2:
+                     best_mean_r2 = mean_r2
+                     best_mse = mean_mse
+                     best_model_index = model_index
+                     best_epochs = num_epochs
+                     best_hidden_sizes = hidden_sizes
+                 
+                 total_nodes = sum(hidden_sizes) if hidden_sizes else 0
  
-+                # Fallback: old behavior if property exists but
-+                # no position-based number can be extracted
-+                if any(property_keyword in cell for cell in subrow):
-                     numbers = []
-                     for cell in subrow:
-                         num = clean_number(cell)
-                         if num is not None:
-                             numbers.append(num)
+                 result = {
+                         "model":model_name, 
+                         "R2": round(mean_r2,1), 
+@@ -927,51 +1002,51 @@ if answer != "0":
  
-                     if numbers:
-                         return numbers[0]
+     # Plot the performance of models across different parameters
+     print("Generating plots ...")
+     plot_model_performance(results_table)
  
-     return None
+     best_model = models[best_model_index]
+     best_model_name = model_names[best_model_index]
+     # Show results
+     max_model_name = model_names[max_model_index]
  
+     print("============ Results for models =========================")
+     print(results_table)
+     print("========================== Best Mean Model ===============================")
+     print("Best Mean R-Squred:", best_mean_r2)
+     print("Best model with better mean R-Squred:", best_model_name) 
+     print("Best Hidden sizes:", best_hidden_sizes) 
+     print("Best epochs:", best_epochs) 
+     print("=========================== Max Model ================================")
+     print("Best model with better max R-Squred:", max_model_name) 
+     print("Best Hidden sizes:", max_hidden_sizes) 
+     print("Best epochs:", max_epochs) 
+     print("Max R-Squred:", best_r2)
+  
+     results_table.to_csv("exp.csv")
  
- # ==========================================
- # 4️⃣ EXCEL PROCESSING
- # ==========================================
+-    X_train, X_test, y_train, y_test = read_prep_data()
++    X_train, X_test, y_train, y_test = read_prep_data(active_features)
  
- xls = pd.ExcelFile(input_file)
- all_sheets = xls.sheet_names
+     # Show and save the plot for best results
+     best_predictions = model_best_predictions[max_model_name] 
+     output_title = ", ".join(outputs)
+     title = "Prediction of " + output_title + " with " + max_model_name + " epochs:" + str(max_epochs)
+     file_name = f"R2-{best_r2:.2f}-" + max_model_name + "-" + "-".join(outputs) + ".png"
  
- all_days_data = []
+     print("\n\n")
+     print("Plot was saved in plots folder")
+     answer = input("Do you want to see them? [y]:") 
+     if len(outputs) == 1:
+         target_series = y_test[outputs[0]]
+         pred_series = best_predictions[:, 0] if best_predictions.ndim > 1 else best_predictions
+         if answer == "y" or answer == "yes":
+             plot_results(pred_series, target_series, title, file_name, show_plot=True)
+         else:
+             plot_results(pred_series, target_series, title, file_name, show_plot=False)
+     else:
+         print("Skipping scatter plot for multi-output predictions.")
  
- for sheet in all_sheets:
- 
-     print(f"Processing sheet: {sheet}")
- 
-@@ -135,26 +201,25 @@ for sheet in all_sheets:
-     day_data["standard_liquor_brix"] = find_section_value(df, "لیکور استاندارد", "بریکس")
-     day_data["standard_liquor_color"] = find_section_value(df, "لیکور استاندارد", "رنگ")
- 
-     # -------------------------------
-     # FINAL WHITE SUGAR (AVERAGE TWO SHIFTS)
-     # -------------------------------
-     day_data["white_moisture"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "رطوبت")
-     day_data["white_invert"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "اینورت")
-     day_data["white_solution_color"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "رنگ محلول")
-     day_data["white_apparent_color"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "رنگ ظاهری")
-     day_data["white_ash"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "خاکستر")
-     day_data["white_total_points"] = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "جمع پوئن")
- 
-     all_days_data.append(day_data)
- 
- 
- # ==========================================
- # 5️⃣ SAVE FINAL CSV
- # ==========================================
- 
- final_df = pd.DataFrame(all_days_data)
- final_df.to_csv(output_file, index=False)
- 
- print("\n✅ EXTRACTION COMPLETED SUCCESSFULLY")
- print("Output file:", output_file)
--
+     # Save results of predicitons in a file named results.csv
+     results_df = pd.DataFrame()
+     for i, output_name in enumerate(outputs):
+         results_df[f"{output_name}_actual"] = y_test[output_name].values
+         pred_col = best_predictions[:, i] if best_predictions.ndim > 1 else best_predictions
