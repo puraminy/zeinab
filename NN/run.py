@@ -53,6 +53,7 @@ ANSI_RESET = "\033[0m"
 ANSI_GREEN = "\033[92m"
 ANSI_BLUE = "\033[94m"
 SAVED_RUNS_DIR = "saved_runs"
+CHECKPOINTS_DIR = "checkpoints"
 
 
 def color_text(text, color):
@@ -90,39 +91,63 @@ def list_saved_runs(saved_dir=SAVED_RUNS_DIR):
 
 
 def prompt_saved_run_choice():
-    saved = list_saved_runs()
-    if not saved:
-        return None, False
-    print("\nSaved runs:")
-    table_rows = []
-    for idx, run in enumerate(saved, start=1):
-        table_rows.append(
-            [
-                idx,
-                run.get("display_name", "unknown"),
-                run.get("best_r2", "N/A"),
-                run.get("saved_at", "N/A"),
-                "yes" if run.get("has_weights") else "no",
-            ]
-        )
-    print(tabulate(table_rows, headers=["#", "Saved model", "R2", "Date", "Weights"], tablefmt="github"))
-    choice = input("Select a saved run by index or press Enter for new run [new]: ").strip()
-    if not choice:
-        return None, False
-    if not choice.isdigit() or int(choice) < 1 or int(choice) > len(saved):
-        print("Invalid choice. Starting a new run.")
-        return None, False
-    selected = saved[int(choice) - 1]
-    has_weights = bool(selected.get("has_weights"))
-    if has_weights:
-        mode = input(
-            "Selected saved run has model weights. Continue by optimizing [weights|inputs|both] [weights]: "
-        ).strip().lower() or "weights"
-    else:
-        mode = input(
-            "Selected saved run has configs only (no weights). Continue by optimizing [weights|inputs|both] [weights]: "
-        ).strip().lower() or "weights"
-    return selected, mode
+    while True:
+        saved = list_saved_runs()
+        if not saved:
+            return None, False
+        print("\nSaved runs:")
+        table_rows = []
+        for idx, run in enumerate(saved, start=1):
+            table_rows.append(
+                [
+                    idx,
+                    run.get("display_name", "unknown"),
+                    run.get("best_r2", "N/A"),
+                    run.get("saved_at", "N/A"),
+                    "yes" if run.get("has_weights") else "no",
+                ]
+            )
+        print(tabulate(table_rows, headers=["#", "Saved model", "R2", "Date", "Weights"], tablefmt="github"))
+        print("Tip: type delete_<index> (example: delete_3) to remove a saved model/checkpoint.")
+        choice = input("Select a saved run by index or press Enter for new run [new]: ").strip()
+        if not choice:
+            return None, False
+        if choice.lower().startswith("delete_"):
+            index_str = choice.split("_", 1)[1].strip()
+            if not index_str.isdigit():
+                print("Invalid delete format. Use delete_<index> such as delete_3.")
+                continue
+            idx = int(index_str)
+            if idx < 1 or idx > len(saved):
+                print("Invalid delete index.")
+                continue
+            selected_for_delete = saved[idx - 1]
+            summary_path = selected_for_delete.get("_path")
+            weights_path = selected_for_delete.get("weights_path")
+            try:
+                if summary_path and os.path.isfile(summary_path):
+                    os.remove(summary_path)
+                    print(f"Deleted summary file: {summary_path}")
+                if weights_path and os.path.isfile(weights_path):
+                    os.remove(weights_path)
+                    print(f"Deleted checkpoint file: {weights_path}")
+            except OSError as err:
+                print(f"Could not delete saved model files ({err}).")
+            continue
+        if not choice.isdigit() or int(choice) < 1 or int(choice) > len(saved):
+            print("Invalid choice. Starting a new run.")
+            return None, False
+        selected = saved[int(choice) - 1]
+        has_weights = bool(selected.get("has_weights"))
+        if has_weights:
+            mode = input(
+                "Selected saved run has model weights. Continue by optimizing [weights|inputs|both] [weights]: "
+            ).strip().lower() or "weights"
+        else:
+            mode = input(
+                "Selected saved run has configs only (no weights). Continue by optimizing [weights|inputs|both] [weights]: "
+            ).strip().lower() or "weights"
+        return selected, mode
 
 
 def save_run_summary(
@@ -1842,6 +1867,33 @@ if answer != "0":
         results_df[f"{output_name}_predictions"] = np.round(pred_col, 2)
     results_df.to_csv("results.csv", index=False)
     print("Predictions of best model were saved in results.csv")
+    weights_path = None
+    if is_torch_model(models[max_model_index]):
+        os.makedirs(CHECKPOINTS_DIR, exist_ok=True)
+        checkpoint_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{max_model_name}_R2-{best_r2:.2f}_run-{best_run}.pt")
+        weights_path = os.path.join(CHECKPOINTS_DIR, checkpoint_name)
+        try:
+            input_size = X_train.shape[1]
+            output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
+            best_model_instance = models[max_model_index](input_size, max_hidden_sizes, output_size=output_size)
+        except TypeError:
+            best_model_instance = models[max_model_index](input_size, max_hidden_sizes)
+        _, _, _, best_model_instance, _ = fit_model(
+            best_model_instance,
+            X_train,
+            X_test,
+            y_train,
+            y_test,
+            max_epochs,
+            display_steps=False,
+            run=best_run,
+            optimization_scope="weights",
+            optimize_feature_indexes=None,
+            pretrained_state_dict_path=None,
+        )
+        torch.save(best_model_instance.state_dict(), weights_path)
+        print(f"Saved model checkpoint: {weights_path}")
+
     save_run_summary(
         model_name=max_model_name,
         inputs=active_features,
@@ -1851,7 +1903,7 @@ if answer != "0":
         hidden_size_groups=list_hidden_sizes if is_torch_model(models[max_model_index]) else [],
         repeat_count=num_repeats,
         optimization_scope=optimization_scope,
-        weights_path=weights_path if "weights_path" in locals() else None,
+        weights_path=weights_path,
     )
     answer = input("Do you want to see them? [y]:") 
     if answer == "y" or answer == "yes":
