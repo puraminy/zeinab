@@ -36,6 +36,8 @@ from read_data import (
 )
 import inspect
 import models
+import json
+from datetime import datetime
 
 try:
     from xgboost import XGBRegressor
@@ -50,6 +52,7 @@ except ImportError:
 ANSI_RESET = "\033[0m"
 ANSI_GREEN = "\033[92m"
 ANSI_BLUE = "\033[94m"
+SAVED_RUNS_DIR = "saved_runs"
 
 
 def color_text(text, color):
@@ -67,6 +70,82 @@ def print_numbered_feature_list(title, features, color):
     for idx, feature_name in enumerate(features, start=1):
         print(color_text(f"{idx:>2}. {feature_name}", color))
     print_divider("=")
+
+
+def list_saved_runs(saved_dir=SAVED_RUNS_DIR):
+    os.makedirs(saved_dir, exist_ok=True)
+    saved = []
+    for file_name in sorted(os.listdir(saved_dir)):
+        if not file_name.endswith(".json"):
+            continue
+        path = os.path.join(saved_dir, file_name)
+        try:
+            with open(path, "r", encoding="utf-8") as fp:
+                payload = json.load(fp)
+            payload["_path"] = path
+            saved.append(payload)
+        except (OSError, json.JSONDecodeError):
+            continue
+    return saved
+
+
+def prompt_saved_run_choice():
+    saved = list_saved_runs()
+    if not saved:
+        return None, False
+    print("\nSaved runs:")
+    table_rows = []
+    for idx, run in enumerate(saved, start=1):
+        table_rows.append(
+            [
+                idx,
+                run.get("display_name", "unknown"),
+                run.get("best_r2", "N/A"),
+                run.get("saved_at", "N/A"),
+                "yes" if run.get("has_weights") else "no",
+            ]
+        )
+    print(tabulate(table_rows, headers=["#", "Saved model", "R2", "Date", "Weights"], tablefmt="github"))
+    choice = input("Select a saved run by index or press Enter for new run [new]: ").strip()
+    if not choice:
+        return None, False
+    if not choice.isdigit() or int(choice) < 1 or int(choice) > len(saved):
+        print("Invalid choice. Starting a new run.")
+        return None, False
+    selected = saved[int(choice) - 1]
+    has_weights = bool(selected.get("has_weights"))
+    if has_weights:
+        mode = input(
+            "Selected saved run has model weights. Continue by optimizing [weights|inputs|both] [weights]: "
+        ).strip().lower() or "weights"
+    else:
+        mode = input(
+            "Selected saved run has configs only (no weights). Continue by optimizing [weights|inputs|both] [weights]: "
+        ).strip().lower() or "weights"
+    return selected, mode
+
+
+def save_run_summary(model_name, inputs, outputs, best_r2, weights_path=None, saved_dir=SAVED_RUNS_DIR):
+    os.makedirs(saved_dir, exist_ok=True)
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    display_name = f"{model_name}_in{len(inputs)}_out{len(outputs)}_R2-{best_r2:.2f}"
+    payload = {
+        "display_name": display_name,
+        "model_name": model_name,
+        "input_count": len(inputs),
+        "output_count": len(outputs),
+        "inputs": inputs,
+        "outputs": outputs,
+        "best_r2": round(float(best_r2), 2),
+        "saved_at": now,
+        "weights_path": weights_path,
+        "has_weights": bool(weights_path and os.path.isfile(weights_path)),
+    }
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", display_name)
+    summary_path = os.path.join(saved_dir, f"{safe_name}.json")
+    with open(summary_path, "w", encoding="utf-8") as fp:
+        json.dump(payload, fp, indent=2, ensure_ascii=False)
+    print(f"Saved run summary: {summary_path}")
 
 list_epochs = [20, 50, 100 , 200]
 best_epochs = 100 
@@ -1276,6 +1355,7 @@ def repeat_fit_model(model_class, num_repeats,
 
 ############################### Start of Program ###################
 dataset_path = "convert/sugar_all_days_clean_7.csv"
+selected_saved_run, loaded_optimization_scope = prompt_saved_run_choice()
 _, _, use_auto_feature_selection, reused_prep_data = prepare_or_reuse_data(
     dataset_path=dataset_path,
     prep_folder="prep_data",
@@ -1336,7 +1416,7 @@ answer = ask_with_default(
 )
 optimization_scope_answer = ask_with_default(
     "Optimization scope for NN training [weights|inputs|both]",
-    "weights",
+    loaded_optimization_scope if loaded_optimization_scope else "weights",
 )
 try:
     optimization_scope = parse_optimization_scope(optimization_scope_answer)
@@ -1658,6 +1738,12 @@ if answer != "0":
         results_df[f"{output_name}_predictions"] = np.round(pred_col, 2)
     results_df.to_csv("results.csv", index=False)
     print("Predictions of best model were saved in results.csv")
+    save_run_summary(
+        model_name=max_model_name,
+        inputs=active_features,
+        outputs=outputs,
+        best_r2=best_r2,
+    )
     answer = input("Do you want to see them? [y]:") 
     if answer == "y" or answer == "yes":
        print("======= Predictions of best model:", best_model_name)

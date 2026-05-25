@@ -1,0 +1,31 @@
+{
+  "display_name": "RandomForestRegressor_in16_out1_R2-58.96",
+  "model_name": "RandomForestRegressor",
+  "input_count": 16,
+  "output_count": 1,
+  "inputs": [
+    "raw_sugar_color",
+    "raw_syrup_brix",
+    "raw_syrup_color",
+    "lime_alkalinity",
+    "co2_percent",
+    "carbonated_alkalinity",
+    "carbonated_pH",
+    "filtercake_moisture",
+    "filtercake_sugar",
+    "sweetwater_brix",
+    "sulphited_pH",
+    "sulphited_brix",
+    "sulphited_color",
+    "standard_liquor_pH",
+    "standard_liquor_brix",
+    "standard_liquor_color"
+  ],
+  "outputs": [
+    "white_total_points"
+  ],
+  "best_r2": 58.96,
+  "saved_at": "2026-05-25 14:35:55 UTC",
+  "weights_path": null,
+  "has_weights": false
+}
