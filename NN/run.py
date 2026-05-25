@@ -1371,10 +1371,13 @@ data = X_train
 print_numbered_feature_list("Selected Input Features", inputs, ANSI_GREEN)
 print_numbered_feature_list("Selected Output Features", outputs, ANSI_BLUE)
 active_features = list(inputs)
-ans = input("Confirm these numbered inputs/outputs from prep_data folder [y]: ").strip().lower()
-if ans not in ("", "y", "yes"):
-    print("Please re-run and choose your preferred input/output features.")
-    exit()
+if selected_saved_run:
+    print("Loaded saved run metadata; reusing prepared inputs/outputs.")
+else:
+    ans = input("Confirm these numbered inputs/outputs from prep_data folder [y]: ").strip().lower()
+    if ans not in ("", "y", "yes"):
+        print("Please re-run and choose your preferred input/output features.")
+        exit()
 
 # Dynamically collect all neural-network model classes from the module
 nn_models = [
@@ -1386,23 +1389,27 @@ sklearn_models = [
 ]
 models = nn_models + [factory for _, factory in sklearn_models]
 model_names = [model.__name__ for model in nn_models] + [name for name, _ in sklearn_models]
-# User input for selecting the model and number of epochs
-answer = input("\n".join([str(i) + ")" + name for i,name in enumerate(model_names)]) \
-        + "\nSelect one or several models (separated with space) [all]:")
-
-if not answer:
-    answer = "all"
-
-try:
-    selected_model_names = parse_multi_select(answer, model_names, allow_all=True)
-except ValueError as err:
-    print(f"Invalid model selection: {err}")
-    exit()
-
-if selected_model_names is None:
-    selected_models = list(range(len(models)))
+if selected_saved_run and selected_saved_run.get("model_name") in model_names:
+    selected_models = [model_names.index(selected_saved_run["model_name"])]
+    print(f"Using saved model: {selected_saved_run['model_name']}")
 else:
-    selected_models = [model_names.index(name) for name in selected_model_names]
+    # User input for selecting the model and number of epochs
+    answer = input("\n".join([str(i) + ")" + name for i,name in enumerate(model_names)]) \
+            + "\nSelect one or several models (separated with space) [all]:")
+
+    if not answer:
+        answer = "all"
+
+    try:
+        selected_model_names = parse_multi_select(answer, model_names, allow_all=True)
+    except ValueError as err:
+        print(f"Invalid model selection: {err}")
+        exit()
+
+    if selected_model_names is None:
+        selected_models = list(range(len(models)))
+    else:
+        selected_models = [model_names.index(name) for name in selected_model_names]
 
 print("Selected Models:", [model_names[i] for i in selected_models])
 best_model_index = selected_models[0]
@@ -1410,10 +1417,7 @@ max_model_index = best_model_index
 has_nn_model = any(is_torch_model(models[i]) for i in selected_models)
 
 default_epochs = list(list_epochs)
-answer = ask_with_default(
-    "Enter epochs (e.g. '20 50 100', add 'cv' for cross-val early stop, or 0 to skip)",
-    " ".join([str(e) for e in default_epochs]),
-)
+answer = " ".join([str(e) for e in default_epochs])
 optimization_scope_answer = ask_with_default(
     "Optimization scope for NN training [weights|inputs|both]",
     loaded_optimization_scope if loaded_optimization_scope else "weights",
@@ -1431,6 +1435,18 @@ if optimization_scope in ("inputs", "both"):
     else:
         selected_names = [active_features[idx] for idx in optimize_feature_indexes]
         print("Input optimization target features:", selected_names)
+change_training_options = False
+if selected_saved_run:
+    change_training_options = input(
+        "Change training options (epochs/hidden sizes/repeats)? [n]: "
+    ).strip().lower() in ("y", "yes")
+
+if not selected_saved_run or change_training_options:
+    answer = ask_with_default(
+        "Enter epochs (e.g. '20 50 100', add 'cv' for cross-val early stop, or 0 to skip)",
+        " ".join([str(e) for e in default_epochs]),
+    )
+
 list_epochs, use_cv_early_stop = parse_epochs_input(answer, default_epochs)
 if answer != "0":
     if not list_epochs and not use_cv_early_stop:
@@ -1442,7 +1458,7 @@ if answer != "0":
     if use_cv_early_stop and has_nn_model:
         print("Cross-validation early-stop epoch search is enabled.")
 
-    if has_nn_model:
+    if has_nn_model and (not selected_saved_run or change_training_options):
         answer = ask_with_default(
             "Enter hidden sizes (groups split by '#', e.g. '10 5 # 15 10 3')",
             " # ".join([" ".join([str(v) for v in hs]) for hs in list_hidden_sizes]),
@@ -1464,12 +1480,13 @@ if answer != "0":
         list_hidden_sizes = [[]]
         use_cv_early_stop = False
 
-    answer = ask_with_default("Enter the number of repeating predictions", num_repeats)
-    if answer:
-       num_repeats = int(answer)
-       if num_repeats < 1:
-           print("Repeat count must be at least 1.")
-           exit()
+    if not selected_saved_run or change_training_options:
+        answer = ask_with_default("Enter the number of repeating predictions", num_repeats)
+        if answer:
+           num_repeats = int(answer)
+           if num_repeats < 1:
+               print("Repeat count must be at least 1.")
+               exit()
 
     if use_auto_feature_selection:
         print("\n================= Auto Feature Selection =================")

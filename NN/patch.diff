@@ -1,186 +1,8 @@
 diff --git a/NN/run.py b/NN/run.py
-index 3ff1771f8ba5247392f9e085d72bcc5a500cf4e9..6f554b7a9b7b15b2e367aac2467f8d4bbf60984d 100644
+index 6f554b7a9b7b15b2e367aac2467f8d4bbf60984d..ee197a29e6aded0a41fd615b93b5fee0967eebae 100644
 --- a/NN/run.py
 +++ b/NN/run.py
-@@ -14,82 +14,161 @@ from sklearn.ensemble import (
- )
- from sklearn.neighbors import KNeighborsRegressor
- from sklearn.svm import SVR
- from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
- from sklearn.tree import DecisionTreeRegressor
- from sklearn.multioutput import MultiOutputRegressor
- import pandas as pd
- import numpy as np
- import torch.nn as nn
- import re
- from sklearn.metrics import r2_score
- from tabulate import tabulate
- import os
- from latex import *
- from plot import *
- from models import *
- from read_data import (
-     read_prep_data,
-     sync_prep_data_with_dataset,
-     prep_data_exists,
-     read_prep_metadata,
-     save_data,
- )
- import inspect
- import models
-+import json
-+from datetime import datetime
- 
- try:
-     from xgboost import XGBRegressor
- except ImportError:
-     XGBRegressor = None
- 
- try:
-     from lightgbm import LGBMRegressor
- except ImportError:
-     LGBMRegressor = None
- 
- ANSI_RESET = "\033[0m"
- ANSI_GREEN = "\033[92m"
- ANSI_BLUE = "\033[94m"
-+SAVED_RUNS_DIR = "saved_runs"
- 
- 
- def color_text(text, color):
-     return f"{color}{text}{ANSI_RESET}"
- 
- 
- def print_divider(char="=", width=68):
-     print(char * width)
- 
- 
- def print_numbered_feature_list(title, features, color):
-     print_divider("=")
-     print(title)
-     print_divider("-")
-     for idx, feature_name in enumerate(features, start=1):
-         print(color_text(f"{idx:>2}. {feature_name}", color))
-     print_divider("=")
- 
-+
-+def list_saved_runs(saved_dir=SAVED_RUNS_DIR):
-+    os.makedirs(saved_dir, exist_ok=True)
-+    saved = []
-+    for file_name in sorted(os.listdir(saved_dir)):
-+        if not file_name.endswith(".json"):
-+            continue
-+        path = os.path.join(saved_dir, file_name)
-+        try:
-+            with open(path, "r", encoding="utf-8") as fp:
-+                payload = json.load(fp)
-+            payload["_path"] = path
-+            saved.append(payload)
-+        except (OSError, json.JSONDecodeError):
-+            continue
-+    return saved
-+
-+
-+def prompt_saved_run_choice():
-+    saved = list_saved_runs()
-+    if not saved:
-+        return None, False
-+    print("\nSaved runs:")
-+    table_rows = []
-+    for idx, run in enumerate(saved, start=1):
-+        table_rows.append(
-+            [
-+                idx,
-+                run.get("display_name", "unknown"),
-+                run.get("best_r2", "N/A"),
-+                run.get("saved_at", "N/A"),
-+                "yes" if run.get("has_weights") else "no",
-+            ]
-+        )
-+    print(tabulate(table_rows, headers=["#", "Saved model", "R2", "Date", "Weights"], tablefmt="github"))
-+    choice = input("Select a saved run by index or press Enter for new run [new]: ").strip()
-+    if not choice:
-+        return None, False
-+    if not choice.isdigit() or int(choice) < 1 or int(choice) > len(saved):
-+        print("Invalid choice. Starting a new run.")
-+        return None, False
-+    selected = saved[int(choice) - 1]
-+    has_weights = bool(selected.get("has_weights"))
-+    if has_weights:
-+        mode = input(
-+            "Selected saved run has model weights. Continue by optimizing [weights|inputs|both] [weights]: "
-+        ).strip().lower() or "weights"
-+    else:
-+        mode = input(
-+            "Selected saved run has configs only (no weights). Continue by optimizing [weights|inputs|both] [weights]: "
-+        ).strip().lower() or "weights"
-+    return selected, mode
-+
-+
-+def save_run_summary(model_name, inputs, outputs, best_r2, weights_path=None, saved_dir=SAVED_RUNS_DIR):
-+    os.makedirs(saved_dir, exist_ok=True)
-+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-+    display_name = f"{model_name}_in{len(inputs)}_out{len(outputs)}_R2-{best_r2:.2f}"
-+    payload = {
-+        "display_name": display_name,
-+        "model_name": model_name,
-+        "input_count": len(inputs),
-+        "output_count": len(outputs),
-+        "inputs": inputs,
-+        "outputs": outputs,
-+        "best_r2": round(float(best_r2), 2),
-+        "saved_at": now,
-+        "weights_path": weights_path,
-+        "has_weights": bool(weights_path and os.path.isfile(weights_path)),
-+    }
-+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", display_name)
-+    summary_path = os.path.join(saved_dir, f"{safe_name}.json")
-+    with open(summary_path, "w", encoding="utf-8") as fp:
-+        json.dump(payload, fp, indent=2, ensure_ascii=False)
-+    print(f"Saved run summary: {summary_path}")
-+
- list_epochs = [20, 50, 100 , 200]
- best_epochs = 100 
- 
- exp_df = pd.DataFrame()
- 
- num_repeats = 5
- # num_repeats shows the number of times to repeat the experiment to get its average values
- # changing model_seed generates different results for each run for each model
- # The same model_seed produces the same results in each run which is good for reporducability of experiments
- # Dont change it if you want to reproduce the same results
- data_seed = 123 # it is used for random_state of splitting data into source and train sets
- # changing it creates different source and train sets.
- # Since the number of data is low changing it can largely affect the results
- model_seed = 123 # it is used for random_state of models
- def set_model_seed(model_seed):
-     torch.manual_seed(model_seed)
-     np.random.seed(model_seed)
- 
- learning_rate = 0.05
- # The learnign rate used in ANN
- #hidden_size1 = 10
- hidden_size1 = 15
- hidden_size2 = 10
- 
- # the number of neurons in hidden layers
-@@ -1254,50 +1333,51 @@ def repeat_fit_model(model_class, num_repeats,
-             )
-             optimized_inputs_report = None
-         if r2 is None:
-             continue
- 
-         if r2 > max_r2:
-             max_r2 = r2
-             max_run = i
-             best_preds = predictions
-             best_optimized_inputs_report = optimized_inputs_report
- 
-         r2_list.append(r2*100)
-         mse_list.append(mse)
-     if display_steps:
-         print(r2_list)
- 
+@@ -1349,149 +1349,166 @@ def repeat_fit_model(model_class, num_repeats,
      mean_r2 = np.mean(r2_list) if r2_list else None
      mean_mse = np.mean(mse_list) if mse_list else None
      std_r2 = np.std(r2_list) if r2_list else None
@@ -190,7 +12,7 @@ index 3ff1771f8ba5247392f9e085d72bcc5a500cf4e9..6f554b7a9b7b15b2e367aac2467f8d4b
  
  ############################### Start of Program ###################
  dataset_path = "convert/sugar_all_days_clean_7.csv"
-+selected_saved_run, loaded_optimization_scope = prompt_saved_run_choice()
+ selected_saved_run, loaded_optimization_scope = prompt_saved_run_choice()
  _, _, use_auto_feature_selection, reused_prep_data = prepare_or_reuse_data(
      dataset_path=dataset_path,
      prep_folder="prep_data",
@@ -206,29 +28,63 @@ index 3ff1771f8ba5247392f9e085d72bcc5a500cf4e9..6f554b7a9b7b15b2e367aac2467f8d4b
  print_numbered_feature_list("Selected Input Features", inputs, ANSI_GREEN)
  print_numbered_feature_list("Selected Output Features", outputs, ANSI_BLUE)
  active_features = list(inputs)
- ans = input("Confirm these numbered inputs/outputs from prep_data folder [y]: ").strip().lower()
- if ans not in ("", "y", "yes"):
-     print("Please re-run and choose your preferred input/output features.")
-     exit()
+-ans = input("Confirm these numbered inputs/outputs from prep_data folder [y]: ").strip().lower()
+-if ans not in ("", "y", "yes"):
+-    print("Please re-run and choose your preferred input/output features.")
+-    exit()
++if selected_saved_run:
++    print("Loaded saved run metadata; reusing prepared inputs/outputs.")
++else:
++    ans = input("Confirm these numbered inputs/outputs from prep_data folder [y]: ").strip().lower()
++    if ans not in ("", "y", "yes"):
++        print("Please re-run and choose your preferred input/output features.")
++        exit()
  
  # Dynamically collect all neural-network model classes from the module
  nn_models = [
      member for name, member in inspect.getmembers(models, inspect.isclass)
      if issubclass(member, models.nn.Module) and member.__module__ == models.__name__
  ]
-@@ -1314,51 +1394,51 @@ if not answer:
-     answer = "all"
+ sklearn_models = [
+     (name, factory) for name, factory in SKLEARN_MODEL_FACTORIES.items()
+ ]
+ models = nn_models + [factory for _, factory in sklearn_models]
+ model_names = [model.__name__ for model in nn_models] + [name for name, _ in sklearn_models]
+-# User input for selecting the model and number of epochs
+-answer = input("\n".join([str(i) + ")" + name for i,name in enumerate(model_names)]) \
+-        + "\nSelect one or several models (separated with space) [all]:")
++if selected_saved_run and selected_saved_run.get("model_name") in model_names:
++    selected_models = [model_names.index(selected_saved_run["model_name"])]
++    print(f"Using saved model: {selected_saved_run['model_name']}")
++else:
++    # User input for selecting the model and number of epochs
++    answer = input("\n".join([str(i) + ")" + name for i,name in enumerate(model_names)]) \
++            + "\nSelect one or several models (separated with space) [all]:")
  
- try:
-     selected_model_names = parse_multi_select(answer, model_names, allow_all=True)
- except ValueError as err:
-     print(f"Invalid model selection: {err}")
-     exit()
+-if not answer:
+-    answer = "all"
++    if not answer:
++        answer = "all"
  
- if selected_model_names is None:
-     selected_models = list(range(len(models)))
- else:
-     selected_models = [model_names.index(name) for name in selected_model_names]
+-try:
+-    selected_model_names = parse_multi_select(answer, model_names, allow_all=True)
+-except ValueError as err:
+-    print(f"Invalid model selection: {err}")
+-    exit()
++    try:
++        selected_model_names = parse_multi_select(answer, model_names, allow_all=True)
++    except ValueError as err:
++        print(f"Invalid model selection: {err}")
++        exit()
+ 
+-if selected_model_names is None:
+-    selected_models = list(range(len(models)))
+-else:
+-    selected_models = [model_names.index(name) for name in selected_model_names]
++    if selected_model_names is None:
++        selected_models = list(range(len(models)))
++    else:
++        selected_models = [model_names.index(name) for name in selected_model_names]
  
  print("Selected Models:", [model_names[i] for i in selected_models])
  best_model_index = selected_models[0]
@@ -236,14 +92,14 @@ index 3ff1771f8ba5247392f9e085d72bcc5a500cf4e9..6f554b7a9b7b15b2e367aac2467f8d4b
  has_nn_model = any(is_torch_model(models[i]) for i in selected_models)
  
  default_epochs = list(list_epochs)
- answer = ask_with_default(
-     "Enter epochs (e.g. '20 50 100', add 'cv' for cross-val early stop, or 0 to skip)",
-     " ".join([str(e) for e in default_epochs]),
- )
+-answer = ask_with_default(
+-    "Enter epochs (e.g. '20 50 100', add 'cv' for cross-val early stop, or 0 to skip)",
+-    " ".join([str(e) for e in default_epochs]),
+-)
++answer = " ".join([str(e) for e in default_epochs])
  optimization_scope_answer = ask_with_default(
      "Optimization scope for NN training [weights|inputs|both]",
--    "weights",
-+    loaded_optimization_scope if loaded_optimization_scope else "weights",
+     loaded_optimization_scope if loaded_optimization_scope else "weights",
  )
  try:
      optimization_scope = parse_optimization_scope(optimization_scope_answer)
@@ -258,6 +114,18 @@ index 3ff1771f8ba5247392f9e085d72bcc5a500cf4e9..6f554b7a9b7b15b2e367aac2467f8d4b
      else:
          selected_names = [active_features[idx] for idx in optimize_feature_indexes]
          print("Input optimization target features:", selected_names)
++change_training_options = False
++if selected_saved_run:
++    change_training_options = input(
++        "Change training options (epochs/hidden sizes/repeats)? [n]: "
++    ).strip().lower() in ("y", "yes")
++
++if not selected_saved_run or change_training_options:
++    answer = ask_with_default(
++        "Enter epochs (e.g. '20 50 100', add 'cv' for cross-val early stop, or 0 to skip)",
++        " ".join([str(e) for e in default_epochs]),
++    )
++
  list_epochs, use_cv_early_stop = parse_epochs_input(answer, default_epochs)
  if answer != "0":
      if not list_epochs and not use_cv_early_stop:
@@ -269,60 +137,64 @@ index 3ff1771f8ba5247392f9e085d72bcc5a500cf4e9..6f554b7a9b7b15b2e367aac2467f8d4b
      if use_cv_early_stop and has_nn_model:
          print("Cross-validation early-stop epoch search is enabled.")
  
-@@ -1636,50 +1716,56 @@ if answer != "0":
-         plt.close(fig)
-         print("Saved plot: plots/optimized-inputs-change-summary.png")
-         print("==========================================================")
- 
-     print("\n\n")
-     print("Plot was saved in plots folder")
-     answer = input("Do you want to see them? [y]:") 
-     if len(outputs) == 1:
-         target_series = y_test[outputs[0]]
-         pred_series = best_predictions[:, 0] if best_predictions.ndim > 1 else best_predictions
-         if answer == "y" or answer == "yes":
-             plot_results(pred_series, target_series, title, file_name, show_plot=True)
-         else:
-             plot_results(pred_series, target_series, title, file_name, show_plot=False)
+-    if has_nn_model:
++    if has_nn_model and (not selected_saved_run or change_training_options):
+         answer = ask_with_default(
+             "Enter hidden sizes (groups split by '#', e.g. '10 5 # 15 10 3')",
+             " # ".join([" ".join([str(v) for v in hs]) for hs in list_hidden_sizes]),
+         )
+         if answer:
+            list_hidden_sizes = []
+            hs = answer.split("#")
+            for ans in hs:
+               ans = ans.strip()
+               if not ans:
+                   continue
+               h = [int(a) for a in ans.split() if a.isdigit() and int(a) > 0]
+               if h:
+                   list_hidden_sizes.append(h)
+         if not list_hidden_sizes:
+            print("No valid hidden size values were provided.")
+            exit()
      else:
-         print("Skipping scatter plot for multi-output predictions.")
+         list_hidden_sizes = [[]]
+         use_cv_early_stop = False
  
-     # Save results of predicitons in a file named results.csv
-     results_df = pd.DataFrame()
-     for i, output_name in enumerate(outputs):
-         results_df[f"{output_name}_actual"] = y_test[output_name].values
-         pred_col = best_predictions[:, i] if best_predictions.ndim > 1 else best_predictions
-         results_df[f"{output_name}_predictions"] = np.round(pred_col, 2)
-     results_df.to_csv("results.csv", index=False)
-     print("Predictions of best model were saved in results.csv")
-+    save_run_summary(
-+        model_name=max_model_name,
-+        inputs=active_features,
-+        outputs=outputs,
-+        best_r2=best_r2,
-+    )
-     answer = input("Do you want to see them? [y]:") 
-     if answer == "y" or answer == "yes":
-        print("======= Predictions of best model:", best_model_name)
-        print(results_df)
+-    answer = ask_with_default("Enter the number of repeating predictions", num_repeats)
+-    if answer:
+-       num_repeats = int(answer)
+-       if num_repeats < 1:
+-           print("Repeat count must be at least 1.")
+-           exit()
++    if not selected_saved_run or change_training_options:
++        answer = ask_with_default("Enter the number of repeating predictions", num_repeats)
++        if answer:
++           num_repeats = int(answer)
++           if num_repeats < 1:
++               print("Repeat count must be at least 1.")
++               exit()
  
- best_model = models[best_model_index]
- best_model_name = model_names[best_model_index]
- if is_torch_model(best_model):
-     while True:
-         print("\n\n")
-         print(f"================= Feature Selection ({best_model_name}:{best_epochs} epochs, {best_hidden_sizes}) ======")
-         print("\nPlease select a feature selection or sensitivity analysis method:\n")
+     if use_auto_feature_selection:
+         print("\n================= Auto Feature Selection =================")
          print("1. Backward Feature Elimination")
          print("2. Forward Feature Selection")
-         print("3. Weight Analysis")
-         print("4. Jackknife Sensitivity Analysis (Node Deletion Sensitivity)")
-         print("5. SHAP (SHapley Additive exPlanations)")
-         print("q. Quit")
+         auto_method = input("Select method [1]: ").strip() or "1"
  
-         answer = input("Enter the number of the method you want to run (or 'q' to quit): ").strip().lower()
+         reference_model = models[selected_models[0]]
+         reference_model_name = model_names[selected_models[0]]
+         reference_epochs = list_epochs[0] if list_epochs else best_epochs
+         reference_hidden_sizes = list_hidden_sizes[0] if is_torch_model(reference_model) else []
  
-         if answer == '1':
-             print("============================= Backward Feature Elimination =============")
-             backward_table = backward_feature_elimination(best_model, data, inputs, output, best_epochs, best_hidden_sizes)
-             print("------------ backward feature elimination ---------------")
+         print(
+             f"Running feature selection with {reference_model_name}, "
+             f"epochs={reference_epochs}, hidden_sizes={reference_hidden_sizes if reference_hidden_sizes else 'N/A'}"
+         )
+ 
+         if auto_method == "2":
+             auto_table = forward_feature_selection(
+                 reference_model,
+                 data,
+                 list(inputs),
+                 output,
+                 reference_epochs,
+                 reference_hidden_sizes
