@@ -125,7 +125,18 @@ def prompt_saved_run_choice():
     return selected, mode
 
 
-def save_run_summary(model_name, inputs, outputs, best_r2, weights_path=None, saved_dir=SAVED_RUNS_DIR):
+def save_run_summary(
+    model_name,
+    inputs,
+    outputs,
+    best_r2,
+    epoch_candidates=None,
+    hidden_size_groups=None,
+    repeat_count=None,
+    optimization_scope=None,
+    weights_path=None,
+    saved_dir=SAVED_RUNS_DIR,
+):
     os.makedirs(saved_dir, exist_ok=True)
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
     display_name = f"{model_name}_in{len(inputs)}_out{len(outputs)}_R2-{best_r2:.2f}"
@@ -138,6 +149,10 @@ def save_run_summary(model_name, inputs, outputs, best_r2, weights_path=None, sa
         "outputs": outputs,
         "best_r2": round(float(best_r2), 2),
         "saved_at": now,
+        "epoch_candidates": epoch_candidates if epoch_candidates is not None else [],
+        "hidden_size_groups": hidden_size_groups if hidden_size_groups is not None else [],
+        "repeat_count": int(repeat_count) if repeat_count is not None else None,
+        "optimization_scope": optimization_scope,
         "weights_path": weights_path,
         "has_weights": bool(weights_path and os.path.isfile(weights_path)),
     }
@@ -146,6 +161,18 @@ def save_run_summary(model_name, inputs, outputs, best_r2, weights_path=None, sa
     with open(summary_path, "w", encoding="utf-8") as fp:
         json.dump(payload, fp, indent=2, ensure_ascii=False)
     print(f"Saved run summary: {summary_path}")
+
+
+def normalize_hidden_size_groups(raw_groups, fallback_groups):
+    """Return valid hidden-size groups as list[list[int]]."""
+    parsed = []
+    if isinstance(raw_groups, list):
+        for group in raw_groups:
+            if isinstance(group, list):
+                cleaned = [int(v) for v in group if str(v).isdigit() and int(v) > 0]
+                if cleaned:
+                    parsed.append(cleaned)
+    return parsed if parsed else [list(group) for group in fallback_groups]
 
 list_epochs = [20, 50, 100 , 200]
 best_epochs = 100 
@@ -1400,7 +1427,24 @@ print_numbered_feature_list("Selected Output Features", outputs, ANSI_BLUE)
 active_features = list(inputs)
 if selected_saved_run:
     print("Loaded saved run metadata; reusing prepared inputs/outputs.")
+    loaded_hidden_size_groups = normalize_hidden_size_groups(
+        selected_saved_run.get("hidden_size_groups"),
+        list_hidden_sizes,
+    )
+    loaded_epoch_candidates = [
+        int(e)
+        for e in selected_saved_run.get("epoch_candidates", [])
+        if str(e).isdigit() and int(e) > 0
+    ]
+    loaded_repeat_count = selected_saved_run.get("repeat_count")
+    if isinstance(loaded_repeat_count, str) and loaded_repeat_count.isdigit():
+        loaded_repeat_count = int(loaded_repeat_count)
+    if not isinstance(loaded_repeat_count, int) or loaded_repeat_count < 1:
+        loaded_repeat_count = None
 else:
+    loaded_hidden_size_groups = [list(group) for group in list_hidden_sizes]
+    loaded_epoch_candidates = []
+    loaded_repeat_count = None
     ans = input("Confirm these numbered inputs/outputs from prep_data folder [y]: ").strip().lower()
     if ans not in ("", "y", "yes"):
         print("Please re-run and choose your preferred input/output features.")
@@ -1444,6 +1488,8 @@ max_model_index = best_model_index
 has_nn_model = any(is_torch_model(models[i]) for i in selected_models)
 
 default_epochs = list(list_epochs)
+if loaded_epoch_candidates:
+    default_epochs = loaded_epoch_candidates
 answer = " ".join([str(e) for e in default_epochs])
 optimization_scope_answer = ask_with_default(
     "Optimization scope for NN training [weights|inputs|both]",
@@ -1493,7 +1539,7 @@ if answer != "0":
     if has_nn_model and (not selected_saved_run or change_training_options):
         answer = ask_with_default(
             "Enter hidden sizes (groups split by '#', e.g. '10 5 # 15 10 3')",
-            " # ".join([" ".join([str(v) for v in hs]) for hs in list_hidden_sizes]),
+            " # ".join([" ".join([str(v) for v in hs]) for hs in loaded_hidden_size_groups]),
         )
         if answer:
            list_hidden_sizes = []
@@ -1508,12 +1554,16 @@ if answer != "0":
         if not list_hidden_sizes:
            print("No valid hidden size values were provided.")
            exit()
+    elif has_nn_model:
+        list_hidden_sizes = [list(group) for group in loaded_hidden_size_groups]
+        use_cv_early_stop = False
     else:
         list_hidden_sizes = [[]]
         use_cv_early_stop = False
 
     if not selected_saved_run or change_training_options:
-        answer = ask_with_default("Enter the number of repeating predictions", num_repeats)
+        repeat_default = loaded_repeat_count if loaded_repeat_count is not None else num_repeats
+        answer = ask_with_default("Enter the number of repeating predictions", repeat_default)
         if answer:
            num_repeats = int(answer)
            if num_repeats < 1:
@@ -1797,6 +1847,11 @@ if answer != "0":
         inputs=active_features,
         outputs=outputs,
         best_r2=best_r2,
+        epoch_candidates=list_epochs,
+        hidden_size_groups=list_hidden_sizes if is_torch_model(models[max_model_index]) else [],
+        repeat_count=num_repeats,
+        optimization_scope=optimization_scope,
+        weights_path=weights_path if "weights_path" in locals() else None,
     )
     answer = input("Do you want to see them? [y]:") 
     if answer == "y" or answer == "yes":
