@@ -1,6 +1,6 @@
 {
-  "display_name": "RandomForestRegressor_in16_out1_R2-58.96",
-  "model_name": "RandomForestRegressor",
+  "display_name": "FFNN_in16_out1_R2-49.67",
+  "model_name": "FFNN",
   "input_count": 16,
   "output_count": 1,
   "inputs": [
@@ -24,8 +24,8 @@
   "outputs": [
     "white_total_points"
   ],
-  "best_r2": 58.96,
-  "saved_at": "2026-05-25 15:00:23 UTC",
+  "best_r2": 49.67,
+  "saved_at": "2026-05-25 15:01:11 UTC",
   "weights_path": null,
   "has_weights": false
 }

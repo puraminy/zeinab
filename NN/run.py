@@ -1360,10 +1360,26 @@ _, _, use_auto_feature_selection, reused_prep_data = prepare_or_reuse_data(
     dataset_path=dataset_path,
     prep_folder="prep_data",
 )
-X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder="prep_data")
+
+saved_inputs = selected_saved_run.get("inputs") if selected_saved_run else None
+saved_outputs = selected_saved_run.get("outputs") if selected_saved_run else None
+X_train, X_test, y_train, y_test = read_prep_data(
+    inputs=saved_inputs if saved_inputs else None,
+    prep_folder="prep_data",
+)
 
 # After loading, get the column names from X_train
 inputs = X_train.columns.tolist()
+if saved_outputs:
+    missing_saved_outputs = [col for col in saved_outputs if col not in y_train.columns.tolist()]
+    if missing_saved_outputs:
+        print(
+            "Saved run output columns are missing from prep_data: "
+            f"{missing_saved_outputs}. Please rebuild prep_data or choose a different saved run."
+        )
+        exit()
+    y_train = y_train[saved_outputs]
+    y_test = y_test[saved_outputs]
 outputs = y_train.columns.tolist()
 output = outputs
 
