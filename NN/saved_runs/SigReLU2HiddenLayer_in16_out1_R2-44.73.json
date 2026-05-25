@@ -1,0 +1,31 @@
+{
+  "display_name": "SigReLU2HiddenLayer_in16_out1_R2-44.73",
+  "model_name": "SigReLU2HiddenLayer",
+  "input_count": 16,
+  "output_count": 1,
+  "inputs": [
+    "raw_sugar_color",
+    "raw_syrup_brix",
+    "raw_syrup_color",
+    "lime_alkalinity",
+    "co2_percent",
+    "carbonated_alkalinity",
+    "carbonated_pH",
+    "filtercake_moisture",
+    "filtercake_sugar",
+    "sweetwater_brix",
+    "sulphited_pH",
+    "sulphited_brix",
+    "sulphited_color",
+    "standard_liquor_pH",
+    "standard_liquor_brix",
+    "standard_liquor_color"
+  ],
+  "outputs": [
+    "white_total_points"
+  ],
+  "best_r2": 44.73,
+  "saved_at": "2026-05-25 15:17:14 UTC",
+  "weights_path": null,
+  "has_weights": false
+}

@@ -737,7 +737,7 @@ def prompt_optimized_input_features(input_features):
 
 
 def fit_model(model, X_train, X_test, y_train, y_test, 
-        num_epochs, display_steps=False, run=0, optimization_scope="weights", optimize_feature_indexes=None):
+        num_epochs, display_steps=False, run=0, optimization_scope="weights", optimize_feature_indexes=None, pretrained_state_dict_path=None):
 
     set_model_seed(model_seed + run)
     scaler = StandardScaler()
@@ -766,7 +766,17 @@ def fit_model(model, X_train, X_test, y_train, y_test,
             if m.bias is not None:
                 init.constant_(m.bias.data, 0)
 
-    model.apply(weights_init)
+    loaded_pretrained_weights = False
+    if pretrained_state_dict_path and os.path.isfile(pretrained_state_dict_path):
+        try:
+            state_dict = torch.load(pretrained_state_dict_path, map_location="cpu")
+            model.load_state_dict(state_dict)
+            loaded_pretrained_weights = True
+            print(f"Loaded pretrained weights from: {pretrained_state_dict_path}")
+        except Exception as err:
+            print(f"Could not load pretrained weights ({err}). Reinitializing weights.")
+    if not loaded_pretrained_weights:
+        model.apply(weights_init)
 
     criterion = nn.MSELoss()
     optimize_weights = optimization_scope in ("weights", "both")
@@ -1293,7 +1303,7 @@ def forward_feature_selection(model_class, data, inputs, output, num_epochs, hid
 # Repeats an fit_model to get average of results
 def repeat_fit_model(model_class, num_repeats, 
         num_epochs, hidden_sizes, 
-        display_steps=False, features=None, optimization_scope="weights", optimize_feature_indexes=None):
+        display_steps=False, features=None, optimization_scope="weights", optimize_feature_indexes=None, pretrained_state_dict_path=None):
     X_train, X_test, y_train, y_test = read_prep_data(features)
     r2_list = []
     mse_list = []
@@ -1325,6 +1335,7 @@ def repeat_fit_model(model_class, num_repeats,
                 run=i,
                 optimization_scope=optimization_scope,
                 optimize_feature_indexes=optimize_feature_indexes,
+                pretrained_state_dict_path=pretrained_state_dict_path,
             )
         else:
             model = model_class(model_seed + i)
@@ -1443,6 +1454,11 @@ try:
 except ValueError as err:
     print(err)
     exit()
+if optimization_scope in ("inputs", "both") and not has_nn_model:
+    print(
+        "Input optimization is only available for neural-network models. "
+        "Selected non-NN models will train/evaluate weights only."
+    )
 optimize_feature_indexes = None
 if optimization_scope in ("inputs", "both"):
     optimize_feature_indexes = prompt_optimized_input_features(active_features)
@@ -1581,10 +1597,15 @@ if answer != "0":
 
             epoch_candidates = sorted(set(epoch_candidates))
             for num_epochs in epoch_candidates:
+                pretrained_weights_path = (
+                    selected_saved_run.get("weights_path")
+                    if selected_saved_run and is_nn and selected_saved_run.get("has_weights")
+                    else None
+                )
                 # Apply model on data for N repeats and get predictions, mse and r2
                 mean_r2, std_r2, mean_mse, model_best_preds, max_r2, r2_list, max_run, optimized_inputs_report = repeat_fit_model(
                     model_class,
-                    num_repeats, num_epochs, hidden_sizes, display_steps=True, features=active_features, optimization_scope=optimization_scope, optimize_feature_indexes=optimize_feature_indexes)
+                    num_repeats, num_epochs, hidden_sizes, display_steps=True, features=active_features, optimization_scope=optimization_scope, optimize_feature_indexes=optimize_feature_indexes, pretrained_state_dict_path=pretrained_weights_path)
 
                 # Keep best seed to generate the same predictions later
                 if mean_r2 is None:

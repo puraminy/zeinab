@@ -1,8 +1,170 @@
 diff --git a/NN/run.py b/NN/run.py
-index ee197a29e6aded0a41fd615b93b5fee0967eebae..0f8d47163b93d75f787e60724b165435492223ed 100644
+index 0f8d47163b93d75f787e60724b165435492223ed..48c0361a7582a4a601f5f39b38bdb363593db34c 100644
 --- a/NN/run.py
 +++ b/NN/run.py
-@@ -1338,54 +1338,70 @@ def repeat_fit_model(model_class, num_repeats,
+@@ -715,80 +715,90 @@ def parse_optimization_scope(answer):
+     if normalized not in mapping:
+         raise ValueError("Invalid optimization scope. Use weights, inputs, or both.")
+     return mapping[normalized]
+ 
+ 
+ def prompt_optimized_input_features(input_features):
+     print("\nInput-optimization target features:")
+     print_selection_guide()
+     print("\n".join([str(i) + ")" + name for i, name in enumerate(input_features, start=1)]))
+     answer = input(
+         "Select input features to optimize (indexes/ranges) or [all] [all]: "
+     ).strip()
+     if not answer or answer.lower() == "all":
+         return None
+     try:
+         selected = parse_multi_select(answer, input_features, allow_all=True, one_based=True)
+     except ValueError as err:
+         print(f"Invalid optimized-input feature selection: {err}")
+         exit()
+     if selected is None:
+         return None
+     return [input_features.index(name) for name in selected]
+ 
+ 
+ def fit_model(model, X_train, X_test, y_train, y_test, 
+-        num_epochs, display_steps=False, run=0, optimization_scope="weights", optimize_feature_indexes=None):
++        num_epochs, display_steps=False, run=0, optimization_scope="weights", optimize_feature_indexes=None, pretrained_state_dict_path=None):
+ 
+     set_model_seed(model_seed + run)
+     scaler = StandardScaler()
+     X_train = torch.tensor(scaler.fit_transform(X_train), dtype=torch.float32)
+     X_test = torch.tensor(scaler.transform(X_test), dtype=torch.float32)
+     y_train_values = y_train.values if hasattr(y_train, "values") else y_train
+     y_test_values = y_test.values if hasattr(y_test, "values") else y_test
+     y_train = torch.tensor(y_train_values, dtype=torch.float32)
+     y_test = torch.tensor(y_test_values, dtype=torch.float32)
+     if y_train.ndim == 1:
+         y_train = y_train.view(-1, 1)
+     if y_test.ndim == 1:
+         y_test = y_test.view(-1, 1)
+ 
+    # Normalize inputs and targets to zero mean and unity standard deviation
+     X_train_normalized = normalize(X_train, normalization_type)
+     X_test_normalized = normalize(X_test, normalization_type)
+     y_train_normalized = normalize(y_train, normalization_type)
+     y_test_normalized = normalize(y_test, normalization_type)
+ 
+ 
+     # Initialize weights
+     def weights_init(m):
+         if isinstance(m, nn.Linear):
+             init.kaiming_uniform_(m.weight.data)
+             if m.bias is not None:
+                 init.constant_(m.bias.data, 0)
+ 
+-    model.apply(weights_init)
++    loaded_pretrained_weights = False
++    if pretrained_state_dict_path and os.path.isfile(pretrained_state_dict_path):
++        try:
++            state_dict = torch.load(pretrained_state_dict_path, map_location="cpu")
++            model.load_state_dict(state_dict)
++            loaded_pretrained_weights = True
++            print(f"Loaded pretrained weights from: {pretrained_state_dict_path}")
++        except Exception as err:
++            print(f"Could not load pretrained weights ({err}). Reinitializing weights.")
++    if not loaded_pretrained_weights:
++        model.apply(weights_init)
+ 
+     criterion = nn.MSELoss()
+     optimize_weights = optimization_scope in ("weights", "both")
+     optimize_inputs = optimization_scope in ("inputs", "both")
+ 
+     optimizer = optim.Adam(model.parameters(), lr=learning_rate) if optimize_weights else None
+     original_train_inputs = X_train_normalized.clone().detach()
+     train_inputs = X_train_normalized.clone().detach().requires_grad_(optimize_inputs)
+     input_optimizer = optim.Adam([train_inputs], lr=learning_rate) if optimize_inputs else None
+ 
+     for epoch in range(num_epochs):
+         model.train()
+         if optimizer is not None:
+             optimizer.zero_grad()
+         if input_optimizer is not None:
+             input_optimizer.zero_grad()
+         outputs = model(train_inputs)
+         
+         # Check for NaN in outputs
+         if torch.isnan(outputs).any():
+             print(f"NaN detected in outputs at epoch {epoch + 1}")
+             return None, None, None, model, None
+ 
+         loss = criterion(outputs, y_train_normalized)
+         
+@@ -1271,82 +1281,83 @@ def forward_feature_selection(model_class, data, inputs, output, num_epochs, hid
+             candidates.append(max_results_key)
+             best_r2 = max_results
+             print('=================================')
+             print('step: ' + str(len(candidates)))
+             print(candidates)
+             print('Best R2: ' + str(max_results))
+             print('================================')
+         else:
+             break
+ 
+     print('\n\n')
+     print('=============== Final Features ==================')
+     print('Selected Features: ')
+     print(candidates)
+     print('Final R2: ' + str(best_r2))
+     print('Elminated Features: ')
+     print(set(data.columns).difference(candidates))
+ 
+     table = pd.DataFrame(data=rows)
+     return table
+ 
+ 
+ # Repeats an fit_model to get average of results
+ def repeat_fit_model(model_class, num_repeats, 
+         num_epochs, hidden_sizes, 
+-        display_steps=False, features=None, optimization_scope="weights", optimize_feature_indexes=None):
++        display_steps=False, features=None, optimization_scope="weights", optimize_feature_indexes=None, pretrained_state_dict_path=None):
+     X_train, X_test, y_train, y_test = read_prep_data(features)
+     r2_list = []
+     mse_list = []
+     max_r2 = 0
+     max_run = 0
+     best_preds = None
+     best_optimized_inputs_report = None
+     input_size = X_train.shape[1]
+     output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
+     for i in range(num_repeats):
+         if is_torch_model(model_class):
+             # Recreate model on each run so repeats are independent.
+             try:
+                 model = model_class(input_size, hidden_sizes, output_size=output_size)
+             except TypeError:
+                 model = model_class(input_size, hidden_sizes)
+ 
+             if len(hidden_sizes) != len(model.hidden_layers):
+                 continue
+ 
+             predictions, mse, r2, model, optimized_inputs_report = fit_model(
+                 model,
+                 X_train,
+                 X_test,
+                 y_train,
+                 y_test,
+                 num_epochs,
+                 display_steps=display_steps,
+                 run=i,
+                 optimization_scope=optimization_scope,
+                 optimize_feature_indexes=optimize_feature_indexes,
++                pretrained_state_dict_path=pretrained_state_dict_path,
+             )
+         else:
+             model = model_class(model_seed + i)
+             predictions, mse, r2, model = fit_sklearn_model(
+                 model, X_train, X_test, y_train, y_test
+             )
+             optimized_inputs_report = None
+         if r2 is None:
+             continue
+ 
          if r2 > max_r2:
              max_r2 = r2
              max_run = i
@@ -18,59 +180,120 @@ index ee197a29e6aded0a41fd615b93b5fee0967eebae..0f8d47163b93d75f787e60724b165435
      mean_mse = np.mean(mse_list) if mse_list else None
      std_r2 = np.std(r2_list) if r2_list else None
      std_mse = np.std(mse_list) if mse_list else None
- 
-     return mean_r2, std_r2, mean_mse, best_preds, max_r2*100, r2_list, max_run, best_optimized_inputs_report
- 
- ############################### Start of Program ###################
- dataset_path = "convert/sugar_all_days_clean_7.csv"
- selected_saved_run, loaded_optimization_scope = prompt_saved_run_choice()
- _, _, use_auto_feature_selection, reused_prep_data = prepare_or_reuse_data(
-     dataset_path=dataset_path,
-     prep_folder="prep_data",
- )
--X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder="prep_data")
-+
-+saved_inputs = selected_saved_run.get("inputs") if selected_saved_run else None
-+saved_outputs = selected_saved_run.get("outputs") if selected_saved_run else None
-+X_train, X_test, y_train, y_test = read_prep_data(
-+    inputs=saved_inputs if saved_inputs else None,
-+    prep_folder="prep_data",
-+)
- 
- # After loading, get the column names from X_train
- inputs = X_train.columns.tolist()
-+if saved_outputs:
-+    missing_saved_outputs = [col for col in saved_outputs if col not in y_train.columns.tolist()]
-+    if missing_saved_outputs:
-+        print(
-+            "Saved run output columns are missing from prep_data: "
-+            f"{missing_saved_outputs}. Please rebuild prep_data or choose a different saved run."
-+        )
-+        exit()
-+    y_train = y_train[saved_outputs]
-+    y_test = y_test[saved_outputs]
- outputs = y_train.columns.tolist()
- output = outputs
- 
- data = X_train
- print_numbered_feature_list("Selected Input Features", inputs, ANSI_GREEN)
- print_numbered_feature_list("Selected Output Features", outputs, ANSI_BLUE)
- active_features = list(inputs)
- if selected_saved_run:
-     print("Loaded saved run metadata; reusing prepared inputs/outputs.")
- else:
-     ans = input("Confirm these numbered inputs/outputs from prep_data folder [y]: ").strip().lower()
-     if ans not in ("", "y", "yes"):
-         print("Please re-run and choose your preferred input/output features.")
+@@ -1421,50 +1432,55 @@ else:
+     except ValueError as err:
+         print(f"Invalid model selection: {err}")
          exit()
  
- # Dynamically collect all neural-network model classes from the module
- nn_models = [
-     member for name, member in inspect.getmembers(models, inspect.isclass)
-     if issubclass(member, models.nn.Module) and member.__module__ == models.__name__
- ]
- sklearn_models = [
-     (name, factory) for name, factory in SKLEARN_MODEL_FACTORIES.items()
- ]
- models = nn_models + [factory for _, factory in sklearn_models]
- model_names = [model.__name__ for model in nn_models] + [name for name, _ in sklearn_models]
+     if selected_model_names is None:
+         selected_models = list(range(len(models)))
+     else:
+         selected_models = [model_names.index(name) for name in selected_model_names]
+ 
+ print("Selected Models:", [model_names[i] for i in selected_models])
+ best_model_index = selected_models[0]
+ max_model_index = best_model_index
+ has_nn_model = any(is_torch_model(models[i]) for i in selected_models)
+ 
+ default_epochs = list(list_epochs)
+ answer = " ".join([str(e) for e in default_epochs])
+ optimization_scope_answer = ask_with_default(
+     "Optimization scope for NN training [weights|inputs|both]",
+     loaded_optimization_scope if loaded_optimization_scope else "weights",
+ )
+ try:
+     optimization_scope = parse_optimization_scope(optimization_scope_answer)
+ except ValueError as err:
+     print(err)
+     exit()
++if optimization_scope in ("inputs", "both") and not has_nn_model:
++    print(
++        "Input optimization is only available for neural-network models. "
++        "Selected non-NN models will train/evaluate weights only."
++    )
+ optimize_feature_indexes = None
+ if optimization_scope in ("inputs", "both"):
+     optimize_feature_indexes = prompt_optimized_input_features(active_features)
+     if optimize_feature_indexes is None:
+         print("Input optimization target: all selected input features.")
+     else:
+         selected_names = [active_features[idx] for idx in optimize_feature_indexes]
+         print("Input optimization target features:", selected_names)
+ change_training_options = False
+ if selected_saved_run:
+     change_training_options = input(
+         "Change training options (epochs/hidden sizes/repeats)? [n]: "
+     ).strip().lower() in ("y", "yes")
+ 
+ if not selected_saved_run or change_training_options:
+     answer = ask_with_default(
+         "Enter epochs (e.g. '20 50 100', add 'cv' for cross-val early stop, or 0 to skip)",
+         " ".join([str(e) for e in default_epochs]),
+     )
+ 
+ list_epochs, use_cv_early_stop = parse_epochs_input(answer, default_epochs)
+ if answer != "0":
+     if not list_epochs and not use_cv_early_stop:
+         print("No valid epoch values were provided.")
+         exit()
+@@ -1559,54 +1575,59 @@ if answer != "0":
+     for model_index in selected_models:
+         model_class = models[model_index]
+         model_name = model_names[model_index]
+         is_nn = is_torch_model(model_class)
+         hidden_size_candidates = list_hidden_sizes if is_nn else [[]]
+         for hidden_sizes in hidden_size_candidates:
+             epoch_candidates = sorted(set(list_epochs)) if is_nn else [1]
+             if is_nn and use_cv_early_stop:
+                 cv_epoch = select_epochs_with_cv_early_stopping(
+                     model_class,
+                     hidden_sizes,
+                     features=active_features,
+                 )
+                 if cv_epoch is not None and cv_epoch > 0:
+                     epoch_candidates.append(cv_epoch)
+                     print(
+                         f"[{model_name} | {hidden_sizes}] CV early-stop suggested epochs: {cv_epoch}"
+                     )
+                 else:
+                     print(
+                         f"[{model_name} | {hidden_sizes}] CV early-stop failed; using manual epochs only."
+                     )
+ 
+             epoch_candidates = sorted(set(epoch_candidates))
+             for num_epochs in epoch_candidates:
++                pretrained_weights_path = (
++                    selected_saved_run.get("weights_path")
++                    if selected_saved_run and is_nn and selected_saved_run.get("has_weights")
++                    else None
++                )
+                 # Apply model on data for N repeats and get predictions, mse and r2
+                 mean_r2, std_r2, mean_mse, model_best_preds, max_r2, r2_list, max_run, optimized_inputs_report = repeat_fit_model(
+                     model_class,
+-                    num_repeats, num_epochs, hidden_sizes, display_steps=True, features=active_features, optimization_scope=optimization_scope, optimize_feature_indexes=optimize_feature_indexes)
++                    num_repeats, num_epochs, hidden_sizes, display_steps=True, features=active_features, optimization_scope=optimization_scope, optimize_feature_indexes=optimize_feature_indexes, pretrained_state_dict_path=pretrained_weights_path)
+ 
+                 # Keep best seed to generate the same predictions later
+                 if mean_r2 is None:
+                     continue
+ 
+                 if max_r2 > best_r2:
+                     best_r2 = max_r2
+                     model_best_predictions[model_name] = model_best_preds
+                     best_optimized_inputs_report = optimized_inputs_report
+                     max_model_index = model_index
+                     max_epochs = num_epochs
+                     max_hidden_sizes = hidden_sizes
+                     best_run = max_run
+ 
+                 if mean_r2 > best_mean_r2:
+                     best_mean_r2 = mean_r2
+                     best_mse = mean_mse
+                     best_model_index = model_index
+                     best_epochs = num_epochs
+                     best_hidden_sizes = hidden_sizes
+                 
+                 total_nodes = sum(hidden_sizes) if hidden_sizes else 0
+ 
+                 result = {
+                         "model":model_name, 
