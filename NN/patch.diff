@@ -1,56 +1,57 @@
 diff --git a/NN/run.py b/NN/run.py
-index 1b838259a2ea8d69f4dee2ec7670a30b189ea956..8842957ee5ec7255a90970a75ce97e3e9e37c7c6 100644
+index cf87919462010457624b94714265d68f1aae220a..3ff1771f8ba5247392f9e085d72bcc5a500cf4e9 100644
 --- a/NN/run.py
 +++ b/NN/run.py
-@@ -594,130 +594,198 @@ def compute_regression_report_metrics(y_true, y_pred):
-     rae = float((np.sum(abs_errors) / rae_denominator) * 100.0) if rae_denominator != 0 else np.nan
-     rrse = float(np.sqrt(np.sum(sq_errors) / rrse_denominator) * 100.0) if rrse_denominator != 0 else np.nan
- 
-     return {
-         "Correlation coefficient": correlation,
-         "Mean absolute error": mae,
-         "Root mean squared error": rmse,
-         "Relative absolute error": rae,
-         "Root relative squared error": rrse,
-         "Total Number of Instances": int(y_true_arr.shape[0]),
-     }
- 
- # Define the normalization function
- def normalize(data, normalization_type):
-     if normalization_type == 'z_score':
-         return (data - data.mean()) / data.std()
-     elif normalization_type == 'minmax':
-         return (data - data.min()) / (data.max() - data.min())
-     else:
-         raise ValueError("Unsupported normalization type. Choose 'z_score' or 'minmax'.")
+@@ -614,140 +614,178 @@ def normalize(data, normalization_type):
  
  # Function to apply model on data and generate predictions
  # Return predictions, MSE and R-Squared
  import torch.nn.init as init
  
+ 
+ def parse_optimization_scope(answer):
+     """Return training optimization scope: weights, inputs, or both."""
+     normalized = (answer or "").strip().lower()
+     mapping = {
+         "": "weights",
+         "w": "weights",
+         "weight": "weights",
+         "weights": "weights",
+         "i": "inputs",
+         "input": "inputs",
+         "inputs": "inputs",
+         "b": "both",
+         "both": "both",
+         "wi": "both",
+         "iw": "both",
+     }
+     if normalized not in mapping:
+         raise ValueError("Invalid optimization scope. Use weights, inputs, or both.")
+     return mapping[normalized]
 +
-+def parse_optimization_scope(answer):
-+    """Return training optimization scope: weights, inputs, or both."""
-+    normalized = (answer or "").strip().lower()
-+    mapping = {
-+        "": "weights",
-+        "w": "weights",
-+        "weight": "weights",
-+        "weights": "weights",
-+        "i": "inputs",
-+        "input": "inputs",
-+        "inputs": "inputs",
-+        "b": "both",
-+        "both": "both",
-+        "wi": "both",
-+        "iw": "both",
-+    }
-+    if normalized not in mapping:
-+        raise ValueError("Invalid optimization scope. Use weights, inputs, or both.")
-+    return mapping[normalized]
++
++def prompt_optimized_input_features(input_features):
++    print("\nInput-optimization target features:")
++    print_selection_guide()
++    print("\n".join([str(i) + ")" + name for i, name in enumerate(input_features, start=1)]))
++    answer = input(
++        "Select input features to optimize (indexes/ranges) or [all] [all]: "
++    ).strip()
++    if not answer or answer.lower() == "all":
++        return None
++    try:
++        selected = parse_multi_select(answer, input_features, allow_all=True, one_based=True)
++    except ValueError as err:
++        print(f"Invalid optimized-input feature selection: {err}")
++        exit()
++    if selected is None:
++        return None
++    return [input_features.index(name) for name in selected]
++
++
  def fit_model(model, X_train, X_test, y_train, y_test, 
--        num_epochs, display_steps=False, run=0):
-+        num_epochs, display_steps=False, run=0, optimization_scope="weights"):
+-        num_epochs, display_steps=False, run=0, optimization_scope="weights"):
++        num_epochs, display_steps=False, run=0, optimization_scope="weights", optimize_feature_indexes=None):
  
      set_model_seed(model_seed + run)
      scaler = StandardScaler()
@@ -82,49 +83,50 @@ index 1b838259a2ea8d69f4dee2ec7670a30b189ea956..8842957ee5ec7255a90970a75ce97e3e
      model.apply(weights_init)
  
      criterion = nn.MSELoss()
--    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-+    optimize_weights = optimization_scope in ("weights", "both")
-+    optimize_inputs = optimization_scope in ("inputs", "both")
-+
-+    optimizer = optim.Adam(model.parameters(), lr=learning_rate) if optimize_weights else None
-+    train_inputs = X_train_normalized.clone().detach().requires_grad_(optimize_inputs)
-+    input_optimizer = optim.Adam([train_inputs], lr=learning_rate) if optimize_inputs else None
+     optimize_weights = optimization_scope in ("weights", "both")
+     optimize_inputs = optimization_scope in ("inputs", "both")
+ 
+     optimizer = optim.Adam(model.parameters(), lr=learning_rate) if optimize_weights else None
++    original_train_inputs = X_train_normalized.clone().detach()
+     train_inputs = X_train_normalized.clone().detach().requires_grad_(optimize_inputs)
+     input_optimizer = optim.Adam([train_inputs], lr=learning_rate) if optimize_inputs else None
  
      for epoch in range(num_epochs):
          model.train()
--        optimizer.zero_grad()
--        outputs = model(X_train_normalized)
-+        if optimizer is not None:
-+            optimizer.zero_grad()
-+        if input_optimizer is not None:
-+            input_optimizer.zero_grad()
-+        outputs = model(train_inputs)
+         if optimizer is not None:
+             optimizer.zero_grad()
+         if input_optimizer is not None:
+             input_optimizer.zero_grad()
+         outputs = model(train_inputs)
          
          # Check for NaN in outputs
          if torch.isnan(outputs).any():
              print(f"NaN detected in outputs at epoch {epoch + 1}")
-             return None, None, None, model
+-            return None, None, None, model
++            return None, None, None, model, None
  
          loss = criterion(outputs, y_train_normalized)
          
          # Check for NaN in loss
          if torch.isnan(loss).any():
              print(f"NaN detected in loss at epoch {epoch + 1}")
-             return None, None, None, model
+-            return None, None, None, model
++            return None, None, None, model, None
  
          loss.backward()
--        
--        # Gradient clipping
--        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
  
--        optimizer.step()
-+        if optimize_weights:
-+            # Gradient clipping
-+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-+            optimizer.step()
++        if optimize_inputs and optimize_feature_indexes is not None and train_inputs.grad is not None:
++            mask = torch.zeros_like(train_inputs.grad)
++            mask[:, optimize_feature_indexes] = 1.0
++            train_inputs.grad *= mask
 +
-+        if optimize_inputs:
-+            input_optimizer.step()
+         if optimize_weights:
+             # Gradient clipping
+             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+             optimizer.step()
+ 
+         if optimize_inputs:
+             input_optimizer.step()
  
          if (epoch + 1) % 10 == 0 and display_steps:
              print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item()}')
@@ -136,7 +138,8 @@ index 1b838259a2ea8d69f4dee2ec7670a30b189ea956..8842957ee5ec7255a90970a75ce97e3e
          # Check for NaN in predictions
          if torch.isnan(predictions).any():
              print(f"NaN detected in predictions")
-             return None, None, None, model
+-            return None, None, None, model
++            return None, None, None, model, None
  
      mse = nn.MSELoss()(predictions, y_test_normalized)
      mae = nn.L1Loss()(predictions, y_test_normalized)
@@ -146,45 +149,19 @@ index 1b838259a2ea8d69f4dee2ec7670a30b189ea956..8842957ee5ec7255a90970a75ce97e3e
      y_test_np = y_test.numpy()
      r2 = r2_score(y_test_np, predictions_np, multioutput='uniform_average')
 -    return predictions_np, mse, r2, model
- 
-+    optimized_inputs_info = None
++
++    optimized_inputs_report = None
 +    if optimize_inputs:
-+        optimized_scaled = train_inputs.detach().cpu().numpy()
-+        original_scaled = X_train_normalized.detach().cpu().numpy()
-+        optimized_raw = scaler.inverse_transform(optimized_scaled)
-+        original_raw = scaler.inverse_transform(original_scaled)
-+        optimized_inputs_info = {
-+            "before_inputs": original_raw,
-+            "after_inputs": optimized_raw,
-+        }
-+    return predictions_np, mse, r2, model, optimized_inputs_info
-+
-+
-+
-+def build_input_optimization_report(input_feature_names, before_inputs, after_inputs):
-+    """Build detailed and summary tables for input optimization changes."""
-+    before_arr = np.asarray(before_inputs, dtype=float)
-+    after_arr = np.asarray(after_inputs, dtype=float)
-+    if before_arr.shape != after_arr.shape:
-+        return None, None
-+
-+    deltas = after_arr - before_arr
-+    detail_df = pd.DataFrame()
-+    for idx, feature_name in enumerate(input_feature_names):
-+        detail_df[f"{feature_name}_before"] = before_arr[:, idx]
-+        detail_df[f"{feature_name}_after"] = after_arr[:, idx]
-+        detail_df[f"{feature_name}_delta"] = deltas[:, idx]
-+
-+    summary_df = pd.DataFrame({
-+        "Feature": input_feature_names,
-+        "Mean Before": before_arr.mean(axis=0),
-+        "Mean After": after_arr.mean(axis=0),
-+        "Mean Delta": deltas.mean(axis=0),
-+        "Mean |Delta|": np.abs(deltas).mean(axis=0),
-+        "Max |Delta|": np.abs(deltas).max(axis=0),
-+    })
-+    summary_df = summary_df.sort_values(by="Mean |Delta|", ascending=False)
-+    return detail_df, summary_df
++        with torch.no_grad():
++            delta = train_inputs.detach() - original_train_inputs
++            optimized_inputs_report = {
++                "original_inputs": original_train_inputs.detach().numpy(),
++                "optimized_inputs": train_inputs.detach().numpy(),
++                "delta_inputs": delta.numpy(),
++                "mean_abs_delta_per_feature": np.mean(np.abs(delta.numpy()), axis=0),
++            }
++    return predictions_np, mse, r2, model, optimized_inputs_report
+ 
  
  def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
      scaler_x = StandardScaler()
@@ -209,148 +186,7 @@ index 1b838259a2ea8d69f4dee2ec7670a30b189ea956..8842957ee5ec7255a90970a75ce97e3e
                  f"{model_name} does not natively support multi-output regression. "
                  "Wrapping it with MultiOutputRegressor."
              )
-             fit_model = MultiOutputRegressor(model)
-@@ -986,91 +1054,91 @@ def shap_feature_importance(model_class, inputs, num_epochs, hidden_sizes):
- 
-     return shap_table
- def weight_analysis(model_class, data, inputs, output, num_epochs, hidden_sizes):
-     X_train, X_test, y_train, y_test = read_prep_data(inputs)
-     input_size = X_train.shape[1]
- 
-     output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
-     try:
-         model = model_class(input_size, hidden_sizes, output_size=output_size)
-     except TypeError:
-         model = model_class(input_size, hidden_sizes)
-     _,_,r2, model = fit_model(model, X_train, X_test, y_train, y_test, num_epochs)
-     print("R2:", r2)
- 
-     weight_importances = {}
-     with torch.no_grad():
-         for i, feature in enumerate(inputs):
-             importance = np.abs(model.hidden_layers[0].weight[:, i].numpy()).mean()
-             weight_importances[feature] = importance
-     
-     weight_table = pd.DataFrame(list(weight_importances.items()), columns=['Feature', 'Weight Importance'])
-     return weight_table
- 
- 
- def jackknife_sensitivity_analysis(model_class, data, inputs, output, num_epochs, hidden_sizes):
--    base_model_r2, _, _, _, _, _, run = repeat_fit_model(model_class, 
-+    base_model_r2, _, _, _, _, _, run, _ = repeat_fit_model(model_class, 
-             num_repeats, num_epochs, hidden_sizes)
-     sensitivities = {}
-     variances = []
-     _num_repeats = input("Number of repeat [10]:")
-     _num_repeats = int(_num_repeats) if _num_repeats else 10
-     print("Please wait ...")
- 
-     for input_feature in inputs:
-         reduced_inputs = [f for f in inputs if f != input_feature]
-         reduced_r2_list = []
-         for _ in range(_num_repeats):
--            reduced_r2, _, _, _, _, _, _run = repeat_fit_model(model_class,
-+            reduced_r2, _, _, _, _, _, _run, _ = repeat_fit_model(model_class,
-                     1, num_epochs, hidden_sizes, features= reduced_inputs)
-             reduced_r2_list.append(reduced_r2)
-         reduced_r2_mean = np.mean(reduced_r2_list)
-         sensitivity = base_model_r2 - reduced_r2_mean
-         variance = np.var(reduced_r2_list)
-         sensitivities[input_feature] = sensitivity
-         variances.append(variance)
- 
-     sensitivity_table = pd.DataFrame(list(sensitivities.items()), columns=['Feature', 'Sensitivity'])
-     sensitivity_table['Variance'] = variances
-     return sensitivity_table
- 
- def backward_feature_elimination(model_class, data, inputs, output, num_epochs, hidden_sizes):
--    mean_r2, _, _, _, _,_, _run = repeat_fit_model(model_class,
-+    mean_r2, _, _, _, _,_, _run, _ = repeat_fit_model(model_class,
-             num_repeats, num_epochs, hidden_sizes,features=inputs)
-     best_r2 = mean_r2
-     print("Using all features")
-     print("Features:", inputs)
-     print("R2:", mean_r2)
-     candidates = inputs
-     rows = [] # Rows of a table to show the features and the result
-     rows.append({"features": ", ".join(inputs), "R2": round(mean_r2,2)})
-     while(True):
-         results = {}
-         for feature in candidates:
-             # Selet other features except for current feature
-             features = [f for f in candidates if f != feature]
--            mean_r2, _, _, _,_,_, _run = repeat_fit_model(model_class, num_repeats, num_epochs, hidden_sizes, features=features)
-+            mean_r2, _, _, _,_,_, _run, _ = repeat_fit_model(model_class, num_repeats, num_epochs, hidden_sizes, features=features)
-             results[feature] = mean_r2
-             print("---------------------------------------")
-             # Results of removing the feature
-             print("Removing:", feature)
-             print("Features:", features)
-             print("R2:", mean_r2)
-             rows.append({"features": ", ".join(features), "R2": round(mean_r2,2)})
- 
-         if not results:
-             print("No valid feature-elimination candidates were produced; stopping.")
-             break
- 
-         max_results =  max(results.values())
-         max_results_key = max(results, key=results.get)
- 
-         if max_results > best_r2:
-             candidates.remove(max_results_key)
-             best_r2 = max_results
-             print('=================================')
-             print('step: ' + str(len(inputs) - len(candidates)))
-             print(candidates)
-             print('Best R2: ' + str(max_results))
-             print('================================')
-         else:
-             break
-@@ -1080,147 +1148,150 @@ def backward_feature_elimination(model_class, data, inputs, output, num_epochs,
-     print('Selected Features: ')
-     print(candidates)
-     print('Final R2: ' + str(best_r2))
-     print('Elminated Features: ')
-     print(set(data.columns).difference(candidates))
- 
-     table = pd.DataFrame(data=rows)
-     return table
- 
- # Finds the combinaiton of features that best predict y
- # This method add features one by one
- # Search about Forward Feature Selction
- def forward_feature_selection(model_class, data, inputs, output, num_epochs, hidden_sizes):
-     candidates = []
-     best_r2 = -1
-     rows = [] # Rows of a table to show the features and the result
-     while(True):
-         results = {}
-         # for all features except for the candidates
-         for feature in data.drop(candidates, axis=1).columns:
-             if len(candidates) == 0:
-                 features = [feature]
-             else:
-                 features = [feature] + candidates 
- 
--            mean_r2, _, _, _,_,_, _run = repeat_fit_model(model_class, num_repeats, num_epochs, hidden_sizes, features=features)
-+            mean_r2, _, _, _,_,_, _run, _ = repeat_fit_model(model_class, num_repeats, num_epochs, hidden_sizes, features=features)
-             if mean_r2 is None:
-                 continue
-             results[feature] = mean_r2
-             print("--------------------------------")
-             print("Adding feature ", feature)
-             print("Features:", features)
-             print("R2:", mean_r2)
-             rows.append({"features": ", ".join(features), "R2": round(mean_r2,2)})
- 
-         if not results:
-             print("No valid feature-selection candidates were produced; stopping.")
-             break
- 
-         max_results =  max(results.values())
-         max_results_key = max(results, key=results.get)
- 
-         if max_results > best_r2:
+@@ -1154,105 +1192,109 @@ def forward_feature_selection(model_class, data, inputs, output, num_epochs, hid
              candidates.append(max_results_key)
              best_r2 = max_results
              print('=================================')
@@ -376,15 +212,15 @@ index 1b838259a2ea8d69f4dee2ec7670a30b189ea956..8842957ee5ec7255a90970a75ce97e3e
  # Repeats an fit_model to get average of results
  def repeat_fit_model(model_class, num_repeats, 
          num_epochs, hidden_sizes, 
--        display_steps=False, features=None):
-+        display_steps=False, features=None, optimization_scope="weights"):
+-        display_steps=False, features=None, optimization_scope="weights"):
++        display_steps=False, features=None, optimization_scope="weights", optimize_feature_indexes=None):
      X_train, X_test, y_train, y_test = read_prep_data(features)
      r2_list = []
      mse_list = []
      max_r2 = 0
      max_run = 0
      best_preds = None
-+    best_optimized_inputs_info = None
++    best_optimized_inputs_report = None
      input_size = X_train.shape[1]
      output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
      for i in range(num_repeats):
@@ -399,7 +235,7 @@ index 1b838259a2ea8d69f4dee2ec7670a30b189ea956..8842957ee5ec7255a90970a75ce97e3e
                  continue
  
 -            predictions, mse, r2, model = fit_model(
-+            predictions, mse, r2, model, optimized_inputs_info = fit_model(
++            predictions, mse, r2, model, optimized_inputs_report = fit_model(
                  model,
                  X_train,
                  X_test,
@@ -408,13 +244,15 @@ index 1b838259a2ea8d69f4dee2ec7670a30b189ea956..8842957ee5ec7255a90970a75ce97e3e
                  num_epochs,
                  display_steps=display_steps,
                  run=i,
-+                optimization_scope=optimization_scope,
+                 optimization_scope=optimization_scope,
++                optimize_feature_indexes=optimize_feature_indexes,
              )
          else:
              model = model_class(model_seed + i)
              predictions, mse, r2, model = fit_sklearn_model(
                  model, X_train, X_test, y_train, y_test
              )
++            optimized_inputs_report = None
          if r2 is None:
              continue
  
@@ -422,7 +260,7 @@ index 1b838259a2ea8d69f4dee2ec7670a30b189ea956..8842957ee5ec7255a90970a75ce97e3e
              max_r2 = r2
              max_run = i
              best_preds = predictions
-+            best_optimized_inputs_info = optimized_inputs_info if is_torch_model(model_class) else None
++            best_optimized_inputs_report = optimized_inputs_report
  
          r2_list.append(r2*100)
          mse_list.append(mse)
@@ -435,7 +273,7 @@ index 1b838259a2ea8d69f4dee2ec7670a30b189ea956..8842957ee5ec7255a90970a75ce97e3e
      std_mse = np.std(mse_list) if mse_list else None
  
 -    return mean_r2, std_r2, mean_mse, best_preds, max_r2*100, r2_list, max_run
-+    return mean_r2, std_r2, mean_mse, best_preds, max_r2*100, r2_list, max_run, best_optimized_inputs_info
++    return mean_r2, std_r2, mean_mse, best_preds, max_r2*100, r2_list, max_run, best_optimized_inputs_report
  
  ############################### Start of Program ###################
  dataset_path = "convert/sugar_all_days_clean_7.csv"
@@ -461,16 +299,7 @@ index 1b838259a2ea8d69f4dee2ec7670a30b189ea956..8842957ee5ec7255a90970a75ce97e3e
  
  # Dynamically collect all neural-network model classes from the module
  nn_models = [
-@@ -1238,50 +1309,59 @@ answer = input("\n".join([str(i) + ")" + name for i,name in enumerate(model_name
- 
- if not answer:
-     answer = "all"
- 
- try:
-     selected_model_names = parse_multi_select(answer, model_names, allow_all=True)
- except ValueError as err:
-     print(f"Invalid model selection: {err}")
-     exit()
+@@ -1279,50 +1321,58 @@ except ValueError as err:
  
  if selected_model_names is None:
      selected_models = list(range(len(models)))
@@ -487,15 +316,23 @@ index 1b838259a2ea8d69f4dee2ec7670a30b189ea956..8842957ee5ec7255a90970a75ce97e3e
      "Enter epochs (e.g. '20 50 100', add 'cv' for cross-val early stop, or 0 to skip)",
      " ".join([str(e) for e in default_epochs]),
  )
-+optimization_scope_answer = ask_with_default(
-+    "Optimization scope for NN training [weights|inputs|both]",
-+    "weights",
-+)
-+try:
-+    optimization_scope = parse_optimization_scope(optimization_scope_answer)
-+except ValueError as err:
-+    print(err)
-+    exit()
+ optimization_scope_answer = ask_with_default(
+     "Optimization scope for NN training [weights|inputs|both]",
+     "weights",
+ )
+ try:
+     optimization_scope = parse_optimization_scope(optimization_scope_answer)
+ except ValueError as err:
+     print(err)
+     exit()
++optimize_feature_indexes = None
++if optimization_scope in ("inputs", "both"):
++    optimize_feature_indexes = prompt_optimized_input_features(active_features)
++    if optimize_feature_indexes is None:
++        print("Input optimization target: all selected input features.")
++    else:
++        selected_names = [active_features[idx] for idx in optimize_feature_indexes]
++        print("Input optimization target features:", selected_names)
  list_epochs, use_cv_early_stop = parse_epochs_input(answer, default_epochs)
  if answer != "0":
      if not list_epochs and not use_cv_early_stop:
@@ -521,7 +358,7 @@ index 1b838259a2ea8d69f4dee2ec7670a30b189ea956..8842957ee5ec7255a90970a75ce97e3e
                    continue
                h = [int(a) for a in ans.split() if a.isdigit() and int(a) > 0]
                if h:
-@@ -1328,88 +1408,90 @@ if answer != "0":
+@@ -1369,88 +1419,90 @@ if answer != "0":
          else:
              auto_table = backward_feature_elimination(
                  reference_model,
@@ -547,7 +384,7 @@ index 1b838259a2ea8d69f4dee2ec7670a30b189ea956..8842957ee5ec7255a90970a75ce97e3e
      best_epochs = -1
      results = []
      model_best_predictions = {}
-+    model_best_input_reports = {}
++    best_optimized_inputs_report = None
      # for all models
      for model_index in selected_models:
          model_class = models[model_index]
@@ -576,10 +413,10 @@ index 1b838259a2ea8d69f4dee2ec7670a30b189ea956..8842957ee5ec7255a90970a75ce97e3e
              for num_epochs in epoch_candidates:
                  # Apply model on data for N repeats and get predictions, mse and r2
 -                mean_r2, std_r2, mean_mse, model_best_preds, max_r2, r2_list, max_run = repeat_fit_model(
-+                mean_r2, std_r2, mean_mse, model_best_preds, max_r2, r2_list, max_run, model_best_input_optimization = repeat_fit_model(
++                mean_r2, std_r2, mean_mse, model_best_preds, max_r2, r2_list, max_run, optimized_inputs_report = repeat_fit_model(
                      model_class,
--                    num_repeats, num_epochs, hidden_sizes, display_steps=True, features=active_features)
-+                    num_repeats, num_epochs, hidden_sizes, display_steps=True, features=active_features, optimization_scope=optimization_scope)
+-                    num_repeats, num_epochs, hidden_sizes, display_steps=True, features=active_features, optimization_scope=optimization_scope)
++                    num_repeats, num_epochs, hidden_sizes, display_steps=True, features=active_features, optimization_scope=optimization_scope, optimize_feature_indexes=optimize_feature_indexes)
  
                  # Keep best seed to generate the same predictions later
                  if mean_r2 is None:
@@ -588,7 +425,7 @@ index 1b838259a2ea8d69f4dee2ec7670a30b189ea956..8842957ee5ec7255a90970a75ce97e3e
                  if max_r2 > best_r2:
                      best_r2 = max_r2
                      model_best_predictions[model_name] = model_best_preds
-+                    model_best_input_reports[model_name] = model_best_input_optimization
++                    best_optimized_inputs_report = optimized_inputs_report
                      max_model_index = model_index
                      max_epochs = num_epochs
                      max_hidden_sizes = hidden_sizes
@@ -614,11 +451,74 @@ index 1b838259a2ea8d69f4dee2ec7670a30b189ea956..8842957ee5ec7255a90970a75ce97e3e
                          "epochs": num_epochs if is_nn else "N/A",
                          }
                  results.append(result)
-@@ -1501,50 +1583,64 @@ if answer != "0":
+@@ -1521,50 +1573,92 @@ if answer != "0":
+     best_model_metrics = compute_regression_report_metrics(y_test_values, best_predictions)
+     if best_model_metrics:
+         print("===================== Best Selected Model Report =====================")
+         print(f"Selected model name                    {max_model_name}")
+         print(f"R-Squared                              {best_r2/100:.4f}")
+         print(
+             f"Correlation coefficient                {best_model_metrics['Correlation coefficient']:.4f}"
+         )
+         print(
+             f"Mean absolute error                    {best_model_metrics['Mean absolute error']:.4f}"
+         )
+         print(
+             f"Root mean squared error                {best_model_metrics['Root mean squared error']:.4f}"
+         )
+         print(
+             f"Relative absolute error                {best_model_metrics['Relative absolute error']:.4f} %"
+         )
+         print(
+             f"Root relative squared error            {best_model_metrics['Root relative squared error']:.4f} %"
+         )
+         print(
              f"Total Number of Instances              {best_model_metrics['Total Number of Instances']}"
          )
          print("=====================================================================")
  
++    if best_optimized_inputs_report is not None:
++        print("\n================= Optimized Input Report =================")
++        selected_names = (
++            active_features
++            if optimize_feature_indexes is None
++            else [active_features[idx] for idx in optimize_feature_indexes]
++        )
++        mean_abs_delta = best_optimized_inputs_report["mean_abs_delta_per_feature"]
++        report_df = pd.DataFrame(
++            {
++                "feature": active_features,
++                "mean_abs_delta_normalized": mean_abs_delta,
++            }
++        ).sort_values(by="mean_abs_delta_normalized", ascending=False)
++        report_df["optimized"] = report_df["feature"].isin(selected_names)
++        report_path = os.path.join("tables", "optimized-inputs-summary.csv")
++        report_df.to_csv(report_path, index=False)
++        print(f"Saved summary: {report_path}")
++        print(report_df)
++
++        original_df = pd.DataFrame(
++            best_optimized_inputs_report["original_inputs"], columns=active_features
++        )
++        optimized_df = pd.DataFrame(
++            best_optimized_inputs_report["optimized_inputs"], columns=active_features
++        )
++        original_df.to_csv(os.path.join("tables", "optimized-inputs-before.csv"), index=False)
++        optimized_df.to_csv(os.path.join("tables", "optimized-inputs-after.csv"), index=False)
++
++        fig, ax = plt.subplots(figsize=(12, 6))
++        ax.bar(report_df["feature"], report_df["mean_abs_delta_normalized"])
++        ax.set_title("Mean absolute input change after input optimization")
++        ax.set_xlabel("Input feature")
++        ax.set_ylabel("Mean abs change (normalized)")
++        ax.tick_params(axis="x", rotation=45)
++        ax.grid(True, axis="y", alpha=0.3)
++        fig.tight_layout()
++        fig.savefig(os.path.join("plots", "optimized-inputs-change-summary.png"), format="png")
++        plt.close(fig)
++        print("Saved plot: plots/optimized-inputs-change-summary.png")
++        print("==========================================================")
++
      print("\n\n")
      print("Plot was saved in plots folder")
      answer = input("Do you want to see them? [y]:") 
@@ -640,42 +540,7 @@ index 1b838259a2ea8d69f4dee2ec7670a30b189ea956..8842957ee5ec7255a90970a75ce97e3e
          results_df[f"{output_name}_predictions"] = np.round(pred_col, 2)
      results_df.to_csv("results.csv", index=False)
      print("Predictions of best model were saved in results.csv")
-+
-+    best_input_report = model_best_input_reports.get(max_model_name)
-+    if best_input_report is not None and optimization_scope in ("inputs", "both"):
-+        detail_df, summary_df = build_input_optimization_report(
-+            inputs,
-+            best_input_report["before_inputs"],
-+            best_input_report["after_inputs"],
-+        )
-+        if detail_df is not None and summary_df is not None:
-+            detail_df.to_csv("optimized_inputs_details.csv", index=False)
-+            summary_df.to_csv("optimized_inputs_summary.csv", index=False)
-+            print("Input optimization report saved in optimized_inputs_details.csv and optimized_inputs_summary.csv")
-+            print("===== Input Optimization Summary (top features by mean absolute change) =====")
-+            print(summary_df.head(10).to_string(index=False))
      answer = input("Do you want to see them? [y]:") 
      if answer == "y" or answer == "yes":
         print("======= Predictions of best model:", best_model_name)
         print(results_df)
- 
- best_model = models[best_model_index]
- best_model_name = model_names[best_model_index]
- if is_torch_model(best_model):
-     while True:
-         print("\n\n")
-         print(f"================= Feature Selection ({best_model_name}:{best_epochs} epochs, {best_hidden_sizes}) ======")
-         print("\nPlease select a feature selection or sensitivity analysis method:\n")
-         print("1. Backward Feature Elimination")
-         print("2. Forward Feature Selection")
-         print("3. Weight Analysis")
-         print("4. Jackknife Sensitivity Analysis (Node Deletion Sensitivity)")
-         print("5. SHAP (SHapley Additive exPlanations)")
-         print("q. Quit")
- 
-         answer = input("Enter the number of the method you want to run (or 'q' to quit): ").strip().lower()
- 
-         if answer == '1':
-             print("============================= Backward Feature Elimination =============")
-             backward_table = backward_feature_elimination(best_model, data, inputs, output, best_epochs, best_hidden_sizes)
-             print("------------ backward feature elimination ---------------")

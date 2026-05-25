@@ -636,8 +636,29 @@ def parse_optimization_scope(answer):
     if normalized not in mapping:
         raise ValueError("Invalid optimization scope. Use weights, inputs, or both.")
     return mapping[normalized]
+
+
+def prompt_optimized_input_features(input_features):
+    print("\nInput-optimization target features:")
+    print_selection_guide()
+    print("\n".join([str(i) + ")" + name for i, name in enumerate(input_features, start=1)]))
+    answer = input(
+        "Select input features to optimize (indexes/ranges) or [all] [all]: "
+    ).strip()
+    if not answer or answer.lower() == "all":
+        return None
+    try:
+        selected = parse_multi_select(answer, input_features, allow_all=True, one_based=True)
+    except ValueError as err:
+        print(f"Invalid optimized-input feature selection: {err}")
+        exit()
+    if selected is None:
+        return None
+    return [input_features.index(name) for name in selected]
+
+
 def fit_model(model, X_train, X_test, y_train, y_test, 
-        num_epochs, display_steps=False, run=0, optimization_scope="weights"):
+        num_epochs, display_steps=False, run=0, optimization_scope="weights", optimize_feature_indexes=None):
 
     set_model_seed(model_seed + run)
     scaler = StandardScaler()
@@ -673,6 +694,7 @@ def fit_model(model, X_train, X_test, y_train, y_test,
     optimize_inputs = optimization_scope in ("inputs", "both")
 
     optimizer = optim.Adam(model.parameters(), lr=learning_rate) if optimize_weights else None
+    original_train_inputs = X_train_normalized.clone().detach()
     train_inputs = X_train_normalized.clone().detach().requires_grad_(optimize_inputs)
     input_optimizer = optim.Adam([train_inputs], lr=learning_rate) if optimize_inputs else None
 
@@ -687,16 +709,21 @@ def fit_model(model, X_train, X_test, y_train, y_test,
         # Check for NaN in outputs
         if torch.isnan(outputs).any():
             print(f"NaN detected in outputs at epoch {epoch + 1}")
-            return None, None, None, model
+            return None, None, None, model, None
 
         loss = criterion(outputs, y_train_normalized)
         
         # Check for NaN in loss
         if torch.isnan(loss).any():
             print(f"NaN detected in loss at epoch {epoch + 1}")
-            return None, None, None, model
+            return None, None, None, model, None
 
         loss.backward()
+
+        if optimize_inputs and optimize_feature_indexes is not None and train_inputs.grad is not None:
+            mask = torch.zeros_like(train_inputs.grad)
+            mask[:, optimize_feature_indexes] = 1.0
+            train_inputs.grad *= mask
 
         if optimize_weights:
             # Gradient clipping
@@ -716,7 +743,7 @@ def fit_model(model, X_train, X_test, y_train, y_test,
         # Check for NaN in predictions
         if torch.isnan(predictions).any():
             print(f"NaN detected in predictions")
-            return None, None, None, model
+            return None, None, None, model, None
 
     mse = nn.MSELoss()(predictions, y_test_normalized)
     mae = nn.L1Loss()(predictions, y_test_normalized)
@@ -725,7 +752,18 @@ def fit_model(model, X_train, X_test, y_train, y_test,
     predictions_np = predictions_denormalized.numpy()
     y_test_np = y_test.numpy()
     r2 = r2_score(y_test_np, predictions_np, multioutput='uniform_average')
-    return predictions_np, mse, r2, model
+
+    optimized_inputs_report = None
+    if optimize_inputs:
+        with torch.no_grad():
+            delta = train_inputs.detach() - original_train_inputs
+            optimized_inputs_report = {
+                "original_inputs": original_train_inputs.detach().numpy(),
+                "optimized_inputs": train_inputs.detach().numpy(),
+                "delta_inputs": delta.numpy(),
+                "mean_abs_delta_per_feature": np.mean(np.abs(delta.numpy()), axis=0),
+            }
+    return predictions_np, mse, r2, model, optimized_inputs_report
 
 
 def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
@@ -1176,13 +1214,14 @@ def forward_feature_selection(model_class, data, inputs, output, num_epochs, hid
 # Repeats an fit_model to get average of results
 def repeat_fit_model(model_class, num_repeats, 
         num_epochs, hidden_sizes, 
-        display_steps=False, features=None, optimization_scope="weights"):
+        display_steps=False, features=None, optimization_scope="weights", optimize_feature_indexes=None):
     X_train, X_test, y_train, y_test = read_prep_data(features)
     r2_list = []
     mse_list = []
     max_r2 = 0
     max_run = 0
     best_preds = None
+    best_optimized_inputs_report = None
     input_size = X_train.shape[1]
     output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
     for i in range(num_repeats):
@@ -1196,7 +1235,7 @@ def repeat_fit_model(model_class, num_repeats,
             if len(hidden_sizes) != len(model.hidden_layers):
                 continue
 
-            predictions, mse, r2, model = fit_model(
+            predictions, mse, r2, model, optimized_inputs_report = fit_model(
                 model,
                 X_train,
                 X_test,
@@ -1206,12 +1245,14 @@ def repeat_fit_model(model_class, num_repeats,
                 display_steps=display_steps,
                 run=i,
                 optimization_scope=optimization_scope,
+                optimize_feature_indexes=optimize_feature_indexes,
             )
         else:
             model = model_class(model_seed + i)
             predictions, mse, r2, model = fit_sklearn_model(
                 model, X_train, X_test, y_train, y_test
             )
+            optimized_inputs_report = None
         if r2 is None:
             continue
 
@@ -1219,6 +1260,7 @@ def repeat_fit_model(model_class, num_repeats,
             max_r2 = r2
             max_run = i
             best_preds = predictions
+            best_optimized_inputs_report = optimized_inputs_report
 
         r2_list.append(r2*100)
         mse_list.append(mse)
@@ -1230,7 +1272,7 @@ def repeat_fit_model(model_class, num_repeats,
     std_r2 = np.std(r2_list) if r2_list else None
     std_mse = np.std(mse_list) if mse_list else None
 
-    return mean_r2, std_r2, mean_mse, best_preds, max_r2*100, r2_list, max_run
+    return mean_r2, std_r2, mean_mse, best_preds, max_r2*100, r2_list, max_run, best_optimized_inputs_report
 
 ############################### Start of Program ###################
 dataset_path = "convert/sugar_all_days_clean_7.csv"
@@ -1301,6 +1343,14 @@ try:
 except ValueError as err:
     print(err)
     exit()
+optimize_feature_indexes = None
+if optimization_scope in ("inputs", "both"):
+    optimize_feature_indexes = prompt_optimized_input_features(active_features)
+    if optimize_feature_indexes is None:
+        print("Input optimization target: all selected input features.")
+    else:
+        selected_names = [active_features[idx] for idx in optimize_feature_indexes]
+        print("Input optimization target features:", selected_names)
 list_epochs, use_cv_early_stop = parse_epochs_input(answer, default_epochs)
 if answer != "0":
     if not list_epochs and not use_cv_early_stop:
@@ -1391,6 +1441,7 @@ if answer != "0":
     best_epochs = -1
     results = []
     model_best_predictions = {}
+    best_optimized_inputs_report = None
     # for all models
     for model_index in selected_models:
         model_class = models[model_index]
@@ -1418,9 +1469,9 @@ if answer != "0":
             epoch_candidates = sorted(set(epoch_candidates))
             for num_epochs in epoch_candidates:
                 # Apply model on data for N repeats and get predictions, mse and r2
-                mean_r2, std_r2, mean_mse, model_best_preds, max_r2, r2_list, max_run = repeat_fit_model(
+                mean_r2, std_r2, mean_mse, model_best_preds, max_r2, r2_list, max_run, optimized_inputs_report = repeat_fit_model(
                     model_class,
-                    num_repeats, num_epochs, hidden_sizes, display_steps=True, features=active_features, optimization_scope=optimization_scope)
+                    num_repeats, num_epochs, hidden_sizes, display_steps=True, features=active_features, optimization_scope=optimization_scope, optimize_feature_indexes=optimize_feature_indexes)
 
                 # Keep best seed to generate the same predictions later
                 if mean_r2 is None:
@@ -1429,6 +1480,7 @@ if answer != "0":
                 if max_r2 > best_r2:
                     best_r2 = max_r2
                     model_best_predictions[model_name] = model_best_preds
+                    best_optimized_inputs_report = optimized_inputs_report
                     max_model_index = model_index
                     max_epochs = num_epochs
                     max_hidden_sizes = hidden_sizes
@@ -1542,6 +1594,48 @@ if answer != "0":
             f"Total Number of Instances              {best_model_metrics['Total Number of Instances']}"
         )
         print("=====================================================================")
+
+    if best_optimized_inputs_report is not None:
+        print("\n================= Optimized Input Report =================")
+        selected_names = (
+            active_features
+            if optimize_feature_indexes is None
+            else [active_features[idx] for idx in optimize_feature_indexes]
+        )
+        mean_abs_delta = best_optimized_inputs_report["mean_abs_delta_per_feature"]
+        report_df = pd.DataFrame(
+            {
+                "feature": active_features,
+                "mean_abs_delta_normalized": mean_abs_delta,
+            }
+        ).sort_values(by="mean_abs_delta_normalized", ascending=False)
+        report_df["optimized"] = report_df["feature"].isin(selected_names)
+        report_path = os.path.join("tables", "optimized-inputs-summary.csv")
+        report_df.to_csv(report_path, index=False)
+        print(f"Saved summary: {report_path}")
+        print(report_df)
+
+        original_df = pd.DataFrame(
+            best_optimized_inputs_report["original_inputs"], columns=active_features
+        )
+        optimized_df = pd.DataFrame(
+            best_optimized_inputs_report["optimized_inputs"], columns=active_features
+        )
+        original_df.to_csv(os.path.join("tables", "optimized-inputs-before.csv"), index=False)
+        optimized_df.to_csv(os.path.join("tables", "optimized-inputs-after.csv"), index=False)
+
+        fig, ax = plt.subplots(figsize=(12, 6))
+        ax.bar(report_df["feature"], report_df["mean_abs_delta_normalized"])
+        ax.set_title("Mean absolute input change after input optimization")
+        ax.set_xlabel("Input feature")
+        ax.set_ylabel("Mean abs change (normalized)")
+        ax.tick_params(axis="x", rotation=45)
+        ax.grid(True, axis="y", alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(os.path.join("plots", "optimized-inputs-change-summary.png"), format="png")
+        plt.close(fig)
+        print("Saved plot: plots/optimized-inputs-change-summary.png")
+        print("==========================================================")
 
     print("\n\n")
     print("Plot was saved in plots folder")
