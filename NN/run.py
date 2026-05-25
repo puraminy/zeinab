@@ -616,8 +616,28 @@ def normalize(data, normalization_type):
 # Return predictions, MSE and R-Squared
 import torch.nn.init as init
 
+
+def parse_optimization_scope(answer):
+    """Return training optimization scope: weights, inputs, or both."""
+    normalized = (answer or "").strip().lower()
+    mapping = {
+        "": "weights",
+        "w": "weights",
+        "weight": "weights",
+        "weights": "weights",
+        "i": "inputs",
+        "input": "inputs",
+        "inputs": "inputs",
+        "b": "both",
+        "both": "both",
+        "wi": "both",
+        "iw": "both",
+    }
+    if normalized not in mapping:
+        raise ValueError("Invalid optimization scope. Use weights, inputs, or both.")
+    return mapping[normalized]
 def fit_model(model, X_train, X_test, y_train, y_test, 
-        num_epochs, display_steps=False, run=0):
+        num_epochs, display_steps=False, run=0, optimization_scope="weights"):
 
     set_model_seed(model_seed + run)
     scaler = StandardScaler()
@@ -649,12 +669,20 @@ def fit_model(model, X_train, X_test, y_train, y_test,
     model.apply(weights_init)
 
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    optimize_weights = optimization_scope in ("weights", "both")
+    optimize_inputs = optimization_scope in ("inputs", "both")
+
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate) if optimize_weights else None
+    train_inputs = X_train_normalized.clone().detach().requires_grad_(optimize_inputs)
+    input_optimizer = optim.Adam([train_inputs], lr=learning_rate) if optimize_inputs else None
 
     for epoch in range(num_epochs):
         model.train()
-        optimizer.zero_grad()
-        outputs = model(X_train_normalized)
+        if optimizer is not None:
+            optimizer.zero_grad()
+        if input_optimizer is not None:
+            input_optimizer.zero_grad()
+        outputs = model(train_inputs)
         
         # Check for NaN in outputs
         if torch.isnan(outputs).any():
@@ -669,11 +697,14 @@ def fit_model(model, X_train, X_test, y_train, y_test,
             return None, None, None, model
 
         loss.backward()
-        
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
-        optimizer.step()
+        if optimize_weights:
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+
+        if optimize_inputs:
+            input_optimizer.step()
 
         if (epoch + 1) % 10 == 0 and display_steps:
             print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item()}')
@@ -1145,7 +1176,7 @@ def forward_feature_selection(model_class, data, inputs, output, num_epochs, hid
 # Repeats an fit_model to get average of results
 def repeat_fit_model(model_class, num_repeats, 
         num_epochs, hidden_sizes, 
-        display_steps=False, features=None):
+        display_steps=False, features=None, optimization_scope="weights"):
     X_train, X_test, y_train, y_test = read_prep_data(features)
     r2_list = []
     mse_list = []
@@ -1174,6 +1205,7 @@ def repeat_fit_model(model_class, num_repeats,
                 num_epochs,
                 display_steps=display_steps,
                 run=i,
+                optimization_scope=optimization_scope,
             )
         else:
             model = model_class(model_seed + i)
@@ -1260,6 +1292,15 @@ answer = ask_with_default(
     "Enter epochs (e.g. '20 50 100', add 'cv' for cross-val early stop, or 0 to skip)",
     " ".join([str(e) for e in default_epochs]),
 )
+optimization_scope_answer = ask_with_default(
+    "Optimization scope for NN training [weights|inputs|both]",
+    "weights",
+)
+try:
+    optimization_scope = parse_optimization_scope(optimization_scope_answer)
+except ValueError as err:
+    print(err)
+    exit()
 list_epochs, use_cv_early_stop = parse_epochs_input(answer, default_epochs)
 if answer != "0":
     if not list_epochs and not use_cv_early_stop:
@@ -1379,7 +1420,7 @@ if answer != "0":
                 # Apply model on data for N repeats and get predictions, mse and r2
                 mean_r2, std_r2, mean_mse, model_best_preds, max_r2, r2_list, max_run = repeat_fit_model(
                     model_class,
-                    num_repeats, num_epochs, hidden_sizes, display_steps=True, features=active_features)
+                    num_repeats, num_epochs, hidden_sizes, display_steps=True, features=active_features, optimization_scope=optimization_scope)
 
                 # Keep best seed to generate the same predictions later
                 if mean_r2 is None:
