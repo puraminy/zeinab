@@ -97,6 +97,140 @@ def print_refinery_variable_groups():
     print_divider("=")
 
 
+def _format_industrial_value(value):
+    """Format values for compact refinery-control demo tables."""
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return f"{float(value):,.3f}"
+    try:
+        return f"{float(value):,.3f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _risk_badge(risk_level):
+    """Return a professional text badge for LOW/MEDIUM/HIGH risk."""
+    risk_level = str(risk_level).upper()
+    badges = {
+        "LOW": "LOW - Normal operating band",
+        "MEDIUM": "MEDIUM - Watch and correct",
+        "HIGH": "HIGH - Immediate operator attention",
+    }
+    return badges.get(risk_level, risk_level)
+
+
+def print_industrial_operator_demo(recommendation, input_features, output_features):
+    """Print a realistic step-by-step operator demonstration.
+
+    The section mirrors the requested plant workflow: current conditions are
+    entered, the AI predicts future sugar quality, the AI recommends controllable
+    variables, then it prints expected quality and risk in a readable shift-log
+    format.
+    """
+    current_inputs = recommendation.get("full_candidate_inputs", {}).copy()
+    current_settings = recommendation.get("current_settings", {})
+    for variable, value in current_settings.items():
+        current_inputs[variable] = value
+
+    recommended = recommendation.get("recommended_settings", {})
+    current_prediction = recommendation.get("current_prediction", {})
+    future_quality = recommendation.get("predicted_future_quality", {})
+    current_risk = recommendation.get("current_risk_prediction", {})
+    future_risk = recommendation.get("risk_prediction", {})
+    control_ranges = recommendation.get("control_ranges", {})
+
+    print("\n")
+    print_divider("=", 76)
+    print("INDUSTRIAL OPERATOR DEMO - AI REFINERY QUALITY ADVISOR")
+    print_divider("=", 76)
+    print("Scenario: shift operator enters live refinery conditions and requests an")
+    print("AI advisory for future sugar quality, optimal controllable set-points,")
+    print("expected future quality, and operating risk.")
+
+    print("\n1) OPERATOR ENTERS CURRENT REFINERY CONDITIONS")
+    print_divider("-", 76)
+    condition_rows = []
+    for feature in input_features:
+        if feature not in current_inputs:
+            continue
+        group = "Controllable" if feature in CONTROL_VARIABLES else "Early/process"
+        condition_rows.append([group, feature, _format_industrial_value(current_inputs[feature])])
+    print(tabulate(condition_rows, headers=["Group", "Variable", "Current value"], tablefmt="github"))
+
+    print("\n2) AI PREDICTS FUTURE SUGAR QUALITY AT CURRENT CONDITIONS")
+    print_divider("-", 76)
+    current_quality_rows = []
+    for target in output_features:
+        if target in current_prediction:
+            current_quality_rows.append([target, _format_industrial_value(current_prediction[target])])
+    print(tabulate(current_quality_rows, headers=["Future quality target", "Predicted value"], tablefmt="github"))
+    print(f"Current-condition risk: {_risk_badge(current_risk.get('risk_level', 'UNKNOWN'))}")
+
+    print("\n3) AI RECOMMENDS OPTIMAL CONTROLLABLE VARIABLES")
+    print_divider("-", 76)
+    recommendation_rows = []
+    for variable, recommended_value in recommended.items():
+        low, high = control_ranges.get(variable, (None, None))
+        safe_range = "N/A" if low is None or high is None else f"{low:.3f} - {high:.3f}"
+        current_value = current_settings.get(variable, current_inputs.get(variable))
+        delta = float(recommended_value) - float(current_value)
+        recommendation_rows.append([
+            variable,
+            _format_industrial_value(current_value),
+            _format_industrial_value(recommended_value),
+            f"{delta:+.3f}",
+            safe_range,
+        ])
+    print(tabulate(
+        recommendation_rows,
+        headers=["Control variable", "Current", "Recommended", "Change", "Search range"],
+        tablefmt="github",
+    ))
+
+    print("\n4) AI PRINTS EXPECTED FUTURE QUALITY AFTER RECOMMENDATION")
+    print_divider("-", 76)
+    future_quality_rows = []
+    for target in output_features:
+        if target not in future_quality:
+            continue
+        before = current_prediction.get(target)
+        after = future_quality[target]
+        improvement = "N/A" if before is None else f"{float(before) - float(after):+.3f}"
+        future_quality_rows.append([
+            target,
+            _format_industrial_value(before) if before is not None else "N/A",
+            _format_industrial_value(after),
+            improvement,
+        ])
+    print(tabulate(
+        future_quality_rows,
+        headers=["Future quality target", "Current prediction", "Expected with AI set-points", "Improvement"],
+        tablefmt="github",
+    ))
+
+    print("\n5) AI PRINTS INDUSTRIAL RISK LEVEL")
+    print_divider("-", 76)
+    print(f"Recommended-condition risk: {_risk_badge(future_risk.get('risk_level', 'UNKNOWN'))}")
+    risk_driver_rows = []
+    for item in future_risk.get("risk_drivers", []):
+        risk_driver_rows.append([
+            item.get("target"),
+            _format_industrial_value(item.get("predicted_value")),
+            item.get("risk_level"),
+            item.get("reason"),
+        ])
+    if risk_driver_rows:
+        print(tabulate(
+            risk_driver_rows,
+            headers=["Risk driver", "Predicted value", "Level", "Reason"],
+            tablefmt="github",
+        ))
+    print("Operator advisory:")
+    for warning in future_risk.get("operator_warnings", []):
+        print(f" - {warning}")
+    print(f"AI candidate simulations reviewed: {recommendation.get('searched_candidates', 'N/A')}")
+    print_divider("=", 76)
+
+
 def list_saved_runs(saved_dir=SAVED_RUNS_DIR):
     os.makedirs(saved_dir, exist_ok=True)
     saved = []
@@ -2096,20 +2230,12 @@ if answer != "0":
             recommendation_path = os.path.join("tables", "recommended-operating-conditions.json")
             with open(recommendation_path, "w", encoding="utf-8") as fp:
                 json.dump(recommendation, fp, indent=2, ensure_ascii=False, default=float)
-            print("================ Recommendation Engine ================")
-            print("Recommended controllable variables:")
-            print(recommendation["recommended_settings"])
-            print("Predicted future quality at recommendation:")
-            print(recommendation["predicted_future_quality"])
-            print("Industrial risk prediction:")
-            print(f"Risk level: {recommendation['risk_prediction']['risk_level']}")
-            print("Operator warnings:")
-            for warning in recommendation["risk_prediction"].get("operator_warnings", []):
-                print(f" - {warning}")
-            print(f"Current risk level: {recommendation['current_risk_prediction']['risk_level']}")
-            print(f"Searched candidates: {recommendation['searched_candidates']}")
+            print_industrial_operator_demo(
+                recommendation=recommendation,
+                input_features=active_features,
+                output_features=outputs,
+            )
             print(f"Saved recommendation: {recommendation_path}")
-            print("=======================================================")
         except (RecommendationError, ValueError, KeyError, TypeError) as err:
             print(f"Recommendation engine skipped: {err}")
 

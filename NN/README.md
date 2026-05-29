@@ -146,3 +146,15 @@ For every candidate set-point combination, the engine:
 8. returns the feasible candidate with the lowest objective score.
 
 The recommendation result now includes `risk_prediction`, `current_risk_prediction`, per-target risk drivers, and clear `operator_warnings`.  When `run.py` trains and saves a PyTorch checkpoint, it prints the recommended risk level and operator warnings, then writes the full recommendation to `tables/recommended-operating-conditions.json`.
+
+### Industrial operator demo output
+
+After the best PyTorch model is saved, `run.py` now prints a professional operator-demo section for plant demonstrations.  The report follows the live refinery workflow:
+
+1. the shift operator enters the current refinery conditions;
+2. the AI predicts future sugar quality at the current conditions;
+3. the AI recommends optimal controllable variables such as CO2 percentage, carbonated pH, and lime alkalinity;
+4. the AI prints the expected future quality after applying the recommended set-points;
+5. the AI prints the industrial risk level, risk drivers, and operator advisory messages.
+
+The demo is formatted as readable shift-log tables so that engineers and operators can compare current values, recommended set-points, expected quality improvement, safe search ranges, and the final `LOW`, `MEDIUM`, or `HIGH` risk level during an industrial presentation.

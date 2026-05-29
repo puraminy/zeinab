@@ -1,14 +1,8 @@
 diff --git a/NN/README.md b/NN/README.md
-index d6d900405e5dc26455a5ac15b4f0cf15befea54d..4a533b941094fbd4e85288fa2a4545ed6ffeb640 100644
+index 4a533b941094fbd4e85288fa2a4545ed6ffeb640..929014ddb64629736f15fd35c230525ce9f9da51 100644
 --- a/NN/README.md
 +++ b/NN/README.md
-@@ -118,30 +118,31 @@ The project now includes a prescriptive recommendation layer in `recommendation_
- * the trained input and output feature names;
- * optional historical input/target data to estimate realistic operating windows and quality-risk thresholds.
- 
- ### Controllable variables searched
- 
- By default the engine searches the requested industrial control levers:
+@@ -124,25 +124,37 @@ By default the engine searches the requested industrial control levers:
  
  * `co2_percent`
  * `carbonated_pH`
@@ -28,13 +22,21 @@ index d6d900405e5dc26455a5ac15b4f0cf15befea54d..4a533b941094fbd4e85288fa2a4545ed
  2. substitutes one candidate combination for CO2, pH, and lime alkalinity;
  3. calls the trained model to predict future sugar quality/color;
  4. scores the candidate by minimizing predicted future color/quality output;
--5. adds a quality-risk penalty when the predicted target is above the historical 80th percentile;
--6. adds a small movement and range-edge penalty so the recommendation avoids unnecessary set-point jumps and unrealistic boundary operation;
--7. returns the feasible candidate with the lowest objective score.
-+5. classifies predicted sugar quality as `LOW`, `MEDIUM`, or `HIGH` industrial risk using historical quality thresholds (`LOW` at or below P50, `MEDIUM` between P50 and P80, and `HIGH` above P80 when history is available);
-+6. adds explicit MEDIUM/HIGH risk penalties so recommendations favor safer predicted sugar quality, not only a lower raw objective score;
-+7. adds a small movement and range-edge penalty so the recommendation avoids unnecessary set-point jumps and unrealistic boundary operation;
-+8. returns the feasible candidate with the lowest objective score.
+ 5. classifies predicted sugar quality as `LOW`, `MEDIUM`, or `HIGH` industrial risk using historical quality thresholds (`LOW` at or below P50, `MEDIUM` between P50 and P80, and `HIGH` above P80 when history is available);
+ 6. adds explicit MEDIUM/HIGH risk penalties so recommendations favor safer predicted sugar quality, not only a lower raw objective score;
+ 7. adds a small movement and range-edge penalty so the recommendation avoids unnecessary set-point jumps and unrealistic boundary operation;
+ 8. returns the feasible candidate with the lowest objective score.
  
--When `run.py` trains and saves a PyTorch checkpoint, it also attempts to produce an example recommendation for the first prepared test condition and writes it to `tables/recommended-operating-conditions.json`.
-+The recommendation result now includes `risk_prediction`, `current_risk_prediction`, per-target risk drivers, and clear `operator_warnings`.  When `run.py` trains and saves a PyTorch checkpoint, it prints the recommended risk level and operator warnings, then writes the full recommendation to `tables/recommended-operating-conditions.json`.
+ The recommendation result now includes `risk_prediction`, `current_risk_prediction`, per-target risk drivers, and clear `operator_warnings`.  When `run.py` trains and saves a PyTorch checkpoint, it prints the recommended risk level and operator warnings, then writes the full recommendation to `tables/recommended-operating-conditions.json`.
++
++### Industrial operator demo output
++
++After the best PyTorch model is saved, `run.py` now prints a professional operator-demo section for plant demonstrations.  The report follows the live refinery workflow:
++
++1. the shift operator enters the current refinery conditions;
++2. the AI predicts future sugar quality at the current conditions;
++3. the AI recommends optimal controllable variables such as CO2 percentage, carbonated pH, and lime alkalinity;
++4. the AI prints the expected future quality after applying the recommended set-points;
++5. the AI prints the industrial risk level, risk drivers, and operator advisory messages.
++
++The demo is formatted as readable shift-log tables so that engineers and operators can compare current values, recommended set-points, expected quality improvement, safe search ranges, and the final `LOW`, `MEDIUM`, or `HIGH` risk level during an industrial presentation.
