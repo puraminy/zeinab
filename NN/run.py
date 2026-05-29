@@ -413,7 +413,7 @@ def prompt_temporal_options(input_features):
     print("\n".join([str(i) + ")" + name for i, name in enumerate(input_features, start=1)]))
     seq_answer = input("Sequential feature columns/groups [none]: ").strip()
     if not seq_answer:
-        return [], [], False, 1, False, False, False, False, 3
+        return [], [], False, 1, False, False, False, False, 3, False, 3
 
     try:
         sequential_features, sequential_groups = parse_sequential_layout(seq_answer, input_features, one_based=True)
@@ -434,10 +434,17 @@ def prompt_temporal_options(input_features):
         "Add normalized change features ((x_t - x_{t-1}) / x_{t-1})? [n]: "
     ).strip().lower() in ("y", "yes")
 
-    create_rnn_windows = input("Add lag-window features for sequential columns? [n]: ").strip().lower() in ("y", "yes")
+    create_rnn_windows = input("Add lag-window features for sequential columns (lag_1, lag_2, lag_3 by default)? [n]: ").strip().lower() in ("y", "yes")
     rnn_window_size = 3
     if create_rnn_windows:
-        rnn_window_size = int(input("Lag window size [3]: ").strip() or "3")
+        rnn_window_size = int(input("Largest lag step [3]: ").strip() or "3")
+
+    add_rolling_dynamics = input(
+        "Add rolling process dynamics (mean/std/range/slope)? [n]: "
+    ).strip().lower() in ("y", "yes")
+    rolling_window = 3
+    if add_rolling_dynamics:
+        rolling_window = int(input("Rolling dynamics window [3]: ").strip() or "3")
 
     return (
         sequential_features,
@@ -449,6 +456,8 @@ def prompt_temporal_options(input_features):
         add_normalized_change_features,
         create_rnn_windows,
         rnn_window_size,
+        add_rolling_dynamics,
+        rolling_window,
     )
 
 
@@ -690,6 +699,8 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
         add_normalized_change_features,
         create_rnn_windows,
         rnn_window_size,
+        add_rolling_dynamics,
+        rolling_window,
     ) = prompt_temporal_options(resolved_inputs)
 
     sync_prep_data_with_dataset(
@@ -706,6 +717,8 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
         add_normalized_change_features=add_normalized_change_features,
         create_rnn_windows=create_rnn_windows,
         rnn_window_size=rnn_window_size,
+        add_rolling_dynamics=add_rolling_dynamics,
+        rolling_window=rolling_window,
     )
 
     X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder=prep_folder)

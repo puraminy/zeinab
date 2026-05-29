@@ -82,3 +82,25 @@ The training workflow now follows industrial refinery timing.  Model inputs are 
 ### Leakage rule
 
 Only `EARLY_VARIABLES + CONTROL_VARIABLES` are allowed in `X_train` and `X_test`.  `TARGET_VARIABLES` and the selected output columns are blocked as model inputs, including during "all" input selection, automatic feature selection, saved-run reuse, and temporal feature engineering.  This prevents target leakage from future quality measurements into the model.
+
+## Sequence-aware industrial learning
+
+The refinery workflow can now convert safe early/control inputs into sequence-aware process features without using future target variables as inputs.
+
+### Added feature families
+
+1. **Lag-window features**
+   - For selected sequential columns, the data-preparation step can generate `__lag_1`, `__lag_2`, and `__lag_3` columns by default.
+   - These features expose the recent refinery history to tabular ANN and sklearn models, so the prediction can react to delayed effects from previous batches, shifts, or rows.
+
+2. **Time-sequence process features**
+   - Difference, ratio, acceleration, and normalized-change features describe how refinery variables move from one observation to the next.
+   - Ordered process groups also describe stage-to-stage movement between related process measurements, for example a downstream control value relative to an upstream value.
+
+3. **Rolling process dynamics features**
+   - Rolling mean, standard deviation, min, max, range, and slope features summarize short-window process stability and drift.
+   - These features help the model detect noisy operation, persistent trends, and abrupt transitions rather than treating every row as an independent static sample.
+
+### Why this improves refinery prediction
+
+Refinery quality is not only controlled by the current value of pH, brix, alkalinity, CO2, or color.  It is also affected by recent operating history, delayed residence-time effects, stage-to-stage movement, and whether the process is stable or drifting.  Lag-window, sequence, and rolling dynamics features therefore give ordinary feed-forward and tree models some of the context normally captured by sequence models, while preserving the existing leakage-prevention rule that targets and downstream quality outputs must not be used as inputs.

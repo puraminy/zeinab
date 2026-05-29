@@ -68,7 +68,7 @@ def resolve_data_columns(data, output_feature=None, input_features=None):
 
 
 TEMPORAL_DERIVED_COLUMN_PATTERN = re.compile(
-    r".+__(diff|lag|seqdiff|ratio|accel|normchg)_\d+$"
+    r".+__(diff|lag|seqdiff|ratio|accel|normchg|roll_mean|roll_std|roll_min|roll_max|roll_range|roll_slope)_\d+$"
 )
 
 
@@ -131,6 +131,176 @@ def read_prep_metadata(prep_folder="prep_data"):
 
 
 
+
+def _append_engineered_input(resolved_inputs, column_name):
+    """Append a generated feature name once while preserving feature order."""
+    if column_name not in resolved_inputs:
+        resolved_inputs.append(column_name)
+
+
+def _safe_divide(numerator, denominator):
+    """Divide process signals while treating zero denominators as missing values."""
+    return numerator / denominator.mask(denominator == 0)
+
+
+def _normalize_sequence_features(data, input_features, sequential_features=None, sequential_groups=None):
+    """Return valid row-sequence features and ordered process groups.
+
+    ``sequential_features`` represent observations that have meaningful previous
+    rows (batch/shift/day history). ``sequential_groups`` represent ordered
+    refinery process locations such as raw syrup -> carbonated -> sulphited.
+    Both are restricted to currently selected, refinery-safe model inputs.
+    """
+    resolved_input_set = set(input_features)
+    sequential_features = [
+        col for col in (sequential_features or [])
+        if col in data.columns and col in resolved_input_set
+    ]
+
+    normalized_groups = []
+    for group in sequential_groups or []:
+        normalized_group = [
+            col for col in group
+            if col in data.columns and col in resolved_input_set
+        ]
+        if len(normalized_group) >= 2:
+            normalized_groups.append(normalized_group)
+
+    return sequential_features, normalized_groups
+
+
+def create_lag_window_features(data, resolved_inputs, sequential_features, lag_steps=(1, 2, 3)):
+    """Create lag-window memory features such as ``feature__lag_1``.
+
+    Lag features let tabular models see recent process history. The default
+    window explicitly supports lag_1, lag_2, and lag_3 as requested.
+    """
+    transformed = data.copy()
+    for feature in sequential_features:
+        for lag_step in sorted({int(step) for step in lag_steps if int(step) > 0}):
+            lag_col = f"{feature}__lag_{lag_step}"
+            transformed[lag_col] = transformed[feature].shift(lag_step)
+            _append_engineered_input(resolved_inputs, lag_col)
+    return transformed, resolved_inputs
+
+
+def create_time_sequence_process_features(
+    data,
+    resolved_inputs,
+    sequential_features,
+    sequential_groups,
+    add_differences=False,
+    difference_order=1,
+    add_ratio_features=False,
+    add_acceleration_features=False,
+    add_normalized_change_features=False,
+):
+    """Create row-to-row and ordered-process sequence features.
+
+    The row-to-row features learn process movement over time. The grouped
+    features learn how a measurement changes between ordered refinery stages.
+    """
+    transformed = data.copy()
+
+    if add_differences:
+        if difference_order < 1:
+            raise ValueError("difference_order must be >= 1.")
+        for feature in sequential_features:
+            source_col = feature
+            for order in range(1, difference_order + 1):
+                diff_col = f"{feature}__diff_{order}"
+                transformed[diff_col] = transformed[source_col].diff()
+                source_col = diff_col
+                _append_engineered_input(resolved_inputs, diff_col)
+        for group in sequential_groups:
+            for prev_feature, curr_feature in zip(group[:-1], group[1:]):
+                source_col = transformed[curr_feature] - transformed[prev_feature]
+                for order in range(1, difference_order + 1):
+                    seq_diff_col = f"{curr_feature}__minus_{prev_feature}__seqdiff_{order}"
+                    transformed[seq_diff_col] = source_col if order == 1 else transformed[
+                        f"{curr_feature}__minus_{prev_feature}__seqdiff_{order - 1}"
+                    ].diff()
+                    _append_engineered_input(resolved_inputs, seq_diff_col)
+
+    if add_ratio_features:
+        for feature in sequential_features:
+            ratio_col = f"{feature}__ratio_1"
+            transformed[ratio_col] = _safe_divide(transformed[feature], transformed[feature].shift(1))
+            _append_engineered_input(resolved_inputs, ratio_col)
+        for group in sequential_groups:
+            for prev_feature, curr_feature in zip(group[:-1], group[1:]):
+                ratio_col = f"{curr_feature}__over_{prev_feature}__ratio_1"
+                transformed[ratio_col] = _safe_divide(transformed[curr_feature], transformed[prev_feature])
+                _append_engineered_input(resolved_inputs, ratio_col)
+
+    if add_acceleration_features:
+        for feature in sequential_features:
+            accel_col = f"{feature}__accel_1"
+            transformed[accel_col] = (
+                transformed[feature]
+                - 2 * transformed[feature].shift(1)
+                + transformed[feature].shift(2)
+            )
+            _append_engineered_input(resolved_inputs, accel_col)
+        for group in sequential_groups:
+            for prev2_feature, prev1_feature, curr_feature in zip(group[:-2], group[1:-1], group[2:]):
+                accel_col = f"{curr_feature}__accel_from_{prev1_feature}_{prev2_feature}__accel_1"
+                transformed[accel_col] = (
+                    transformed[curr_feature]
+                    - 2 * transformed[prev1_feature]
+                    + transformed[prev2_feature]
+                )
+                _append_engineered_input(resolved_inputs, accel_col)
+
+    if add_normalized_change_features:
+        for feature in sequential_features:
+            normchg_col = f"{feature}__normchg_1"
+            transformed[normchg_col] = _safe_divide(
+                transformed[feature] - transformed[feature].shift(1),
+                transformed[feature].shift(1),
+            )
+            _append_engineered_input(resolved_inputs, normchg_col)
+        for group in sequential_groups:
+            for prev_feature, curr_feature in zip(group[:-1], group[1:]):
+                normchg_col = f"{curr_feature}__minus_{prev_feature}__normchg_1"
+                transformed[normchg_col] = _safe_divide(
+                    transformed[curr_feature] - transformed[prev_feature],
+                    transformed[prev_feature],
+                )
+                _append_engineered_input(resolved_inputs, normchg_col)
+
+    return transformed, resolved_inputs
+
+
+def create_rolling_process_dynamics_features(data, resolved_inputs, sequential_features, rolling_window=3):
+    """Create rolling dynamics features over recent refinery observations."""
+    if rolling_window < 2:
+        raise ValueError("rolling_window must be >= 2.")
+
+    transformed = data.copy()
+    for feature in sequential_features:
+        rolling = transformed[feature].rolling(window=rolling_window, min_periods=rolling_window)
+
+        mean_col = f"{feature}__roll_mean_{rolling_window}"
+        std_col = f"{feature}__roll_std_{rolling_window}"
+        min_col = f"{feature}__roll_min_{rolling_window}"
+        max_col = f"{feature}__roll_max_{rolling_window}"
+        range_col = f"{feature}__roll_range_{rolling_window}"
+        slope_col = f"{feature}__roll_slope_{rolling_window}"
+
+        transformed[mean_col] = rolling.mean()
+        transformed[std_col] = rolling.std()
+        transformed[min_col] = rolling.min()
+        transformed[max_col] = rolling.max()
+        transformed[range_col] = transformed[max_col] - transformed[min_col]
+        transformed[slope_col] = (transformed[feature] - transformed[feature].shift(rolling_window - 1)) / (rolling_window - 1)
+
+        for column_name in (mean_col, std_col, min_col, max_col, range_col, slope_col):
+            _append_engineered_input(resolved_inputs, column_name)
+
+    return transformed, resolved_inputs
+
+
 def apply_temporal_feature_engineering(
     data,
     input_features,
@@ -143,107 +313,53 @@ def apply_temporal_feature_engineering(
     add_normalized_change_features=False,
     create_rnn_windows=False,
     rnn_window_size=3,
+    add_rolling_dynamics=False,
+    rolling_window=3,
 ):
-    """Create temporal columns (differences and lag windows) for selected features."""
+    """Create sequence-aware industrial learning columns for selected features."""
     transformed = data.copy()
     resolved_inputs = list(input_features)
 
     if not sequential_features and not sequential_groups:
         return transformed, resolved_inputs
 
-    sequential_features = [
-        col for col in sequential_features if col in transformed.columns and col in resolved_inputs
-    ]
-    normalized_groups = []
-    for group in sequential_groups or []:
-        normalized_group = [col for col in group if col in transformed.columns and col in resolved_inputs]
-        if len(normalized_group) >= 2:
-            normalized_groups.append(normalized_group)
+    sequential_features, normalized_groups = _normalize_sequence_features(
+        transformed,
+        resolved_inputs,
+        sequential_features=sequential_features,
+        sequential_groups=sequential_groups,
+    )
 
-    if add_differences:
-        if difference_order < 1:
-            raise ValueError("difference_order must be >= 1.")
-        for feature in sequential_features:
-            source_col = feature
-            for order in range(1, difference_order + 1):
-                diff_col = f"{feature}__diff_{order}"
-                transformed[diff_col] = transformed[source_col].diff()
-                source_col = diff_col
-                if diff_col not in resolved_inputs:
-                    resolved_inputs.append(diff_col)
-        for group in normalized_groups:
-            for prev_feature, curr_feature in zip(group[:-1], group[1:]):
-                source_col = transformed[curr_feature] - transformed[prev_feature]
-                for order in range(1, difference_order + 1):
-                    seq_diff_col = f"{curr_feature}__minus_{prev_feature}__seqdiff_{order}"
-                    transformed[seq_diff_col] = source_col if order == 1 else transformed[
-                        f"{curr_feature}__minus_{prev_feature}__seqdiff_{order - 1}"
-                    ].diff()
-                    if seq_diff_col not in resolved_inputs:
-                        resolved_inputs.append(seq_diff_col)
-
-    if add_ratio_features:
-        for feature in sequential_features:
-            ratio_col = f"{feature}__ratio_1"
-            transformed[ratio_col] = transformed[feature] / transformed[feature].shift(1)
-            if ratio_col not in resolved_inputs:
-                resolved_inputs.append(ratio_col)
-        for group in normalized_groups:
-            for prev_feature, curr_feature in zip(group[:-1], group[1:]):
-                ratio_col = f"{curr_feature}__over_{prev_feature}__ratio_1"
-                transformed[ratio_col] = transformed[curr_feature] / transformed[prev_feature]
-                if ratio_col not in resolved_inputs:
-                    resolved_inputs.append(ratio_col)
-
-    if add_acceleration_features:
-        for feature in sequential_features:
-            accel_col = f"{feature}__accel_1"
-            transformed[accel_col] = (
-                transformed[feature]
-                - 2 * transformed[feature].shift(1)
-                + transformed[feature].shift(2)
-            )
-            if accel_col not in resolved_inputs:
-                resolved_inputs.append(accel_col)
-        for group in normalized_groups:
-            for prev2_feature, prev1_feature, curr_feature in zip(group[:-2], group[1:-1], group[2:]):
-                accel_col = (
-                    f"{curr_feature}__accel_from_{prev1_feature}_{prev2_feature}__accel_1"
-                )
-                transformed[accel_col] = (
-                    transformed[curr_feature]
-                    - 2 * transformed[prev1_feature]
-                    + transformed[prev2_feature]
-                )
-                if accel_col not in resolved_inputs:
-                    resolved_inputs.append(accel_col)
-
-    if add_normalized_change_features:
-        for feature in sequential_features:
-            normchg_col = f"{feature}__normchg_1"
-            transformed[normchg_col] = (
-                transformed[feature] - transformed[feature].shift(1)
-            ) / transformed[feature].shift(1)
-            if normchg_col not in resolved_inputs:
-                resolved_inputs.append(normchg_col)
-        for group in normalized_groups:
-            for prev_feature, curr_feature in zip(group[:-1], group[1:]):
-                normchg_col = f"{curr_feature}__minus_{prev_feature}__normchg_1"
-                transformed[normchg_col] = (
-                    transformed[curr_feature] - transformed[prev_feature]
-                ) / transformed[prev_feature]
-                if normchg_col not in resolved_inputs:
-                    resolved_inputs.append(normchg_col)
+    transformed, resolved_inputs = create_time_sequence_process_features(
+        data=transformed,
+        resolved_inputs=resolved_inputs,
+        sequential_features=sequential_features,
+        sequential_groups=normalized_groups,
+        add_differences=add_differences,
+        difference_order=difference_order,
+        add_ratio_features=add_ratio_features,
+        add_acceleration_features=add_acceleration_features,
+        add_normalized_change_features=add_normalized_change_features,
+    )
 
     if create_rnn_windows:
-        if rnn_window_size < 2:
-            raise ValueError("rnn_window_size must be >= 2.")
-        for feature in sequential_features:
-            for lag_step in range(1, rnn_window_size):
-                lag_col = f"{feature}__lag_{lag_step}"
-                transformed[lag_col] = transformed[feature].shift(lag_step)
-                if lag_col not in resolved_inputs:
-                    resolved_inputs.append(lag_col)
+        if rnn_window_size < 1:
+            raise ValueError("rnn_window_size must be >= 1.")
+        lag_steps = range(1, rnn_window_size + 1)
+        transformed, resolved_inputs = create_lag_window_features(
+            transformed,
+            resolved_inputs,
+            sequential_features,
+            lag_steps=lag_steps,
+        )
+
+    if add_rolling_dynamics:
+        transformed, resolved_inputs = create_rolling_process_dynamics_features(
+            transformed,
+            resolved_inputs,
+            sequential_features,
+            rolling_window=rolling_window,
+        )
 
     transformed = transformed.dropna().reset_index(drop=True)
     return transformed, resolved_inputs
@@ -367,6 +483,8 @@ def prepare_data_from_file(
     add_normalized_change_features=False,
     create_rnn_windows=False,
     rnn_window_size=3,
+    add_rolling_dynamics=False,
+    rolling_window=3,
 ):
     """Prepare prep_data files directly from a raw CSV dataset."""
     if not os.path.isfile(dataset_path):
@@ -389,6 +507,8 @@ def prepare_data_from_file(
         add_normalized_change_features=add_normalized_change_features,
         create_rnn_windows=create_rnn_windows,
         rnn_window_size=rnn_window_size,
+        add_rolling_dynamics=add_rolling_dynamics,
+        rolling_window=rolling_window,
     )
     if requested_derived_features:
         missing_requested = [col for col in requested_derived_features if col not in data.columns]
@@ -420,6 +540,8 @@ def prepare_data_from_file(
         "add_normalized_change_features": bool(add_normalized_change_features),
         "create_rnn_windows": bool(create_rnn_windows),
         "rnn_window_size": int(rnn_window_size),
+        "add_rolling_dynamics": bool(add_rolling_dynamics),
+        "rolling_window": int(rolling_window),
         "test_size": float(test_size),
         "random_state": int(random_state),
         "refinery_variable_groups": refinery_variable_group_metadata(),
@@ -442,6 +564,8 @@ def sync_prep_data_with_dataset(
     add_normalized_change_features=False,
     create_rnn_windows=False,
     rnn_window_size=3,
+    add_rolling_dynamics=False,
+    rolling_window=3,
 ):
     """Rebuild prep_data if files are missing or schema differs from dataset."""
     if not os.path.isfile(dataset_path):
@@ -464,6 +588,8 @@ def sync_prep_data_with_dataset(
         add_normalized_change_features=add_normalized_change_features,
         create_rnn_windows=create_rnn_windows,
         rnn_window_size=rnn_window_size,
+        add_rolling_dynamics=add_rolling_dynamics,
+        rolling_window=rolling_window,
     )
     if requested_derived_features:
         input_features = list(base_input_features) + list(requested_derived_features)
@@ -514,6 +640,8 @@ def sync_prep_data_with_dataset(
             add_normalized_change_features=add_normalized_change_features,
             create_rnn_windows=create_rnn_windows,
             rnn_window_size=rnn_window_size,
+            add_rolling_dynamics=add_rolling_dynamics,
+            rolling_window=rolling_window,
         )
     else:
         print("prep_data matches dataset columns. Reusing existing files.")
