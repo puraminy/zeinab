@@ -59,3 +59,26 @@ pip install tabulate
 
 
 
+
+## Industrial refinery variable logic and target-leakage prevention
+
+The training workflow now follows industrial refinery timing.  Model inputs are no longer selected from every non-target column.  They are limited to variables that are known before downstream quality is measured, plus variables that plant operators can directly adjust.
+
+### Variable groups
+
+1. `EARLY_VARIABLES`
+   - Variables available early in the refinery process.
+   - Current columns: `sheet_name`, `shift_name`, `raw_sugar_color`, `raw_syrup_brix`, `raw_syrup_color`.
+
+2. `CONTROL_VARIABLES`
+   - Operator-adjustable process variables.
+   - Current columns: `lime_alkalinity`, `co2_percent`, `carbonated_alkalinity`, `carbonated_pH`.
+   - These represent controllable items such as lime/alkalinity, CO2, and pH control.
+
+3. `TARGET_VARIABLES`
+   - Future or downstream quality outputs.
+   - Current columns: `filtercake_moisture`, `filtercake_sugar`, `sweetwater_brix`, `sulphited_pH`, `sulphited_brix`, `sulphited_color`, `standard_liquor_pH`, `standard_liquor_brix`, `standard_liquor_color`, `white_total_points`.
+
+### Leakage rule
+
+Only `EARLY_VARIABLES + CONTROL_VARIABLES` are allowed in `X_train` and `X_test`.  `TARGET_VARIABLES` and the selected output columns are blocked as model inputs, including during "all" input selection, automatic feature selection, saved-run reuse, and temporal feature engineering.  This prevents target leakage from future quality measurements into the model.

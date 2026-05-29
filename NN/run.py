@@ -34,6 +34,15 @@ from read_data import (
     read_prep_metadata,
     save_data,
 )
+from refinery_variables import (
+    CONTROL_VARIABLES,
+    EARLY_VARIABLES,
+    TARGET_VARIABLES,
+    filter_allowed_model_inputs,
+    find_leakage_columns,
+    refinery_variable_group_metadata,
+    validate_model_inputs,
+)
 import inspect
 import models
 import json
@@ -71,6 +80,19 @@ def print_numbered_feature_list(title, features, color):
     print_divider("-")
     for idx, feature_name in enumerate(features, start=1):
         print(color_text(f"{idx:>2}. {feature_name}", color))
+    print_divider("=")
+
+
+def print_refinery_variable_groups():
+    """Explain the industrial refinery groups used to avoid leakage."""
+    print_divider("=")
+    print("Industrial refinery variable logic")
+    print_divider("-")
+    print("EARLY_VARIABLES (available early): " + ", ".join(EARLY_VARIABLES))
+    print("CONTROL_VARIABLES (operator-adjustable): " + ", ".join(CONTROL_VARIABLES))
+    print("TARGET_VARIABLES (future quality outputs; never inputs): " + ", ".join(TARGET_VARIABLES))
+    print("Input rule: models train only on EARLY_VARIABLES + CONTROL_VARIABLES.")
+    print("Leakage rule: selected outputs and TARGET_VARIABLES are blocked from X.")
     print_divider("=")
 
 
@@ -465,131 +487,162 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
 
     use_auto_feature_selection = False
     reused_prep_data = False
+    print_refinery_variable_groups()
 
     if prep_data_exists(prep_folder):
-        X_train_existing, _, y_train_existing, _ = read_prep_data(inputs=None, prep_folder=prep_folder)
-        existing_inputs = X_train_existing.columns.tolist()
-        existing_outputs = y_train_existing.columns.tolist()
-        print_numbered_feature_list("Prepared Input Features (prep_data)", existing_inputs, ANSI_GREEN)
-        print_numbered_feature_list("Prepared Output Features (prep_data)", existing_outputs, ANSI_BLUE)
-
-        metadata = read_prep_metadata(prep_folder)
-        if metadata:
-            print("prep_data metadata:")
-            print(metadata)
-
-        reuse_answer = input(
-            "Continue with these prepared inputs/outputs? [y]: "
-        ).strip().lower()
-        if reuse_answer in ("", "y", "yes"):
-            reused_prep_data = True
-            return X_train_existing, existing_outputs, use_auto_feature_selection, reused_prep_data
-
-        prep_train_path = os.path.join(prep_folder, "train.csv")
-        prep_test_path = os.path.join(prep_folder, "test.csv")
-
-        if os.path.isfile(prep_train_path) and os.path.isfile(prep_test_path):
-            print("\nYou chose not to continue with current prep_data selection.")
-            print("1) Reselect input features from prep_data/train.csv and prep_data/test.csv")
-            print("2) Rebuild prep_data from the raw dataset and select input/output/sequential options again")
-            reselect_mode = input("Choose option [1]: ").strip()
-            if reselect_mode in ("", "1"):
-                train_df = pd.read_csv(prep_train_path)
-                test_df = pd.read_csv(prep_test_path)
-                available_inputs = [col for col in train_df.columns if col not in existing_outputs]
-                if not available_inputs:
-                    print("No candidate input columns found in prep_data/train.csv. Falling back to full prepare flow.")
-                else:
-                    print_numbered_feature_list(
-                        "Available Input Features from prep_data/train.csv",
-                        available_inputs,
-                        ANSI_GREEN,
-                    )
-                    reselect_answer = input(
-                        "\nSelect one or several input features (indexes/ranges), or [all]: "
-                    ).strip()
-                    try:
-                        selected_input_features = parse_multi_select(
-                            reselect_answer,
-                            available_inputs,
-                            allow_all=True,
-                            one_based=True,
-                        )
-                    except ValueError as err:
-                        print(f"Invalid input feature selection: {err}")
-                        exit()
-
-                    resolved_inputs = (
-                        available_inputs if selected_input_features is None else selected_input_features
-                    )
-                    missing_inputs_in_test = [
-                        col for col in resolved_inputs if col not in test_df.columns
-                    ]
-                    if missing_inputs_in_test:
-                        print(
-                            "Selected inputs are missing from prep_data/test.csv: "
-                            + str(missing_inputs_in_test)
-                        )
-                        print("Please rebuild prep_data from the raw dataset.")
-                        exit()
-
-                    missing_outputs_in_test = [
-                        col for col in existing_outputs if col not in test_df.columns
-                    ]
-                    if missing_outputs_in_test:
-                        print(
-                            "Prepared output columns are missing from prep_data/test.csv: "
-                            + str(missing_outputs_in_test)
-                        )
-                        print("Please rebuild prep_data from the raw dataset.")
-                        exit()
-
-                    X_train_selected = train_df[resolved_inputs]
-                    X_test_selected = test_df[resolved_inputs]
-                    y_train_selected = train_df[existing_outputs]
-                    y_test_selected = test_df[existing_outputs]
-                    save_data(
-                        prep_folder,
-                        X_train_selected,
-                        X_test_selected,
-                        y_train_selected,
-                        y_test_selected,
-                        metadata=metadata,
-                    )
-                    print("prep_data updated with the newly selected input features.")
-                    reused_prep_data = True
-                    return (
-                        X_train_selected,
-                        existing_outputs,
-                        use_auto_feature_selection,
-                        reused_prep_data,
-                    )
-            elif reselect_mode == "2":
-                print("Preparing data again from the raw dataset...")
-            else:
-                print("Invalid choice. Preparing data again from the raw dataset...")
+        prep_x_train_path = os.path.join(prep_folder, "X_train.csv")
+        prep_y_train_path = os.path.join(prep_folder, "y_train.csv")
+        existing_all_inputs = pd.read_csv(prep_x_train_path, nrows=0).columns.tolist()
+        existing_outputs = pd.read_csv(prep_y_train_path, nrows=0).columns.tolist()
+        leaked_existing_inputs = find_leakage_columns(
+            existing_all_inputs, output_features=existing_outputs
+        )
+        if leaked_existing_inputs:
+            print(
+                "Existing prep_data contains future/disallowed inputs and will be rebuilt "
+                f"to prevent target leakage: {leaked_existing_inputs}"
+            )
         else:
-            print("prep_data/train.csv or prep_data/test.csv not found. Preparing data again from the raw dataset...")
+            X_train_existing, _, y_train_existing, _ = read_prep_data(inputs=None, prep_folder=prep_folder)
+            existing_inputs = X_train_existing.columns.tolist()
+            print_numbered_feature_list("Prepared Input Features (prep_data)", existing_inputs, ANSI_GREEN)
+            print_numbered_feature_list("Prepared Output Features (prep_data)", existing_outputs, ANSI_BLUE)
+
+            metadata = read_prep_metadata(prep_folder)
+            if metadata:
+                print("prep_data metadata:")
+                print(metadata)
+
+            reuse_answer = input(
+                "Continue with these prepared refinery-safe inputs/outputs? [y]: "
+            ).strip().lower()
+            if reuse_answer in ("", "y", "yes"):
+                reused_prep_data = True
+                return X_train_existing, existing_outputs, use_auto_feature_selection, reused_prep_data
+
+            prep_train_path = os.path.join(prep_folder, "train.csv")
+            prep_test_path = os.path.join(prep_folder, "test.csv")
+
+            if os.path.isfile(prep_train_path) and os.path.isfile(prep_test_path):
+                print("\nYou chose not to continue with current prep_data selection.")
+                print("1) Reselect input features from prep_data/train.csv and prep_data/test.csv")
+                print("2) Rebuild prep_data from the raw dataset and select input/output/sequential options again")
+                reselect_mode = input("Choose option [1]: ").strip()
+                if reselect_mode in ("", "1"):
+                    train_df = pd.read_csv(prep_train_path)
+                    test_df = pd.read_csv(prep_test_path)
+                    available_inputs = filter_allowed_model_inputs(
+                        train_df.columns, output_features=existing_outputs
+                    )
+                    if not available_inputs:
+                        print("No refinery-safe candidate input columns found. Falling back to full prepare flow.")
+                    else:
+                        print_numbered_feature_list(
+                            "Refinery-safe Input Features from prep_data/train.csv",
+                            available_inputs,
+                            ANSI_GREEN,
+                        )
+                        reselect_answer = input(
+                            "\nSelect one or several input features (indexes/ranges), or [all]: "
+                        ).strip()
+                        try:
+                            selected_input_features = parse_multi_select(
+                                reselect_answer,
+                                available_inputs,
+                                allow_all=True,
+                                one_based=True,
+                            )
+                        except ValueError as err:
+                            print(f"Invalid input feature selection: {err}")
+                            exit()
+
+                        resolved_inputs = (
+                            available_inputs if selected_input_features is None else selected_input_features
+                        )
+                        validate_model_inputs(resolved_inputs, output_features=existing_outputs)
+                        missing_inputs_in_test = [
+                            col for col in resolved_inputs if col not in test_df.columns
+                        ]
+                        if missing_inputs_in_test:
+                            print(
+                                "Selected inputs are missing from prep_data/test.csv: "
+                                + str(missing_inputs_in_test)
+                            )
+                            print("Please rebuild prep_data from the raw dataset.")
+                            exit()
+
+                        missing_outputs_in_test = [
+                            col for col in existing_outputs if col not in test_df.columns
+                        ]
+                        if missing_outputs_in_test:
+                            print(
+                                "Prepared output columns are missing from prep_data/test.csv: "
+                                + str(missing_outputs_in_test)
+                            )
+                            print("Please rebuild prep_data from the raw dataset.")
+                            exit()
+
+                        X_train_selected = train_df[resolved_inputs]
+                        X_test_selected = test_df[resolved_inputs]
+                        y_train_selected = train_df[existing_outputs]
+                        y_test_selected = test_df[existing_outputs]
+                        metadata = read_prep_metadata(prep_folder)
+                        if metadata:
+                            metadata["input_features"] = list(resolved_inputs)
+                            metadata["refinery_variable_groups"] = refinery_variable_group_metadata()
+                        save_data(
+                            prep_folder,
+                            X_train_selected,
+                            X_test_selected,
+                            y_train_selected,
+                            y_test_selected,
+                            metadata=metadata,
+                        )
+                        print("prep_data updated with the newly selected refinery-safe input features.")
+                        reused_prep_data = True
+                        return (
+                            X_train_selected,
+                            existing_outputs,
+                            use_auto_feature_selection,
+                            reused_prep_data,
+                        )
+                elif reselect_mode == "2":
+                    print("Preparing data again from the raw dataset...")
+                else:
+                    print("Invalid choice. Preparing data again from the raw dataset...")
+            else:
+                print("prep_data/train.csv or prep_data/test.csv not found. Preparing data again from the raw dataset...")
 
     data = pd.read_csv(dataset_path)
     print_selection_guide()
 
+    target_candidates = [col for col in data.columns if col in TARGET_VARIABLES]
+    output_options = target_candidates if target_candidates else data.columns.tolist()
+    print("\nFuture quality target candidates:")
+    print("\n".join([str(i) + ")" + name for i, name in enumerate(output_options, start=1)]))
     answer = input(
-        "\n".join([str(i) + ")" + name for i, name in enumerate(data.columns, start=1)])
-        + "\nSelect one or several output features (separated with space) [last column]:"
+        "Select one or several TARGET_VARIABLES/output features (indexes/ranges) [last target candidate]:"
     )
     try:
         selected_output_features = (
-            [data.columns[-1]]
+            [output_options[-1]]
             if not answer
-            else parse_multi_select(answer, data.columns.tolist(), allow_all=False, one_based=True)
+            else parse_multi_select(answer, output_options, allow_all=False, one_based=True)
         )
     except ValueError as err:
         print(f"Invalid output feature selection: {err}")
         exit()
 
-    available_input_features = [col for col in data.columns if col not in selected_output_features]
-    print("\nAvailable input features (output columns are excluded):")
+    available_input_features = filter_allowed_model_inputs(
+        data.columns, output_features=selected_output_features
+    )
+    if not available_input_features:
+        print(
+            "No EARLY_VARIABLES or CONTROL_VARIABLES were found in the dataset. "
+            "Cannot train without refinery-safe inputs."
+        )
+        exit()
+    print("\nAvailable model inputs (EARLY_VARIABLES + CONTROL_VARIABLES only):")
     print("\n".join([str(i) + ")" + name for i, name in enumerate(available_input_features, start=1)]))
 
     answer = input(
@@ -599,7 +652,7 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
     use_auto_feature_selection = answer.lower() == "auto"
     if use_auto_feature_selection:
         auto_pool_answer = input(
-            "Auto mode candidate pool [all] (use ! to exclude, e.g. !1 !3-5): "
+            "Auto mode candidate pool [all refinery-safe inputs] (use ! to exclude, e.g. !1 !3-5): "
         ).strip()
         try:
             selected_input_features = parse_multi_select(
@@ -626,6 +679,7 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
     resolved_inputs = (
         available_input_features if selected_input_features is None else selected_input_features
     )
+    validate_model_inputs(resolved_inputs, output_features=selected_output_features)
     (
         sequential_features,
         sequential_groups,
@@ -641,7 +695,7 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
     sync_prep_data_with_dataset(
         dataset_path=dataset_path,
         prep_folder=prep_folder,
-        input_features=selected_input_features,
+        input_features=resolved_inputs,
         output_feature=selected_output_features,
         sequential_features=sequential_features,
         sequential_groups=sequential_groups,
@@ -657,7 +711,6 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
     X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder=prep_folder)
     _ = (X_test, y_test)
     return X_train, y_train.columns.tolist(), use_auto_feature_selection, reused_prep_data
-
 
 def ask_with_default(prompt, default):
     answer = input(f"{prompt} [{default}]:").strip()

@@ -3,6 +3,11 @@ import json
 import re
 import pandas as pd
 from sklearn.model_selection import train_test_split
+from refinery_variables import (
+    filter_allowed_model_inputs,
+    refinery_variable_group_metadata,
+    validate_model_inputs,
+)
 
 ANSI_RED = "\033[91m"
 ANSI_YELLOW = "\033[93m"
@@ -33,17 +38,30 @@ def _normalize_output_features(output_feature, all_columns):
 
 
 def resolve_data_columns(data, output_feature=None, input_features=None):
-    """Resolve and validate target/input columns."""
+    """Resolve targets and enforce refinery-safe input columns."""
     output_features = _normalize_output_features(output_feature, data.columns)
 
     if input_features is None:
-        input_features = [col for col in data.columns if col not in output_features]
+        input_features = filter_allowed_model_inputs(
+            data.columns, output_features=output_features
+        )
+    else:
+        input_features = list(input_features)
 
     missing_inputs = [col for col in input_features if col not in data.columns]
     if missing_inputs:
         raise ValueError(
             f"Input columns not found in dataset: {missing_inputs}. "
             f"Available columns: {list(data.columns)}"
+        )
+
+    validate_model_inputs(input_features, output_features=output_features)
+
+    if len(input_features) == 0:
+        raise ValueError(
+            "No refinery-safe input columns were selected. Models may only use "
+            "EARLY_VARIABLES + CONTROL_VARIABLES; future quality variables are "
+            "blocked to prevent target leakage."
         )
 
     return output_features, input_features
@@ -380,6 +398,7 @@ def prepare_data_from_file(
                 f"Generated columns: {list(data.columns)}"
             )
         input_features = list(base_input_features) + list(requested_derived_features)
+    validate_model_inputs(input_features, output_features=output_features)
 
     X = data[input_features]
     y = data[output_features]
@@ -403,6 +422,7 @@ def prepare_data_from_file(
         "rnn_window_size": int(rnn_window_size),
         "test_size": float(test_size),
         "random_state": int(random_state),
+        "refinery_variable_groups": refinery_variable_group_metadata(),
     }
     save_data(prep_folder, X_train, X_test, y_train, y_test, metadata=metadata, after_prepare = True)
     return X_train, X_test, y_train, y_test
@@ -447,6 +467,7 @@ def sync_prep_data_with_dataset(
     )
     if requested_derived_features:
         input_features = list(base_input_features) + list(requested_derived_features)
+    validate_model_inputs(input_features, output_features=output_features)
 
     paths = prep_data_file_paths(prep_folder)
     expected_files = [paths["X_train"], paths["X_test"], paths["y_train"], paths["y_test"]]
@@ -528,6 +549,7 @@ def read_prep_data(inputs=None, prep_folder="prep_data"):
 
     if inputs is not None:
         print(f"Filtering inputs: {inputs}")
+        validate_model_inputs(inputs, output_features=y_train.columns.tolist())
         missing_inputs = [col for col in inputs if col not in X_train_full.columns]
         if missing_inputs:
             raise KeyError(
@@ -537,9 +559,18 @@ def read_prep_data(inputs=None, prep_folder="prep_data"):
         X_train = X_train_full[inputs]
         X_test = X_test_full[inputs]
     else:
-        print("No specific inputs provided; returning all columns.")
-        X_train = X_train_full
-        X_test = X_test_full
+        print("No specific inputs provided; returning all refinery-safe columns.")
+        safe_inputs = filter_allowed_model_inputs(
+            X_train_full.columns, output_features=y_train.columns.tolist()
+        )
+        validate_model_inputs(safe_inputs, output_features=y_train.columns.tolist())
+        if not safe_inputs:
+            raise ValueError(
+                "prep_data does not contain any refinery-safe model inputs. "
+                "Rebuild prep_data with EARLY_VARIABLES + CONTROL_VARIABLES."
+            )
+        X_train = X_train_full[safe_inputs]
+        X_test = X_test_full[safe_inputs]
 
     def _nan_report(df, name):
         nan_counts = df.isna().sum()

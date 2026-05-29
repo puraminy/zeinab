@@ -1,94 +1,484 @@
 diff --git a/NN/run.py b/NN/run.py
-index 563b8676429b44256bc9a20386e8c78d13bfd99c..1c2a74580ecffa668ac5b341528694dbfe4d7567 100644
+index 563b8676429b44256bc9a20386e8c78d13bfd99c..86bdacdf63ef995d16f82eae45b1ce36e5bd5492 100644
 --- a/NN/run.py
 +++ b/NN/run.py
-@@ -196,77 +196,80 @@ def normalize_hidden_size_groups(raw_groups, fallback_groups):
-         for group in raw_groups:
-             if isinstance(group, list):
-                 cleaned = [int(v) for v in group if str(v).isdigit() and int(v) > 0]
-                 if cleaned:
-                     parsed.append(cleaned)
-     return parsed if parsed else [list(group) for group in fallback_groups]
+@@ -12,90 +12,112 @@ from sklearn.ensemble import (
+     AdaBoostRegressor,
+     HistGradientBoostingRegressor,
+ )
+ from sklearn.neighbors import KNeighborsRegressor
+ from sklearn.svm import SVR
+ from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
+ from sklearn.tree import DecisionTreeRegressor
+ from sklearn.multioutput import MultiOutputRegressor
+ import pandas as pd
+ import numpy as np
+ import torch.nn as nn
+ import re
+ from sklearn.metrics import r2_score
+ from tabulate import tabulate
+ import os
+ from latex import *
+ from plot import *
+ from models import *
+ from read_data import (
+     read_prep_data,
+     sync_prep_data_with_dataset,
+     prep_data_exists,
+     read_prep_metadata,
+     save_data,
+ )
++from refinery_variables import (
++    CONTROL_VARIABLES,
++    EARLY_VARIABLES,
++    TARGET_VARIABLES,
++    filter_allowed_model_inputs,
++    find_leakage_columns,
++    refinery_variable_group_metadata,
++    validate_model_inputs,
++)
+ import inspect
+ import models
+ import json
+ import copy
+ from datetime import datetime
  
- list_epochs = [50, 100, 200, 300]
- best_epochs = 100 
+ try:
+     from xgboost import XGBRegressor
+ except ImportError:
+     XGBRegressor = None
  
- exp_df = pd.DataFrame()
+ try:
+     from lightgbm import LGBMRegressor
+ except ImportError:
+     LGBMRegressor = None
  
- num_repeats = 5
- # num_repeats shows the number of times to repeat the experiment to get its average values
- # changing model_seed generates different results for each run for each model
- # The same model_seed produces the same results in each run which is good for reporducability of experiments
- # Dont change it if you want to reproduce the same results
- data_seed = 123 # it is used for random_state of splitting data into source and train sets
- # changing it creates different source and train sets.
- # Since the number of data is low changing it can largely affect the results
- model_seed = 123 # it is used for random_state of models
- def set_model_seed(model_seed):
-     torch.manual_seed(model_seed)
-     np.random.seed(model_seed)
- 
--learning_rate = 0.001
-+learning_rate = 0.0005
- # Industrially conservative ANN weight learning rate. 0.05 was too aggressive
- # for a small, standardized tabular dataset and can overshoot narrow minima.
--input_learning_rate = 0.0001
-+input_learning_rate = 0.00005
- # Input optimization is more sensitive than weight optimization because it moves
- # the normalized training data directly, so keep it an order of magnitude lower.
- ann_weight_decay = 1e-4
- # L2 regularization reduces small-sample overfitting without increasing model size.
--early_stopping_patience = 25
-+early_stopping_patience = 20
- early_stopping_min_delta = 1e-4
- validation_fraction = 0.2
-+lr_plateau_patience = 8
-+lr_plateau_factor = 0.5
-+min_learning_rate = 1e-5
- max_gradient_norm = 0.5
--max_input_delta = 2.0
-+max_input_delta = 1.5
- # Conservative training guards for stable convergence on small industrial data.
- #hidden_size1 = 10
- hidden_size1 = 8
- hidden_size2 = 4
- 
- # the number of neurons in hidden layers
- 
- # https://alexlenail.me/NN-SVG/
- # use the site above to draw the following network
- #
- hidden_sizes = [8, 4]
- # nn.ReLU(), nn.Tanh(), nn.Identity()
- 
--list_hidden_sizes = [[4], [8], [8, 4], [12, 6]]
-+list_hidden_sizes = [[4], [6], [8], [8, 4]]
- normalization_type = "standard_scaler"
+ ANSI_RESET = "\033[0m"
+ ANSI_GREEN = "\033[92m"
+ ANSI_BLUE = "\033[94m"
+ SAVED_RUNS_DIR = "saved_runs"
+ CHECKPOINTS_DIR = "checkpoints"
  
  
- SKLEARN_MODEL_FACTORIES = {
-     "RandomForestRegressor": lambda seed: RandomForestRegressor(
-         n_estimators=300, random_state=seed
-     ),
-     "ExtraTreesRegressor": lambda seed: ExtraTreesRegressor(
-         n_estimators=300, random_state=seed
-     ),
-     "GradientBoostingRegressor": lambda seed: GradientBoostingRegressor(random_state=seed),
-     "GBMRegressor": lambda seed: GradientBoostingRegressor(random_state=seed),
-     "HistGradientBoostingRegressor": lambda seed: HistGradientBoostingRegressor(
-         random_state=seed
-     ),
-     "AdaBoostRegressor": lambda seed: AdaBoostRegressor(random_state=seed),
-     "DecisionTreeRegressor": lambda seed: DecisionTreeRegressor(random_state=seed),
-     "KNeighborsRegressor": lambda seed: KNeighborsRegressor(n_neighbors=5),
-     "SVR_RBF": lambda seed: SVR(kernel="rbf"),
-     "LinearRegression": lambda seed: LinearRegression(),
-     "Ridge": lambda seed: Ridge(random_state=seed),
-     "Lasso": lambda seed: Lasso(random_state=seed),
-     "ElasticNet": lambda seed: ElasticNet(random_state=seed),
- }
+ def color_text(text, color):
+     return f"{color}{text}{ANSI_RESET}"
  
-@@ -666,51 +669,53 @@ def parse_epochs_input(answer, default_epochs):
+ 
+ def print_divider(char="=", width=68):
+     print(char * width)
+ 
+ 
+ def print_numbered_feature_list(title, features, color):
+     print_divider("=")
+     print(title)
+     print_divider("-")
+     for idx, feature_name in enumerate(features, start=1):
+         print(color_text(f"{idx:>2}. {feature_name}", color))
+     print_divider("=")
+ 
+ 
++def print_refinery_variable_groups():
++    """Explain the industrial refinery groups used to avoid leakage."""
++    print_divider("=")
++    print("Industrial refinery variable logic")
++    print_divider("-")
++    print("EARLY_VARIABLES (available early): " + ", ".join(EARLY_VARIABLES))
++    print("CONTROL_VARIABLES (operator-adjustable): " + ", ".join(CONTROL_VARIABLES))
++    print("TARGET_VARIABLES (future quality outputs; never inputs): " + ", ".join(TARGET_VARIABLES))
++    print("Input rule: models train only on EARLY_VARIABLES + CONTROL_VARIABLES.")
++    print("Leakage rule: selected outputs and TARGET_VARIABLES are blocked from X.")
++    print_divider("=")
++
++
+ def list_saved_runs(saved_dir=SAVED_RUNS_DIR):
+     os.makedirs(saved_dir, exist_ok=True)
+     saved = []
+     for file_name in sorted(os.listdir(saved_dir)):
+         if not file_name.endswith(".json"):
+             continue
+         path = os.path.join(saved_dir, file_name)
+         try:
+             with open(path, "r", encoding="utf-8") as fp:
+                 payload = json.load(fp)
+             payload["_path"] = path
+             saved.append(payload)
+         except (OSError, json.JSONDecodeError):
+             continue
+     return saved
+ 
+ 
+ def prompt_saved_run_choice():
+     while True:
+         saved = list_saved_runs()
+         if not saved:
+             return None, False
+         print("\nSaved runs:")
+         table_rows = []
+         for idx, run in enumerate(saved, start=1):
+@@ -440,244 +462,275 @@ def parse_sequential_layout(answer, options, one_based=False):
+     bracket_groups = re.findall(r"[\[\(]([^\]\)]+)[\]\)]", answer)
+     raw_groups = bracket_groups if bracket_groups else [item.strip() for item in answer.split(",") if item.strip()]
+ 
+     for raw_group in raw_groups:
+         normalized = raw_group.replace(">", " ")
+         group_values = parse_multi_select(normalized, options, allow_all=False, one_based=one_based)
+         if len(group_values) < 2:
+             raise ValueError("Each sequential group must contain at least two columns.")
+         groups.append(group_values)
+ 
+     flat_features = []
+     for group in groups:
+         for feature in group:
+             if feature not in flat_features:
+                 flat_features.append(feature)
+     return flat_features, groups
+ 
+ 
+ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", prep_folder="prep_data"):
+     print("====================================")
+     print("DATASET PATH: " + dataset_path)
+     print("====================================")
+ 
+     use_auto_feature_selection = False
+     reused_prep_data = False
++    print_refinery_variable_groups()
+ 
+     if prep_data_exists(prep_folder):
+-        X_train_existing, _, y_train_existing, _ = read_prep_data(inputs=None, prep_folder=prep_folder)
+-        existing_inputs = X_train_existing.columns.tolist()
+-        existing_outputs = y_train_existing.columns.tolist()
+-        print_numbered_feature_list("Prepared Input Features (prep_data)", existing_inputs, ANSI_GREEN)
+-        print_numbered_feature_list("Prepared Output Features (prep_data)", existing_outputs, ANSI_BLUE)
+-
+-        metadata = read_prep_metadata(prep_folder)
+-        if metadata:
+-            print("prep_data metadata:")
+-            print(metadata)
+-
+-        reuse_answer = input(
+-            "Continue with these prepared inputs/outputs? [y]: "
+-        ).strip().lower()
+-        if reuse_answer in ("", "y", "yes"):
+-            reused_prep_data = True
+-            return X_train_existing, existing_outputs, use_auto_feature_selection, reused_prep_data
+-
+-        prep_train_path = os.path.join(prep_folder, "train.csv")
+-        prep_test_path = os.path.join(prep_folder, "test.csv")
+-
+-        if os.path.isfile(prep_train_path) and os.path.isfile(prep_test_path):
+-            print("\nYou chose not to continue with current prep_data selection.")
+-            print("1) Reselect input features from prep_data/train.csv and prep_data/test.csv")
+-            print("2) Rebuild prep_data from the raw dataset and select input/output/sequential options again")
+-            reselect_mode = input("Choose option [1]: ").strip()
+-            if reselect_mode in ("", "1"):
+-                train_df = pd.read_csv(prep_train_path)
+-                test_df = pd.read_csv(prep_test_path)
+-                available_inputs = [col for col in train_df.columns if col not in existing_outputs]
+-                if not available_inputs:
+-                    print("No candidate input columns found in prep_data/train.csv. Falling back to full prepare flow.")
+-                else:
+-                    print_numbered_feature_list(
+-                        "Available Input Features from prep_data/train.csv",
+-                        available_inputs,
+-                        ANSI_GREEN,
++        prep_x_train_path = os.path.join(prep_folder, "X_train.csv")
++        prep_y_train_path = os.path.join(prep_folder, "y_train.csv")
++        existing_all_inputs = pd.read_csv(prep_x_train_path, nrows=0).columns.tolist()
++        existing_outputs = pd.read_csv(prep_y_train_path, nrows=0).columns.tolist()
++        leaked_existing_inputs = find_leakage_columns(
++            existing_all_inputs, output_features=existing_outputs
++        )
++        if leaked_existing_inputs:
++            print(
++                "Existing prep_data contains future/disallowed inputs and will be rebuilt "
++                f"to prevent target leakage: {leaked_existing_inputs}"
++            )
++        else:
++            X_train_existing, _, y_train_existing, _ = read_prep_data(inputs=None, prep_folder=prep_folder)
++            existing_inputs = X_train_existing.columns.tolist()
++            print_numbered_feature_list("Prepared Input Features (prep_data)", existing_inputs, ANSI_GREEN)
++            print_numbered_feature_list("Prepared Output Features (prep_data)", existing_outputs, ANSI_BLUE)
++
++            metadata = read_prep_metadata(prep_folder)
++            if metadata:
++                print("prep_data metadata:")
++                print(metadata)
++
++            reuse_answer = input(
++                "Continue with these prepared refinery-safe inputs/outputs? [y]: "
++            ).strip().lower()
++            if reuse_answer in ("", "y", "yes"):
++                reused_prep_data = True
++                return X_train_existing, existing_outputs, use_auto_feature_selection, reused_prep_data
++
++            prep_train_path = os.path.join(prep_folder, "train.csv")
++            prep_test_path = os.path.join(prep_folder, "test.csv")
++
++            if os.path.isfile(prep_train_path) and os.path.isfile(prep_test_path):
++                print("\nYou chose not to continue with current prep_data selection.")
++                print("1) Reselect input features from prep_data/train.csv and prep_data/test.csv")
++                print("2) Rebuild prep_data from the raw dataset and select input/output/sequential options again")
++                reselect_mode = input("Choose option [1]: ").strip()
++                if reselect_mode in ("", "1"):
++                    train_df = pd.read_csv(prep_train_path)
++                    test_df = pd.read_csv(prep_test_path)
++                    available_inputs = filter_allowed_model_inputs(
++                        train_df.columns, output_features=existing_outputs
+                     )
+-                    reselect_answer = input(
+-                        "\nSelect one or several input features (indexes/ranges), or [all]: "
+-                    ).strip()
+-                    try:
+-                        selected_input_features = parse_multi_select(
+-                            reselect_answer,
++                    if not available_inputs:
++                        print("No refinery-safe candidate input columns found. Falling back to full prepare flow.")
++                    else:
++                        print_numbered_feature_list(
++                            "Refinery-safe Input Features from prep_data/train.csv",
+                             available_inputs,
+-                            allow_all=True,
+-                            one_based=True,
++                            ANSI_GREEN,
+                         )
+-                    except ValueError as err:
+-                        print(f"Invalid input feature selection: {err}")
+-                        exit()
+-
+-                    resolved_inputs = (
+-                        available_inputs if selected_input_features is None else selected_input_features
+-                    )
+-                    missing_inputs_in_test = [
+-                        col for col in resolved_inputs if col not in test_df.columns
+-                    ]
+-                    if missing_inputs_in_test:
+-                        print(
+-                            "Selected inputs are missing from prep_data/test.csv: "
+-                            + str(missing_inputs_in_test)
++                        reselect_answer = input(
++                            "\nSelect one or several input features (indexes/ranges), or [all]: "
++                        ).strip()
++                        try:
++                            selected_input_features = parse_multi_select(
++                                reselect_answer,
++                                available_inputs,
++                                allow_all=True,
++                                one_based=True,
++                            )
++                        except ValueError as err:
++                            print(f"Invalid input feature selection: {err}")
++                            exit()
++
++                        resolved_inputs = (
++                            available_inputs if selected_input_features is None else selected_input_features
+                         )
+-                        print("Please rebuild prep_data from the raw dataset.")
+-                        exit()
+-
+-                    missing_outputs_in_test = [
+-                        col for col in existing_outputs if col not in test_df.columns
+-                    ]
+-                    if missing_outputs_in_test:
+-                        print(
+-                            "Prepared output columns are missing from prep_data/test.csv: "
+-                            + str(missing_outputs_in_test)
++                        validate_model_inputs(resolved_inputs, output_features=existing_outputs)
++                        missing_inputs_in_test = [
++                            col for col in resolved_inputs if col not in test_df.columns
++                        ]
++                        if missing_inputs_in_test:
++                            print(
++                                "Selected inputs are missing from prep_data/test.csv: "
++                                + str(missing_inputs_in_test)
++                            )
++                            print("Please rebuild prep_data from the raw dataset.")
++                            exit()
++
++                        missing_outputs_in_test = [
++                            col for col in existing_outputs if col not in test_df.columns
++                        ]
++                        if missing_outputs_in_test:
++                            print(
++                                "Prepared output columns are missing from prep_data/test.csv: "
++                                + str(missing_outputs_in_test)
++                            )
++                            print("Please rebuild prep_data from the raw dataset.")
++                            exit()
++
++                        X_train_selected = train_df[resolved_inputs]
++                        X_test_selected = test_df[resolved_inputs]
++                        y_train_selected = train_df[existing_outputs]
++                        y_test_selected = test_df[existing_outputs]
++                        metadata = read_prep_metadata(prep_folder)
++                        if metadata:
++                            metadata["input_features"] = list(resolved_inputs)
++                            metadata["refinery_variable_groups"] = refinery_variable_group_metadata()
++                        save_data(
++                            prep_folder,
++                            X_train_selected,
++                            X_test_selected,
++                            y_train_selected,
++                            y_test_selected,
++                            metadata=metadata,
+                         )
+-                        print("Please rebuild prep_data from the raw dataset.")
+-                        exit()
+-
+-                    X_train_selected = train_df[resolved_inputs]
+-                    X_test_selected = test_df[resolved_inputs]
+-                    y_train_selected = train_df[existing_outputs]
+-                    y_test_selected = test_df[existing_outputs]
+-                    save_data(
+-                        prep_folder,
+-                        X_train_selected,
+-                        X_test_selected,
+-                        y_train_selected,
+-                        y_test_selected,
+-                        metadata=metadata,
+-                    )
+-                    print("prep_data updated with the newly selected input features.")
+-                    reused_prep_data = True
+-                    return (
+-                        X_train_selected,
+-                        existing_outputs,
+-                        use_auto_feature_selection,
+-                        reused_prep_data,
+-                    )
+-            elif reselect_mode == "2":
+-                print("Preparing data again from the raw dataset...")
++                        print("prep_data updated with the newly selected refinery-safe input features.")
++                        reused_prep_data = True
++                        return (
++                            X_train_selected,
++                            existing_outputs,
++                            use_auto_feature_selection,
++                            reused_prep_data,
++                        )
++                elif reselect_mode == "2":
++                    print("Preparing data again from the raw dataset...")
++                else:
++                    print("Invalid choice. Preparing data again from the raw dataset...")
+             else:
+-                print("Invalid choice. Preparing data again from the raw dataset...")
+-        else:
+-            print("prep_data/train.csv or prep_data/test.csv not found. Preparing data again from the raw dataset...")
++                print("prep_data/train.csv or prep_data/test.csv not found. Preparing data again from the raw dataset...")
+ 
+     data = pd.read_csv(dataset_path)
+     print_selection_guide()
+ 
++    target_candidates = [col for col in data.columns if col in TARGET_VARIABLES]
++    output_options = target_candidates if target_candidates else data.columns.tolist()
++    print("\nFuture quality target candidates:")
++    print("\n".join([str(i) + ")" + name for i, name in enumerate(output_options, start=1)]))
+     answer = input(
+-        "\n".join([str(i) + ")" + name for i, name in enumerate(data.columns, start=1)])
+-        + "\nSelect one or several output features (separated with space) [last column]:"
++        "Select one or several TARGET_VARIABLES/output features (indexes/ranges) [last target candidate]:"
+     )
+     try:
+         selected_output_features = (
+-            [data.columns[-1]]
++            [output_options[-1]]
+             if not answer
+-            else parse_multi_select(answer, data.columns.tolist(), allow_all=False, one_based=True)
++            else parse_multi_select(answer, output_options, allow_all=False, one_based=True)
+         )
+     except ValueError as err:
+         print(f"Invalid output feature selection: {err}")
+         exit()
+ 
+-    available_input_features = [col for col in data.columns if col not in selected_output_features]
+-    print("\nAvailable input features (output columns are excluded):")
++    available_input_features = filter_allowed_model_inputs(
++        data.columns, output_features=selected_output_features
++    )
++    if not available_input_features:
++        print(
++            "No EARLY_VARIABLES or CONTROL_VARIABLES were found in the dataset. "
++            "Cannot train without refinery-safe inputs."
++        )
++        exit()
++    print("\nAvailable model inputs (EARLY_VARIABLES + CONTROL_VARIABLES only):")
+     print("\n".join([str(i) + ")" + name for i, name in enumerate(available_input_features, start=1)]))
+ 
+     answer = input(
+         "\nSelect one or several input features (indexes/ranges), [all], or [auto]: "
+     ).strip()
+ 
+     use_auto_feature_selection = answer.lower() == "auto"
+     if use_auto_feature_selection:
+         auto_pool_answer = input(
+-            "Auto mode candidate pool [all] (use ! to exclude, e.g. !1 !3-5): "
++            "Auto mode candidate pool [all refinery-safe inputs] (use ! to exclude, e.g. !1 !3-5): "
+         ).strip()
+         try:
+             selected_input_features = parse_multi_select(
+                 auto_pool_answer,
+                 available_input_features,
+                 allow_all=True,
+                 one_based=True,
+             )
+         except ValueError as err:
+             print(f"Invalid auto candidate selection: {err}")
+             exit()
+     else:
+         try:
+             selected_input_features = parse_multi_select(
+                 answer,
+                 available_input_features,
+                 allow_all=True,
+                 one_based=True,
+             )
+         except ValueError as err:
+             print(f"Invalid input feature selection: {err}")
+             exit()
+ 
+     resolved_inputs = (
+         available_input_features if selected_input_features is None else selected_input_features
+     )
++    validate_model_inputs(resolved_inputs, output_features=selected_output_features)
+     (
+         sequential_features,
+         sequential_groups,
+         add_differences,
+         difference_order,
+         add_ratio_features,
+         add_acceleration_features,
+         add_normalized_change_features,
+         create_rnn_windows,
+         rnn_window_size,
+     ) = prompt_temporal_options(resolved_inputs)
+ 
+     sync_prep_data_with_dataset(
+         dataset_path=dataset_path,
+         prep_folder=prep_folder,
+-        input_features=selected_input_features,
++        input_features=resolved_inputs,
+         output_feature=selected_output_features,
+         sequential_features=sequential_features,
+         sequential_groups=sequential_groups,
+         add_differences=add_differences,
+         difference_order=difference_order,
+         add_ratio_features=add_ratio_features,
+         add_acceleration_features=add_acceleration_features,
+         add_normalized_change_features=add_normalized_change_features,
+         create_rnn_windows=create_rnn_windows,
+         rnn_window_size=rnn_window_size,
+     )
+ 
+     X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder=prep_folder)
+     _ = (X_test, y_test)
+     return X_train, y_train.columns.tolist(), use_auto_feature_selection, reused_prep_data
+ 
+-
+ def ask_with_default(prompt, default):
+     answer = input(f"{prompt} [{default}]:").strip()
+     return answer if answer else str(default)
+ 
+ 
+ def parse_epochs_input(answer, default_epochs):
+     """Parse epochs input and detect optional CV early-stop mode."""
      text = answer.strip().lower()
      if text == "0":
          return [], False
@@ -107,154 +497,3 @@ index 563b8676429b44256bc9a20386e8c78d13bfd99c..1c2a74580ecffa668ac5b341528694db
          parsed_epochs = list(default_epochs)
      return sorted(set(parsed_epochs)), use_cv_early_stop
  
- 
- 
- def print_ann_training_robustness_notes():
-     """Explain the safeguards used for neural-network training."""
-     print("\nANN industrial robustness safeguards:")
-     print(
-         f"- learning_rate={learning_rate}: conservative AdamW step size reduces "
--        "overshoot and run-to-run volatility on standardized tabular data."
-+        "overshoot and run-to-run volatility on standardized tabular data; "
-+        f"ReduceLROnPlateau halves it after {lr_plateau_patience} flat checks "
-+        f"down to {min_learning_rate}."
-     )
-     print(
-         f"- input_learning_rate={input_learning_rate}: input optimization moves "
-         "data directly, so a smaller step prevents unrealistic optimized inputs."
-     )
-     print(
-         f"- validation_fraction={validation_fraction}, patience={early_stopping_patience}: "
-         "early stopping monitors held-out training data and restores the best weights, "
-         "which limits memorization on the ~174-row dataset."
-     )
-     print(
-         f"- ann_weight_decay={ann_weight_decay}: L2 regularization discourages oversized "
-         "weights and improves generalization without adding model complexity."
-     )
-     print(
-         f"- max_gradient_norm={max_gradient_norm}, max_input_delta={max_input_delta}: "
-         "gradient and input-update bounds prevent unstable convergence and non-physical "
-         "input drift."
-     )
-     print(
-         f"- hidden size candidates={list_hidden_sizes}: small candidate networks keep "
-         "capacity proportional to a small industrial dataset."
-     )
- 
- def infer_selected_features_from_table(table, fallback_features):
-@@ -878,50 +883,60 @@ def fit_model(model, X_train, X_test, y_train, y_test,
-                 init.constant_(m.bias.data, 0)
- 
-     loaded_pretrained_weights = False
-     if pretrained_state_dict_path and os.path.isfile(pretrained_state_dict_path):
-         try:
-             state_dict = torch.load(pretrained_state_dict_path, map_location="cpu")
-             model.load_state_dict(state_dict)
-             loaded_pretrained_weights = True
-             print(f"Loaded pretrained weights from: {pretrained_state_dict_path}")
-         except Exception as err:
-             print(f"Could not load pretrained weights ({err}). Reinitializing weights.")
-     if not loaded_pretrained_weights:
-         model.apply(weights_init)
- 
-     criterion = nn.MSELoss()
-     optimize_weights = optimization_scope in ("weights", "both")
-     optimize_inputs = optimization_scope in ("inputs", "both")
- 
-     optimizer = (
-         optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=ann_weight_decay)
-         if optimize_weights else None
-     )
-     original_train_inputs = X_fit_normalized.clone().detach()
-     train_inputs = X_fit_normalized.clone().detach().requires_grad_(optimize_inputs)
-     input_optimizer = optim.Adam([train_inputs], lr=input_learning_rate) if optimize_inputs else None
-+    weight_scheduler = (
-+        optim.lr_scheduler.ReduceLROnPlateau(
-+            optimizer,
-+            mode="min",
-+            factor=lr_plateau_factor,
-+            patience=lr_plateau_patience,
-+            min_lr=min_learning_rate,
-+        )
-+        if optimizer is not None else None
-+    )
- 
-     best_monitor_loss = float("inf")
-     best_epoch = 0
-     best_state_dict = copy.deepcopy(model.state_dict())
-     best_train_inputs = train_inputs.detach().clone()
-     epochs_without_improvement = 0
- 
-     for epoch in range(num_epochs):
-         model.train()
-         if optimizer is not None:
-             optimizer.zero_grad()
-         if input_optimizer is not None:
-             input_optimizer.zero_grad()
-         outputs = model(train_inputs)
- 
-         if not torch.isfinite(outputs).all():
-             print(f"Non-finite outputs detected at epoch {epoch + 1}")
-             return None, None, None, model, None
- 
-         loss = criterion(outputs, y_fit_normalized)
- 
-         if not torch.isfinite(loss):
-             print(f"Non-finite loss detected at epoch {epoch + 1}")
-             return None, None, None, model, None
- 
-@@ -934,50 +949,53 @@ def fit_model(model, X_train, X_test, y_train, y_test,
- 
-         if optimize_weights:
-             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_gradient_norm)
-             optimizer.step()
- 
-         if optimize_inputs:
-             torch.nn.utils.clip_grad_norm_([train_inputs], max_norm=max_gradient_norm)
-             input_optimizer.step()
-             with torch.no_grad():
-                 lower_bound = original_train_inputs - max_input_delta
-                 upper_bound = original_train_inputs + max_input_delta
-                 train_inputs.copy_(torch.max(torch.min(train_inputs, upper_bound), lower_bound))
- 
-         model.eval()
-         with torch.no_grad():
-             if X_val_normalized is not None:
-                 monitor_outputs = model(X_val_normalized)
-                 monitor_loss = criterion(monitor_outputs, y_val_normalized).item()
-             else:
-                 monitor_loss = loss.item()
- 
-         if not np.isfinite(monitor_loss):
-             print(f"Non-finite validation loss detected at epoch {epoch + 1}")
-             return None, None, None, model, None
- 
-+        if weight_scheduler is not None:
-+            weight_scheduler.step(monitor_loss)
-+
-         if monitor_loss < best_monitor_loss - early_stopping_min_delta:
-             best_monitor_loss = monitor_loss
-             best_epoch = epoch + 1
-             best_state_dict = copy.deepcopy(model.state_dict())
-             best_train_inputs = train_inputs.detach().clone()
-             epochs_without_improvement = 0
-         else:
-             epochs_without_improvement += 1
- 
-         if (epoch + 1) % 10 == 0 and display_steps:
-             print(
-                 f'Epoch [{epoch + 1}/{num_epochs}], '
-                 f'Train Loss: {loss.item():.6f}, Monitor Loss: {monitor_loss:.6f}'
-             )
- 
-         if epochs_without_improvement >= early_stopping_patience:
-             if display_steps:
-                 print(
-                     f"Early stopping at epoch {epoch + 1}; "
-                     f"best epoch {best_epoch} with monitor loss {best_monitor_loss:.6f}"
-                 )
-             break
- 
-     model.load_state_dict(best_state_dict)
-     train_inputs = best_train_inputs
