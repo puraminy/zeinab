@@ -43,6 +43,7 @@ from refinery_variables import (
     refinery_variable_group_metadata,
     validate_model_inputs,
 )
+from recommendation_engine import RecommendationError, recommend_operating_conditions
 import inspect
 import models
 import json
@@ -2082,6 +2083,29 @@ if answer != "0":
         )
         torch.save(best_model_instance.state_dict(), weights_path)
         print(f"Saved model checkpoint: {weights_path}")
+
+        try:
+            recommendation = recommend_operating_conditions(
+                current_conditions=X_test.iloc[0],
+                trained_model=best_model_instance,
+                input_features=active_features,
+                output_features=outputs,
+                historical_inputs=X_train,
+                historical_targets=y_train,
+            )
+            recommendation_path = os.path.join("tables", "recommended-operating-conditions.json")
+            with open(recommendation_path, "w", encoding="utf-8") as fp:
+                json.dump(recommendation, fp, indent=2, ensure_ascii=False, default=float)
+            print("================ Recommendation Engine ================")
+            print("Recommended controllable variables:")
+            print(recommendation["recommended_settings"])
+            print("Predicted future quality at recommendation:")
+            print(recommendation["predicted_future_quality"])
+            print(f"Searched candidates: {recommendation['searched_candidates']}")
+            print(f"Saved recommendation: {recommendation_path}")
+            print("=======================================================")
+        except (RecommendationError, ValueError, KeyError, TypeError) as err:
+            print(f"Recommendation engine skipped: {err}")
 
     save_run_summary(
         model_name=max_model_name,

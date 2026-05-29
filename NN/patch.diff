@@ -1,52 +1,71 @@
 diff --git a/NN/README.md b/NN/README.md
-index 12999dc97c349d175248e22ff222eaefcd0cc032..44478892eb107d55a9179601ceb92352d7126e30 100644
+index 44478892eb107d55a9179601ceb92352d7126e30..d6d900405e5dc26455a5ac15b4f0cf15befea54d 100644
 --- a/NN/README.md
 +++ b/NN/README.md
-@@ -60,25 +60,47 @@ pip install tabulate
- 
- 
- 
- ## Industrial refinery variable logic and target-leakage prevention
- 
- The training workflow now follows industrial refinery timing.  Model inputs are no longer selected from every non-target column.  They are limited to variables that are known before downstream quality is measured, plus variables that plant operators can directly adjust.
- 
- ### Variable groups
- 
- 1. `EARLY_VARIABLES`
-    - Variables available early in the refinery process.
-    - Current columns: `sheet_name`, `shift_name`, `raw_sugar_color`, `raw_syrup_brix`, `raw_syrup_color`.
- 
- 2. `CONTROL_VARIABLES`
-    - Operator-adjustable process variables.
-    - Current columns: `lime_alkalinity`, `co2_percent`, `carbonated_alkalinity`, `carbonated_pH`.
-    - These represent controllable items such as lime/alkalinity, CO2, and pH control.
- 
- 3. `TARGET_VARIABLES`
-    - Future or downstream quality outputs.
-    - Current columns: `filtercake_moisture`, `filtercake_sugar`, `sweetwater_brix`, `sulphited_pH`, `sulphited_brix`, `sulphited_color`, `standard_liquor_pH`, `standard_liquor_brix`, `standard_liquor_color`, `white_total_points`.
- 
+@@ -82,25 +82,66 @@ The training workflow now follows industrial refinery timing.  Model inputs are
  ### Leakage rule
  
  Only `EARLY_VARIABLES + CONTROL_VARIABLES` are allowed in `X_train` and `X_test`.  `TARGET_VARIABLES` and the selected output columns are blocked as model inputs, including during "all" input selection, automatic feature selection, saved-run reuse, and temporal feature engineering.  This prevents target leakage from future quality measurements into the model.
+ 
+ ## Sequence-aware industrial learning
+ 
+ The refinery workflow can now convert safe early/control inputs into sequence-aware process features without using future target variables as inputs.
+ 
+ ### Added feature families
+ 
+ 1. **Lag-window features**
+    - For selected sequential columns, the data-preparation step can generate `__lag_1`, `__lag_2`, and `__lag_3` columns by default.
+    - These features expose the recent refinery history to tabular ANN and sklearn models, so the prediction can react to delayed effects from previous batches, shifts, or rows.
+ 
+ 2. **Time-sequence process features**
+    - Difference, ratio, acceleration, and normalized-change features describe how refinery variables move from one observation to the next.
+    - Ordered process groups also describe stage-to-stage movement between related process measurements, for example a downstream control value relative to an upstream value.
+ 
+ 3. **Rolling process dynamics features**
+    - Rolling mean, standard deviation, min, max, range, and slope features summarize short-window process stability and drift.
+    - These features help the model detect noisy operation, persistent trends, and abrupt transitions rather than treating every row as an independent static sample.
+ 
+ ### Why this improves refinery prediction
+ 
+ Refinery quality is not only controlled by the current value of pH, brix, alkalinity, CO2, or color.  It is also affected by recent operating history, delayed residence-time effects, stage-to-stage movement, and whether the process is stable or drifting.  Lag-window, sequence, and rolling dynamics features therefore give ordinary feed-forward and tree models some of the context normally captured by sequence models, while preserving the existing leakage-prevention rule that targets and downstream quality outputs must not be used as inputs.
 +
-+## Sequence-aware industrial learning
++## Prescriptive industrial AI recommendation engine
 +
-+The refinery workflow can now convert safe early/control inputs into sequence-aware process features without using future target variables as inputs.
++The project now includes a prescriptive recommendation layer in `recommendation_engine.py`.  The predictive model still learns future sugar-quality behavior, but the new `recommend_operating_conditions()` function uses that trained model to search actionable refinery set-points and recommend the best feasible controls.
 +
-+### Added feature families
++### Inputs
 +
-+1. **Lag-window features**
-+   - For selected sequential columns, the data-preparation step can generate `__lag_1`, `__lag_2`, and `__lag_3` columns by default.
-+   - These features expose the recent refinery history to tabular ANN and sklearn models, so the prediction can react to delayed effects from previous batches, shifts, or rows.
++`recommend_operating_conditions()` receives:
 +
-+2. **Time-sequence process features**
-+   - Difference, ratio, acceleration, and normalized-change features describe how refinery variables move from one observation to the next.
-+   - Ordered process groups also describe stage-to-stage movement between related process measurements, for example a downstream control value relative to an upstream value.
++* the current refinery conditions for the same input columns used during training;
++* a trained model, either a scikit-learn-style model with `predict()` or a PyTorch model with the input/target scalers attached by `run.py`;
++* the trained input and output feature names;
++* optional historical input/target data to estimate realistic operating windows and quality-risk thresholds.
 +
-+3. **Rolling process dynamics features**
-+   - Rolling mean, standard deviation, min, max, range, and slope features summarize short-window process stability and drift.
-+   - These features help the model detect noisy operation, persistent trends, and abrupt transitions rather than treating every row as an independent static sample.
++### Controllable variables searched
 +
-+### Why this improves refinery prediction
++By default the engine searches the requested industrial control levers:
 +
-+Refinery quality is not only controlled by the current value of pH, brix, alkalinity, CO2, or color.  It is also affected by recent operating history, delayed residence-time effects, stage-to-stage movement, and whether the process is stable or drifting.  Lag-window, sequence, and rolling dynamics features therefore give ordinary feed-forward and tree models some of the context normally captured by sequence models, while preserving the existing leakage-prevention rule that targets and downstream quality outputs must not be used as inputs.
++* `co2_percent`
++* `carbonated_pH`
++* `lime_alkalinity`
++
++The wider refinery control list still includes `carbonated_alkalinity`, but that variable is only optimized when explicitly requested.
++
++### Industrial constraints
++
++The search never changes raw/early process conditions.  It only changes approved control variables from `CONTROL_VARIABLES`, and it rejects any target/downstream quality leakage in the model inputs.  Each control is searched inside a realistic engineering envelope.  If historical data is supplied, the engine tightens the envelope to the observed 5th-to-95th percentile range so recommendations stay near proven plant operation.
++
++### Objective logic
++
++For every candidate set-point combination, the engine:
++
++1. keeps all current non-controllable conditions fixed;
++2. substitutes one candidate combination for CO2, pH, and lime alkalinity;
++3. calls the trained model to predict future sugar quality/color;
++4. scores the candidate by minimizing predicted future color/quality output;
++5. adds a quality-risk penalty when the predicted target is above the historical 80th percentile;
++6. adds a small movement and range-edge penalty so the recommendation avoids unnecessary set-point jumps and unrealistic boundary operation;
++7. returns the feasible candidate with the lowest objective score.
++
++When `run.py` trains and saves a PyTorch checkpoint, it also attempts to produce an example recommendation for the first prepared test condition and writes it to `tables/recommended-operating-conditions.json`.

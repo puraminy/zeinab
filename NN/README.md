@@ -104,3 +104,44 @@ The refinery workflow can now convert safe early/control inputs into sequence-aw
 ### Why this improves refinery prediction
 
 Refinery quality is not only controlled by the current value of pH, brix, alkalinity, CO2, or color.  It is also affected by recent operating history, delayed residence-time effects, stage-to-stage movement, and whether the process is stable or drifting.  Lag-window, sequence, and rolling dynamics features therefore give ordinary feed-forward and tree models some of the context normally captured by sequence models, while preserving the existing leakage-prevention rule that targets and downstream quality outputs must not be used as inputs.
+
+## Prescriptive industrial AI recommendation engine
+
+The project now includes a prescriptive recommendation layer in `recommendation_engine.py`.  The predictive model still learns future sugar-quality behavior, but the new `recommend_operating_conditions()` function uses that trained model to search actionable refinery set-points and recommend the best feasible controls.
+
+### Inputs
+
+`recommend_operating_conditions()` receives:
+
+* the current refinery conditions for the same input columns used during training;
+* a trained model, either a scikit-learn-style model with `predict()` or a PyTorch model with the input/target scalers attached by `run.py`;
+* the trained input and output feature names;
+* optional historical input/target data to estimate realistic operating windows and quality-risk thresholds.
+
+### Controllable variables searched
+
+By default the engine searches the requested industrial control levers:
+
+* `co2_percent`
+* `carbonated_pH`
+* `lime_alkalinity`
+
+The wider refinery control list still includes `carbonated_alkalinity`, but that variable is only optimized when explicitly requested.
+
+### Industrial constraints
+
+The search never changes raw/early process conditions.  It only changes approved control variables from `CONTROL_VARIABLES`, and it rejects any target/downstream quality leakage in the model inputs.  Each control is searched inside a realistic engineering envelope.  If historical data is supplied, the engine tightens the envelope to the observed 5th-to-95th percentile range so recommendations stay near proven plant operation.
+
+### Objective logic
+
+For every candidate set-point combination, the engine:
+
+1. keeps all current non-controllable conditions fixed;
+2. substitutes one candidate combination for CO2, pH, and lime alkalinity;
+3. calls the trained model to predict future sugar quality/color;
+4. scores the candidate by minimizing predicted future color/quality output;
+5. adds a quality-risk penalty when the predicted target is above the historical 80th percentile;
+6. adds a small movement and range-edge penalty so the recommendation avoids unnecessary set-point jumps and unrealistic boundary operation;
+7. returns the feasible candidate with the lowest objective score.
+
+When `run.py` trains and saves a PyTorch checkpoint, it also attempts to produce an example recommendation for the first prepared test condition and writes it to `tables/recommended-operating-conditions.json`.
