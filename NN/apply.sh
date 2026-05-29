@@ -59,14 +59,7 @@ index fe7fcde079c9b6de2b146cdd5e940516b43daf40..68f448cc7a1e238c341ddfd1016cf27c
 +    answer = input(f"{prompt} [{default}]:").strip()
 +    return answer if answer else str(default)
 +
- # Define the normalization function
- def normalize(data, normalization_type):
-     if normalization_type == 'z_score':
-         return (data - data.mean()) / data.std()
-     elif normalization_type == 'minmax':
-         return (data - data.min()) / (data.max() - data.min())
-     else:
-         raise ValueError("Unsupported normalization type. Choose 'z_score' or 'minmax'.")
+ # Normalization is handled by sklearn StandardScaler fitted on training data only.
  
  # Function to apply model on data and generate predictions
  # Return predictions, MSE and R-Squared

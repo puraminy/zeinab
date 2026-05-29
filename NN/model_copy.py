@@ -115,22 +115,21 @@ class Relu2HiddenLayer(Linear2HiddenLayer):
 # Return predictions, MSE and R-Squared
 def fit_model(model_class, X_train, X_test, y_train, y_test, num_epochs, 
         display_steps=False):
-   # Fix scales
-    scaler = StandardScaler()
-    X_train = torch.tensor(scaler.fit_transform(X_train), dtype=torch.float32)
-    X_test = torch.tensor(scaler.transform(X_test), dtype=torch.float32)
-    y_train = torch.tensor(y_train.values, dtype=torch.float32).view(-1, 1)
-    y_test = torch.tensor(y_test.values, dtype=torch.float32).view(-1, 1)
-
-   # Normalize inputs and targets to zero mean and unity standard deviation
-    X_train_normalized = (X_train - X_train.mean()) / X_train.std()
-    X_test_normalized = (X_test - X_test.mean()) / X_test.std()
-    y_train_normalized = (y_train - y_train.mean()) / y_train.std()
-    y_test_normalized = (y_test - y_test.mean()) / y_test.std()
+   # Fit feature and target scalers on the training split only.
+    x_scaler = StandardScaler()
+    y_scaler = StandardScaler()
+    X_train_normalized = torch.tensor(x_scaler.fit_transform(X_train), dtype=torch.float32)
+    X_test_normalized = torch.tensor(x_scaler.transform(X_test), dtype=torch.float32)
+    y_train_values = np.asarray(y_train.values if hasattr(y_train, "values") else y_train).reshape(-1, 1)
+    y_test_values = np.asarray(y_test.values if hasattr(y_test, "values") else y_test).reshape(-1, 1)
+    y_train_normalized = torch.tensor(y_scaler.fit_transform(y_train_values), dtype=torch.float32)
+    y_test_normalized = torch.tensor(y_scaler.transform(y_test_values), dtype=torch.float32)
 
     input_size = X_train.shape[1]
     # Instantiate the model and define loss function and optimizer
     model = model_class(input_size)
+    model.input_scaler_ = x_scaler
+    model.target_scaler_ = y_scaler
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
@@ -154,11 +153,8 @@ def fit_model(model_class, X_train, X_test, y_train, y_test, num_epochs,
     mse = nn.MSELoss()(predictions, y_test_normalized)
     mae = nn.L1Loss()(predictions, y_test_normalized)
     # Denormalize the predictions and y_test
-    predictions_denormalized = predictions * y_test.std() + y_test.mean()
-
-    # Convert predictions and y_test to NumPy arrays
-    predictions_np = predictions_denormalized.numpy()
-    y_test_np = y_test.numpy()
+    predictions_np = y_scaler.inverse_transform(predictions.numpy())
+    y_test_np = y_test_values
 
     # Calculate R-squared
     r2 = r2_score(y_test_np, predictions_np)

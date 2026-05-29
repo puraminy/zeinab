@@ -1,16 +1,16 @@
 import torch
 import torch.nn as nn
 import pandas as pd
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, r2_score
 import numpy as np
 from latex import *
 from plot import *
 import torch.nn.utils.rnn as rnn_utils
 import os 
-# Load and normalize the training data
+# Load training data and fit normalization on training rows only
 train_data = pd.read_csv('data/data_nn.csv')
-scaler = MinMaxScaler()
+scaler = StandardScaler()
 # Define input and output features explicitly
 features = ['time','flowrate', 'temp', 'init conc', 'conc']
 scale_features = ['flowrate', 'temp', 'init conc', 'conc']

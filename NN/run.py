@@ -232,7 +232,7 @@ hidden_sizes = [15, 10, 3 ]
 # nn.ReLU(), nn.Tanh(), nn.Identity()
 
 list_hidden_sizes = [[10], [15, 10, 3], [8, 4], [15, 5]]
-normalization_type = "z_score"
+normalization_type = "standard_scaler"
 
 
 SKLEARN_MODEL_FACTORIES = {
@@ -734,14 +734,9 @@ def compute_regression_report_metrics(y_true, y_pred):
         "Total Number of Instances": int(y_true_arr.shape[0]),
     }
 
-# Define the normalization function
-def normalize(data, normalization_type):
-    if normalization_type == 'z_score':
-        return (data - data.mean()) / data.std()
-    elif normalization_type == 'minmax':
-        return (data - data.min()) / (data.max() - data.min())
-    else:
-        raise ValueError("Unsupported normalization type. Choose 'z_score' or 'minmax'.")
+# Neural-network normalization uses sklearn StandardScaler exclusively.
+# Each scaler is fitted only on the active training partition and then reused
+# for validation/test/inference data so held-out statistics never leak into the model.
 
 # Function to apply model on data and generate predictions
 # Return predictions, MSE and R-Squared
@@ -792,23 +787,20 @@ def fit_model(model, X_train, X_test, y_train, y_test,
         num_epochs, display_steps=False, run=0, optimization_scope="weights", optimize_feature_indexes=None, pretrained_state_dict_path=None):
 
     set_model_seed(model_seed + run)
-    scaler = StandardScaler()
-    X_train = torch.tensor(scaler.fit_transform(X_train), dtype=torch.float32)
-    X_test = torch.tensor(scaler.transform(X_test), dtype=torch.float32)
-    y_train_values = y_train.values if hasattr(y_train, "values") else y_train
-    y_test_values = y_test.values if hasattr(y_test, "values") else y_test
-    y_train = torch.tensor(y_train_values, dtype=torch.float32)
-    y_test = torch.tensor(y_test_values, dtype=torch.float32)
-    if y_train.ndim == 1:
-        y_train = y_train.view(-1, 1)
-    if y_test.ndim == 1:
-        y_test = y_test.view(-1, 1)
-
-   # Normalize inputs and targets to zero mean and unity standard deviation
-    X_train_normalized = normalize(X_train, normalization_type)
-    X_test_normalized = normalize(X_test, normalization_type)
-    y_train_normalized = normalize(y_train, normalization_type)
-    y_test_normalized = normalize(y_test, normalization_type)
+    x_scaler = StandardScaler()
+    y_scaler = StandardScaler()
+    X_train_normalized = torch.tensor(x_scaler.fit_transform(X_train), dtype=torch.float32)
+    X_test_normalized = torch.tensor(x_scaler.transform(X_test), dtype=torch.float32)
+    y_train_values = np.asarray(y_train.values if hasattr(y_train, "values") else y_train)
+    y_test_values = np.asarray(y_test.values if hasattr(y_test, "values") else y_test)
+    if y_train_values.ndim == 1:
+        y_train_values = y_train_values.reshape(-1, 1)
+    if y_test_values.ndim == 1:
+        y_test_values = y_test_values.reshape(-1, 1)
+    y_train_normalized = torch.tensor(y_scaler.fit_transform(y_train_values), dtype=torch.float32)
+    y_test_normalized = torch.tensor(y_scaler.transform(y_test_values), dtype=torch.float32)
+    model.input_scaler_ = x_scaler
+    model.target_scaler_ = y_scaler
 
 
     # Initialize weights
@@ -888,10 +880,8 @@ def fit_model(model, X_train, X_test, y_train, y_test,
 
     mse = nn.MSELoss()(predictions, y_test_normalized)
     mae = nn.L1Loss()(predictions, y_test_normalized)
-    predictions_denormalized = predictions * y_test.std() + y_test.mean()
-
-    predictions_np = predictions_denormalized.numpy()
-    y_test_np = y_test.numpy()
+    predictions_np = y_scaler.inverse_transform(predictions.detach().numpy())
+    y_test_np = y_test_values
     r2 = r2_score(y_test_np, predictions_np, multioutput='uniform_average')
 
     optimized_inputs_report = None
@@ -911,6 +901,7 @@ def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
     scaler_x = StandardScaler()
     X_train_scaled = scaler_x.fit_transform(X_train)
     X_test_scaled = scaler_x.transform(X_test)
+    model.feature_scaler_ = scaler_x
 
     y_train_values = y_train.values if hasattr(y_train, "values") else y_train
     y_test_values = y_test.values if hasattr(y_test, "values") else y_test
@@ -975,9 +966,9 @@ def select_epochs_with_cv_early_stopping(model_class, hidden_sizes, features=Non
     Estimate a good epoch count via K-Fold CV with early stopping on validation loss.
     Returns an integer epoch recommendation or None if it cannot be computed.
     """
-    X_train, X_test, y_train, y_test = read_prep_data(features)
-    full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
-    full_y = pd.concat([y_train, y_test], axis=0).reset_index(drop=True)
+    X_train, _, y_train, _ = read_prep_data(features)
+    full_X = X_train.reset_index(drop=True)
+    full_y = y_train.reset_index(drop=True)
 
     kfold = KFold(n_splits=folds, shuffle=True, random_state=data_seed)
     best_epochs = []
@@ -991,22 +982,18 @@ def select_epochs_with_cv_early_stopping(model_class, hidden_sizes, features=Non
         y_train_fold = full_y.iloc[train_idx]
         y_val_fold = full_y.iloc[val_idx]
 
-        scaler = StandardScaler()
-        x_train_fold = torch.tensor(scaler.fit_transform(x_train_fold), dtype=torch.float32)
-        x_val_fold = torch.tensor(scaler.transform(x_val_fold), dtype=torch.float32)
-        y_train_values = y_train_fold.values if hasattr(y_train_fold, "values") else y_train_fold
-        y_val_values = y_val_fold.values if hasattr(y_val_fold, "values") else y_val_fold
-        y_train_fold = torch.tensor(y_train_values, dtype=torch.float32)
-        y_val_fold = torch.tensor(y_val_values, dtype=torch.float32)
-        if y_train_fold.ndim == 1:
-            y_train_fold = y_train_fold.view(-1, 1)
-        if y_val_fold.ndim == 1:
-            y_val_fold = y_val_fold.view(-1, 1)
-
-        x_train_fold = normalize(x_train_fold, normalization_type)
-        x_val_fold = normalize(x_val_fold, normalization_type)
-        y_train_fold = normalize(y_train_fold, normalization_type)
-        y_val_fold = normalize(y_val_fold, normalization_type)
+        x_scaler = StandardScaler()
+        y_scaler = StandardScaler()
+        x_train_fold = torch.tensor(x_scaler.fit_transform(x_train_fold), dtype=torch.float32)
+        x_val_fold = torch.tensor(x_scaler.transform(x_val_fold), dtype=torch.float32)
+        y_train_values = np.asarray(y_train_fold.values if hasattr(y_train_fold, "values") else y_train_fold)
+        y_val_values = np.asarray(y_val_fold.values if hasattr(y_val_fold, "values") else y_val_fold)
+        if y_train_values.ndim == 1:
+            y_train_values = y_train_values.reshape(-1, 1)
+        if y_val_values.ndim == 1:
+            y_val_values = y_val_values.reshape(-1, 1)
+        y_train_fold = torch.tensor(y_scaler.fit_transform(y_train_values), dtype=torch.float32)
+        y_val_fold = torch.tensor(y_scaler.transform(y_val_values), dtype=torch.float32)
 
         try:
             model = model_class(input_size, hidden_sizes, output_size=output_size)
@@ -1100,11 +1087,11 @@ def shap_feature_importance(model_class, inputs, num_epochs, hidden_sizes):
         print("Could not train model for SHAP analysis.")
         return None
 
-    scaler = StandardScaler()
-    X_train_scaled = torch.tensor(scaler.fit_transform(X_train), dtype=torch.float32)
-    X_test_scaled = torch.tensor(scaler.transform(X_test), dtype=torch.float32)
-    X_train_norm = normalize(X_train_scaled, normalization_type).numpy()
-    X_test_norm = normalize(X_test_scaled, normalization_type).numpy()
+    scaler = getattr(model, "input_scaler_", None)
+    if scaler is None:
+        scaler = StandardScaler().fit(X_train)
+    X_train_norm = scaler.transform(X_train)
+    X_test_norm = scaler.transform(X_test)
 
     background_default = min(25, len(X_train_norm))
     explain_default = min(20, len(X_test_norm))

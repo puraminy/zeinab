@@ -47,16 +47,7 @@ hidden_sizes = [15, 10, 3 ]
 # nn.ReLU(), nn.Tanh(), nn.Identity()
 
 list_hidden_sizes = [[10], [15, 10, 3], [8, 4], [15, 5]]
-normalization_type = "z_score"
-
-# Define the normalization function
-def normalize(data, normalization_type):
-    if normalization_type == 'z_score':
-        return (data - data.mean()) / data.std()
-    elif normalization_type == 'minmax':
-        return (data - data.min()) / (data.max() - data.min())
-    else:
-        raise ValueError("Unsupported normalization type. Choose 'z_score' or 'minmax'.")
+normalization_type = "standard_scaler"
 
 # Function to apply model on data and generate predictions
 # Return predictions, MSE and R-Squared
@@ -66,17 +57,18 @@ def fit_model(model, X_train, X_test, y_train, y_test,
         num_epochs, display_steps=False, run=0):
 
     set_model_seed(model_seed + run)
-    scaler = StandardScaler()
-    X_train = torch.tensor(scaler.fit_transform(X_train), dtype=torch.float32)
-    X_test = torch.tensor(scaler.transform(X_test), dtype=torch.float32)
-    y_train = torch.tensor(y_train.values, dtype=torch.float32).view(-1, 1)
-    y_test = torch.tensor(y_test.values, dtype=torch.float32).view(-1, 1)
-
-   # Normalize inputs and targets to zero mean and unity standard deviation
-    X_train_normalized = normalize(X_train, normalization_type)
-    X_test_normalized = normalize(X_test, normalization_type)
-    y_train_normalized = normalize(y_train, normalization_type)
-    y_test_normalized = normalize(y_test, normalization_type)
+    # Fit feature and target scalers on training rows only; reuse those
+    # training statistics for test rows to avoid normalization leakage.
+    x_scaler = StandardScaler()
+    y_scaler = StandardScaler()
+    X_train_normalized = torch.tensor(x_scaler.fit_transform(X_train), dtype=torch.float32)
+    X_test_normalized = torch.tensor(x_scaler.transform(X_test), dtype=torch.float32)
+    y_train_values = np.asarray(y_train.values if hasattr(y_train, "values") else y_train).reshape(-1, 1)
+    y_test_values = np.asarray(y_test.values if hasattr(y_test, "values") else y_test).reshape(-1, 1)
+    y_train_normalized = torch.tensor(y_scaler.fit_transform(y_train_values), dtype=torch.float32)
+    y_test_normalized = torch.tensor(y_scaler.transform(y_test_values), dtype=torch.float32)
+    model.input_scaler_ = x_scaler
+    model.target_scaler_ = y_scaler
 
 
     # Initialize weights
@@ -129,10 +121,10 @@ def fit_model(model, X_train, X_test, y_train, y_test,
 
     mse = nn.MSELoss()(predictions, y_test_normalized)
     mae = nn.L1Loss()(predictions, y_test_normalized)
-    predictions_denormalized = predictions * y_test.std() + y_test.mean()
+    predictions_denormalized = y_scaler.inverse_transform(predictions.numpy())
 
-    predictions_np = predictions_denormalized.numpy().flatten()  # Ensure predictions are 1D array
-    y_test_np = y_test.numpy().flatten()  # Ensure y_test is 1D array
+    predictions_np = predictions_denormalized.flatten()  # Ensure predictions are 1D array
+    y_test_np = y_test_values.flatten()  # Ensure y_test is 1D array
 
     r2 = r2_score(y_test_np, predictions_np)
     return predictions_np, mse, r2, model
