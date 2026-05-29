@@ -2101,6 +2101,12 @@ if answer != "0":
             print(recommendation["recommended_settings"])
             print("Predicted future quality at recommendation:")
             print(recommendation["predicted_future_quality"])
+            print("Industrial risk prediction:")
+            print(f"Risk level: {recommendation['risk_prediction']['risk_level']}")
+            print("Operator warnings:")
+            for warning in recommendation["risk_prediction"].get("operator_warnings", []):
+                print(f" - {warning}")
+            print(f"Current risk level: {recommendation['current_risk_prediction']['risk_level']}")
             print(f"Searched candidates: {recommendation['searched_candidates']}")
             print(f"Saved recommendation: {recommendation_path}")
             print("=======================================================")

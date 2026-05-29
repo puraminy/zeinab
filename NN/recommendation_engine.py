@@ -44,6 +44,8 @@ DEFAULT_COLOR_TARGET_PRIORITY = (
     "white_total_points",
 )
 
+RISK_LEVEL_SCORES = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
+
 
 class RecommendationError(ValueError):
     """Raised when a recommendation cannot be produced safely."""
@@ -209,12 +211,107 @@ def _quality_statistics(output_features, historical_targets=None):
             stats[output] = {
                 "mean": mean(values),
                 "std": pstdev(values) if len(values) > 1 else 0.0,
+                "p50": _percentile(sorted(values), 0.50),
                 "p80": _percentile(sorted(values), 0.80),
             }
     return stats
 
 
-def _score_prediction(prediction, candidate, current, control_ranges, output_features, weights, target_stats):
+def _target_risk_level(predicted_value, stats):
+    """Classify one predicted quality value using simple industrial thresholds."""
+    if not stats:
+        return "MEDIUM", "historical quality limits unavailable"
+
+    p50 = stats.get("p50")
+    p80 = stats.get("p80")
+    if p50 is not None and p80 is not None and p50 < p80:
+        if predicted_value <= p50:
+            return "LOW", f"at or below historical P50 ({p50:.3f})"
+        if predicted_value <= p80:
+            return "MEDIUM", f"between historical P50 ({p50:.3f}) and P80 ({p80:.3f})"
+        return "HIGH", f"above historical P80 ({p80:.3f})"
+
+    mean_value = stats.get("mean")
+    std_value = stats.get("std") or 0.0
+    if mean_value is None:
+        return "MEDIUM", "historical quality limits unavailable"
+
+    medium_limit = mean_value + max(std_value, abs(mean_value) * 0.05, 1.0)
+    if predicted_value <= mean_value:
+        return "LOW", f"at or below historical mean ({mean_value:.3f})"
+    if predicted_value <= medium_limit:
+        return "MEDIUM", f"above mean but within conservative limit ({medium_limit:.3f})"
+    return "HIGH", f"above conservative limit ({medium_limit:.3f})"
+
+
+def classify_quality_risk(prediction, output_features, target_stats, target_weights=None):
+    """Return LOW/MEDIUM/HIGH risk from predicted future sugar quality.
+
+    Lower predicted color/quality objective values are treated as better quality,
+    matching the recommendation objective used by this project.  Historical
+    targets provide the normal (P50) and high-risk (P80) operating limits.
+    """
+    weights = _target_weights(output_features, target_weights)
+    target_risks = []
+    for output in weights:
+        if output not in prediction:
+            continue
+        predicted_value = float(prediction[output])
+        level, reason = _target_risk_level(predicted_value, target_stats.get(output, {}))
+        target_risks.append({
+            "target": output,
+            "predicted_value": predicted_value,
+            "risk_level": level,
+            "reason": reason,
+        })
+
+    if not target_risks:
+        raise RecommendationError("Risk classification requires at least one predicted quality target.")
+
+    overall_level = max(target_risks, key=lambda item: RISK_LEVEL_SCORES[item["risk_level"]])["risk_level"]
+    drivers = [item for item in target_risks if item["risk_level"] == overall_level]
+
+    if overall_level == "LOW":
+        warnings = [
+            "LOW RISK: predicted sugar quality is inside the normal operating band.",
+            "Operator action: continue routine monitoring and keep set-points stable.",
+        ]
+    elif overall_level == "MEDIUM":
+        warnings = [
+            "MEDIUM RISK: predicted sugar quality is moving toward the high-risk band.",
+            "Operator action: apply the recommended set-points and monitor quality/color trend closely.",
+        ]
+    else:
+        warnings = [
+            "HIGH RISK: predicted sugar quality exceeds the high-risk operating band.",
+            "Operator action: treat as an operator warning, apply corrective controls, "
+            "and escalate if the next sample does not improve.",
+        ]
+
+    if any(item["reason"] == "historical quality limits unavailable" for item in target_risks):
+        warnings.append(
+            "Risk thresholds are conservative because historical target limits were unavailable "
+            "for at least one optimized output."
+        )
+
+    return {
+        "risk_level": overall_level,
+        "target_risks": target_risks,
+        "risk_drivers": drivers,
+        "operator_warnings": warnings,
+    }
+
+
+def _score_prediction(
+    prediction,
+    candidate,
+    current,
+    control_ranges,
+    output_features,
+    weights,
+    target_stats,
+    risk_assessment=None,
+):
     """Lower score is better: future color + high-risk + movement penalties."""
     weighted_quality = 0.0
     weight_total = 0.0
@@ -247,7 +344,11 @@ def _score_prediction(prediction, candidate, current, control_ranges, output_fea
         half_span = span / 2.0
         movement_penalty += 0.10 * abs(candidate_value - center) / max(half_span, 1e-9)
 
-    return (weighted_quality / weight_total) + 0.50 * risk_penalty + 0.05 * movement_penalty
+    categorical_risk_penalty = 0.0
+    if risk_assessment is not None:
+        categorical_risk_penalty = 0.35 * RISK_LEVEL_SCORES.get(risk_assessment.get("risk_level"), 0)
+
+    return (weighted_quality / weight_total) + 0.50 * risk_penalty + categorical_risk_penalty + 0.05 * movement_penalty
 
 
 def recommend_operating_conditions(
@@ -326,6 +427,7 @@ def recommend_operating_conditions(
     target_stats = _quality_statistics(output_features, historical_targets)
 
     current_prediction = _model_predict_one(trained_model, current, input_features, output_features)
+    current_risk = classify_quality_risk(current_prediction, output_features, target_stats, weights)
     best = None
     searched_candidates = 0
     variable_grids = [
@@ -339,6 +441,7 @@ def recommend_operating_conditions(
             candidate[variable] = value
 
         prediction = _model_predict_one(trained_model, candidate, input_features, output_features)
+        risk_assessment = classify_quality_risk(prediction, output_features, target_stats, weights)
         score = _score_prediction(
             prediction,
             candidate,
@@ -347,6 +450,7 @@ def recommend_operating_conditions(
             output_features,
             weights,
             target_stats,
+            risk_assessment,
         )
         searched_candidates += 1
 
@@ -354,6 +458,7 @@ def recommend_operating_conditions(
             best = {
                 "recommended_settings": {variable: candidate[variable] for variable in control_variables},
                 "predicted_future_quality": prediction,
+                "risk_prediction": risk_assessment,
                 "objective_score": float(score),
                 "full_candidate_inputs": {feature: candidate[feature] for feature in input_features},
             }
@@ -363,6 +468,7 @@ def recommend_operating_conditions(
 
     best["current_settings"] = {variable: float(current[variable]) for variable in control_variables}
     best["current_prediction"] = current_prediction
+    best["current_risk_prediction"] = current_risk
     best["searched_candidates"] = searched_candidates
     best["control_ranges"] = ranges
     best["target_weights"] = weights
@@ -370,7 +476,8 @@ def recommend_operating_conditions(
         "Only approved controllable refinery variables are changed; early/raw conditions remain fixed.",
         "Each controllable variable is searched over an industrially realistic range, tightened by historical 5th-95th percentiles when available.",
         "Every candidate is sent through the trained future-quality model using the same scalers saved during training.",
-        "The objective minimizes predicted future sugar color/quality output, adds penalty for high-risk predictions above historical P80, and adds a small movement/edge penalty to avoid unrealistic set-point jumps.",
+        "Predicted sugar quality is classified as LOW, MEDIUM, or HIGH risk using historical P50/P80 quality thresholds when available.",
+        "The objective minimizes predicted future sugar color/quality output, adds penalties for MEDIUM/HIGH risk predictions, and adds a small movement/edge penalty to avoid unrealistic set-point jumps.",
         "The returned recommendation is the feasible candidate with the lowest total objective score.",
     ]
     return best

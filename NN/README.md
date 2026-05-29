@@ -140,8 +140,9 @@ For every candidate set-point combination, the engine:
 2. substitutes one candidate combination for CO2, pH, and lime alkalinity;
 3. calls the trained model to predict future sugar quality/color;
 4. scores the candidate by minimizing predicted future color/quality output;
-5. adds a quality-risk penalty when the predicted target is above the historical 80th percentile;
-6. adds a small movement and range-edge penalty so the recommendation avoids unnecessary set-point jumps and unrealistic boundary operation;
-7. returns the feasible candidate with the lowest objective score.
+5. classifies predicted sugar quality as `LOW`, `MEDIUM`, or `HIGH` industrial risk using historical quality thresholds (`LOW` at or below P50, `MEDIUM` between P50 and P80, and `HIGH` above P80 when history is available);
+6. adds explicit MEDIUM/HIGH risk penalties so recommendations favor safer predicted sugar quality, not only a lower raw objective score;
+7. adds a small movement and range-edge penalty so the recommendation avoids unnecessary set-point jumps and unrealistic boundary operation;
+8. returns the feasible candidate with the lowest objective score.
 
-When `run.py` trains and saves a PyTorch checkpoint, it also attempts to produce an example recommendation for the first prepared test condition and writes it to `tables/recommended-operating-conditions.json`.
+The recommendation result now includes `risk_prediction`, `current_risk_prediction`, per-target risk drivers, and clear `operator_warnings`.  When `run.py` trains and saves a PyTorch checkpoint, it prints the recommended risk level and operator warnings, then writes the full recommendation to `tables/recommended-operating-conditions.json`.
