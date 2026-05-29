@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, train_test_split
 from sklearn.ensemble import (
     RandomForestRegressor,
     ExtraTreesRegressor,
@@ -37,6 +37,7 @@ from read_data import (
 import inspect
 import models
 import json
+import copy
 from datetime import datetime
 
 try:
@@ -199,7 +200,7 @@ def normalize_hidden_size_groups(raw_groups, fallback_groups):
                     parsed.append(cleaned)
     return parsed if parsed else [list(group) for group in fallback_groups]
 
-list_epochs = [20, 50, 100 , 200]
+list_epochs = [50, 100, 200, 300]
 best_epochs = 100 
 
 exp_df = pd.DataFrame()
@@ -217,21 +218,33 @@ def set_model_seed(model_seed):
     torch.manual_seed(model_seed)
     np.random.seed(model_seed)
 
-learning_rate = 0.05
-# The learnign rate used in ANN
+learning_rate = 0.001
+# Industrially conservative ANN weight learning rate. 0.05 was too aggressive
+# for a small, standardized tabular dataset and can overshoot narrow minima.
+input_learning_rate = 0.0001
+# Input optimization is more sensitive than weight optimization because it moves
+# the normalized training data directly, so keep it an order of magnitude lower.
+ann_weight_decay = 1e-4
+# L2 regularization reduces small-sample overfitting without increasing model size.
+early_stopping_patience = 25
+early_stopping_min_delta = 1e-4
+validation_fraction = 0.2
+max_gradient_norm = 0.5
+max_input_delta = 2.0
+# Conservative training guards for stable convergence on small industrial data.
 #hidden_size1 = 10
-hidden_size1 = 15
-hidden_size2 = 10
+hidden_size1 = 8
+hidden_size2 = 4
 
 # the number of neurons in hidden layers
 
 # https://alexlenail.me/NN-SVG/
 # use the site above to draw the following network
 #
-hidden_sizes = [15, 10, 3 ]
+hidden_sizes = [8, 4]
 # nn.ReLU(), nn.Tanh(), nn.Identity()
 
-list_hidden_sizes = [[10], [15, 10, 3], [8, 4], [15, 5]]
+list_hidden_sizes = [[4], [8], [8, 4], [12, 6]]
 normalization_type = "standard_scaler"
 
 
@@ -669,6 +682,37 @@ def parse_epochs_input(answer, default_epochs):
     return sorted(set(parsed_epochs)), use_cv_early_stop
 
 
+
+def print_ann_training_robustness_notes():
+    """Explain the safeguards used for neural-network training."""
+    print("\nANN industrial robustness safeguards:")
+    print(
+        f"- learning_rate={learning_rate}: conservative AdamW step size reduces "
+        "overshoot and run-to-run volatility on standardized tabular data."
+    )
+    print(
+        f"- input_learning_rate={input_learning_rate}: input optimization moves "
+        "data directly, so a smaller step prevents unrealistic optimized inputs."
+    )
+    print(
+        f"- validation_fraction={validation_fraction}, patience={early_stopping_patience}: "
+        "early stopping monitors held-out training data and restores the best weights, "
+        "which limits memorization on the ~174-row dataset."
+    )
+    print(
+        f"- ann_weight_decay={ann_weight_decay}: L2 regularization discourages oversized "
+        "weights and improves generalization without adding model complexity."
+    )
+    print(
+        f"- max_gradient_norm={max_gradient_norm}, max_input_delta={max_input_delta}: "
+        "gradient and input-update bounds prevent unstable convergence and non-physical "
+        "input drift."
+    )
+    print(
+        f"- hidden size candidates={list_hidden_sizes}: small candidate networks keep "
+        "capacity proportional to a small industrial dataset."
+    )
+
 def infer_selected_features_from_table(table, fallback_features):
     """Infer selected features from the best-R2 row in a feature-selection table."""
     if table is None or table.empty:
@@ -783,27 +827,50 @@ def prompt_optimized_input_features(input_features):
     return [input_features.index(name) for name in selected]
 
 
-def fit_model(model, X_train, X_test, y_train, y_test, 
+def fit_model(model, X_train, X_test, y_train, y_test,
         num_epochs, display_steps=False, run=0, optimization_scope="weights", optimize_feature_indexes=None, pretrained_state_dict_path=None):
 
     set_model_seed(model_seed + run)
-    x_scaler = StandardScaler()
-    y_scaler = StandardScaler()
-    X_train_normalized = torch.tensor(x_scaler.fit_transform(X_train), dtype=torch.float32)
-    X_test_normalized = torch.tensor(x_scaler.transform(X_test), dtype=torch.float32)
     y_train_values = np.asarray(y_train.values if hasattr(y_train, "values") else y_train)
     y_test_values = np.asarray(y_test.values if hasattr(y_test, "values") else y_test)
     if y_train_values.ndim == 1:
         y_train_values = y_train_values.reshape(-1, 1)
     if y_test_values.ndim == 1:
         y_test_values = y_test_values.reshape(-1, 1)
-    y_train_normalized = torch.tensor(y_scaler.fit_transform(y_train_values), dtype=torch.float32)
+
+    X_train_values = np.asarray(X_train, dtype=float)
+    X_test_values = np.asarray(X_test, dtype=float)
+    use_validation = len(X_train_values) >= 10 and validation_fraction > 0
+    if use_validation:
+        x_fit, x_val, y_fit, y_val = train_test_split(
+            X_train_values,
+            y_train_values,
+            test_size=validation_fraction,
+            random_state=data_seed + run,
+            shuffle=True,
+        )
+    else:
+        x_fit, y_fit = X_train_values, y_train_values
+        x_val, y_val = None, None
+
+    x_scaler = StandardScaler()
+    y_scaler = StandardScaler()
+    X_fit_normalized = torch.tensor(x_scaler.fit_transform(x_fit), dtype=torch.float32)
+    X_val_normalized = (
+        torch.tensor(x_scaler.transform(x_val), dtype=torch.float32)
+        if x_val is not None else None
+    )
+    X_test_normalized = torch.tensor(x_scaler.transform(X_test_values), dtype=torch.float32)
+    y_fit_normalized = torch.tensor(y_scaler.fit_transform(y_fit), dtype=torch.float32)
+    y_val_normalized = (
+        torch.tensor(y_scaler.transform(y_val), dtype=torch.float32)
+        if y_val is not None else None
+    )
     y_test_normalized = torch.tensor(y_scaler.transform(y_test_values), dtype=torch.float32)
     model.input_scaler_ = x_scaler
     model.target_scaler_ = y_scaler
 
-
-    # Initialize weights
+    # Initialize weights with fan-in scaling so activations start in a stable range.
     def weights_init(m):
         if isinstance(m, nn.Linear):
             init.kaiming_uniform_(m.weight.data)
@@ -826,10 +893,19 @@ def fit_model(model, X_train, X_test, y_train, y_test,
     optimize_weights = optimization_scope in ("weights", "both")
     optimize_inputs = optimization_scope in ("inputs", "both")
 
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate) if optimize_weights else None
-    original_train_inputs = X_train_normalized.clone().detach()
-    train_inputs = X_train_normalized.clone().detach().requires_grad_(optimize_inputs)
-    input_optimizer = optim.Adam([train_inputs], lr=learning_rate) if optimize_inputs else None
+    optimizer = (
+        optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=ann_weight_decay)
+        if optimize_weights else None
+    )
+    original_train_inputs = X_fit_normalized.clone().detach()
+    train_inputs = X_fit_normalized.clone().detach().requires_grad_(optimize_inputs)
+    input_optimizer = optim.Adam([train_inputs], lr=input_learning_rate) if optimize_inputs else None
+
+    best_monitor_loss = float("inf")
+    best_epoch = 0
+    best_state_dict = copy.deepcopy(model.state_dict())
+    best_train_inputs = train_inputs.detach().clone()
+    epochs_without_improvement = 0
 
     for epoch in range(num_epochs):
         model.train()
@@ -838,17 +914,15 @@ def fit_model(model, X_train, X_test, y_train, y_test,
         if input_optimizer is not None:
             input_optimizer.zero_grad()
         outputs = model(train_inputs)
-        
-        # Check for NaN in outputs
-        if torch.isnan(outputs).any():
-            print(f"NaN detected in outputs at epoch {epoch + 1}")
+
+        if not torch.isfinite(outputs).all():
+            print(f"Non-finite outputs detected at epoch {epoch + 1}")
             return None, None, None, model, None
 
-        loss = criterion(outputs, y_train_normalized)
-        
-        # Check for NaN in loss
-        if torch.isnan(loss).any():
-            print(f"NaN detected in loss at epoch {epoch + 1}")
+        loss = criterion(outputs, y_fit_normalized)
+
+        if not torch.isfinite(loss):
+            print(f"Non-finite loss detected at epoch {epoch + 1}")
             return None, None, None, model, None
 
         loss.backward()
@@ -859,27 +933,66 @@ def fit_model(model, X_train, X_test, y_train, y_test,
             train_inputs.grad *= mask
 
         if optimize_weights:
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_gradient_norm)
             optimizer.step()
 
         if optimize_inputs:
+            torch.nn.utils.clip_grad_norm_([train_inputs], max_norm=max_gradient_norm)
             input_optimizer.step()
+            with torch.no_grad():
+                lower_bound = original_train_inputs - max_input_delta
+                upper_bound = original_train_inputs + max_input_delta
+                train_inputs.copy_(torch.max(torch.min(train_inputs, upper_bound), lower_bound))
+
+        model.eval()
+        with torch.no_grad():
+            if X_val_normalized is not None:
+                monitor_outputs = model(X_val_normalized)
+                monitor_loss = criterion(monitor_outputs, y_val_normalized).item()
+            else:
+                monitor_loss = loss.item()
+
+        if not np.isfinite(monitor_loss):
+            print(f"Non-finite validation loss detected at epoch {epoch + 1}")
+            return None, None, None, model, None
+
+        if monitor_loss < best_monitor_loss - early_stopping_min_delta:
+            best_monitor_loss = monitor_loss
+            best_epoch = epoch + 1
+            best_state_dict = copy.deepcopy(model.state_dict())
+            best_train_inputs = train_inputs.detach().clone()
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
 
         if (epoch + 1) % 10 == 0 and display_steps:
-            print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item()}')
+            print(
+                f'Epoch [{epoch + 1}/{num_epochs}], '
+                f'Train Loss: {loss.item():.6f}, Monitor Loss: {monitor_loss:.6f}'
+            )
+
+        if epochs_without_improvement >= early_stopping_patience:
+            if display_steps:
+                print(
+                    f"Early stopping at epoch {epoch + 1}; "
+                    f"best epoch {best_epoch} with monitor loss {best_monitor_loss:.6f}"
+                )
+            break
+
+    model.load_state_dict(best_state_dict)
+    train_inputs = best_train_inputs
+    model.best_epoch_ = best_epoch
+    model.best_monitor_loss_ = best_monitor_loss
 
     model.eval()
     with torch.no_grad():
         predictions = model(X_test_normalized)
-        
-        # Check for NaN in predictions
-        if torch.isnan(predictions).any():
-            print(f"NaN detected in predictions")
+
+        if not torch.isfinite(predictions).all():
+            print("Non-finite predictions detected")
             return None, None, None, model, None
 
-    mse = nn.MSELoss()(predictions, y_test_normalized)
-    mae = nn.L1Loss()(predictions, y_test_normalized)
+    mse = float(nn.MSELoss()(predictions, y_test_normalized).item())
     predictions_np = y_scaler.inverse_transform(predictions.detach().numpy())
     y_test_np = y_test_values
     r2 = r2_score(y_test_np, predictions_np, multioutput='uniform_average')
@@ -961,7 +1074,7 @@ def is_torch_model(model_class):
     return isinstance(model_class, type) and issubclass(model_class, nn.Module)
 
 
-def select_epochs_with_cv_early_stopping(model_class, hidden_sizes, features=None, folds=5, patience=20, min_delta=1e-4):
+def select_epochs_with_cv_early_stopping(model_class, hidden_sizes, features=None, folds=5, patience=early_stopping_patience, min_delta=early_stopping_min_delta):
     """
     Estimate a good epoch count via K-Fold CV with early stopping on validation loss.
     Returns an integer epoch recommendation or None if it cannot be computed.
@@ -1011,7 +1124,7 @@ def select_epochs_with_cv_early_stopping(model_class, hidden_sizes, features=Non
             ) if isinstance(m, nn.Linear) else None
         )
         criterion = nn.MSELoss()
-        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+        optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=ann_weight_decay)
 
         best_val_loss = float("inf")
         best_epoch = 1
@@ -1022,16 +1135,19 @@ def select_epochs_with_cv_early_stopping(model_class, hidden_sizes, features=Non
             optimizer.zero_grad()
             train_outputs = model(x_train_fold)
             train_loss = criterion(train_outputs, y_train_fold)
-            if torch.isnan(train_loss):
+            if not torch.isfinite(train_loss):
                 break
             train_loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_gradient_norm)
             optimizer.step()
 
             model.eval()
             with torch.no_grad():
                 val_outputs = model(x_val_fold)
                 val_loss = criterion(val_outputs, y_val_fold).item()
+
+            if not np.isfinite(val_loss):
+                break
 
             if val_loss + min_delta < best_val_loss:
                 best_val_loss = val_loss
@@ -1066,7 +1182,7 @@ def train_single_model(model_class, num_epochs, hidden_sizes, features=None, run
     except TypeError:
         model = model_class(input_size, hidden_sizes)
 
-    _, _, r2, model = fit_model(
+    _, _, r2, model, _ = fit_model(
         model, X_train, X_test, y_train, y_test, num_epochs, display_steps=False, run=run
     )
     return model, X_train, X_test, y_train, y_test, r2
@@ -1498,6 +1614,8 @@ print("Selected Models:", [model_names[i] for i in selected_models])
 best_model_index = selected_models[0]
 max_model_index = best_model_index
 has_nn_model = any(is_torch_model(models[i]) for i in selected_models)
+if has_nn_model:
+    print_ann_training_robustness_notes()
 
 default_epochs = list(list_epochs)
 if loaded_epoch_candidates:
