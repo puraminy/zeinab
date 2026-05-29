@@ -218,19 +218,22 @@ def set_model_seed(model_seed):
     torch.manual_seed(model_seed)
     np.random.seed(model_seed)
 
-learning_rate = 0.001
+learning_rate = 0.0005
 # Industrially conservative ANN weight learning rate. 0.05 was too aggressive
 # for a small, standardized tabular dataset and can overshoot narrow minima.
-input_learning_rate = 0.0001
+input_learning_rate = 0.00005
 # Input optimization is more sensitive than weight optimization because it moves
 # the normalized training data directly, so keep it an order of magnitude lower.
 ann_weight_decay = 1e-4
 # L2 regularization reduces small-sample overfitting without increasing model size.
-early_stopping_patience = 25
+early_stopping_patience = 20
 early_stopping_min_delta = 1e-4
 validation_fraction = 0.2
+lr_plateau_patience = 8
+lr_plateau_factor = 0.5
+min_learning_rate = 1e-5
 max_gradient_norm = 0.5
-max_input_delta = 2.0
+max_input_delta = 1.5
 # Conservative training guards for stable convergence on small industrial data.
 #hidden_size1 = 10
 hidden_size1 = 8
@@ -244,7 +247,7 @@ hidden_size2 = 4
 hidden_sizes = [8, 4]
 # nn.ReLU(), nn.Tanh(), nn.Identity()
 
-list_hidden_sizes = [[4], [8], [8, 4], [12, 6]]
+list_hidden_sizes = [[4], [6], [8], [8, 4]]
 normalization_type = "standard_scaler"
 
 
@@ -688,7 +691,9 @@ def print_ann_training_robustness_notes():
     print("\nANN industrial robustness safeguards:")
     print(
         f"- learning_rate={learning_rate}: conservative AdamW step size reduces "
-        "overshoot and run-to-run volatility on standardized tabular data."
+        "overshoot and run-to-run volatility on standardized tabular data; "
+        f"ReduceLROnPlateau halves it after {lr_plateau_patience} flat checks "
+        f"down to {min_learning_rate}."
     )
     print(
         f"- input_learning_rate={input_learning_rate}: input optimization moves "
@@ -900,6 +905,16 @@ def fit_model(model, X_train, X_test, y_train, y_test,
     original_train_inputs = X_fit_normalized.clone().detach()
     train_inputs = X_fit_normalized.clone().detach().requires_grad_(optimize_inputs)
     input_optimizer = optim.Adam([train_inputs], lr=input_learning_rate) if optimize_inputs else None
+    weight_scheduler = (
+        optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=lr_plateau_factor,
+            patience=lr_plateau_patience,
+            min_lr=min_learning_rate,
+        )
+        if optimizer is not None else None
+    )
 
     best_monitor_loss = float("inf")
     best_epoch = 0
@@ -955,6 +970,9 @@ def fit_model(model, X_train, X_test, y_train, y_test,
         if not np.isfinite(monitor_loss):
             print(f"Non-finite validation loss detected at epoch {epoch + 1}")
             return None, None, None, model, None
+
+        if weight_scheduler is not None:
+            weight_scheduler.step(monitor_loss)
 
         if monitor_loss < best_monitor_loss - early_stopping_min_delta:
             best_monitor_loss = monitor_loss

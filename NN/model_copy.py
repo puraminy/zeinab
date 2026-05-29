@@ -10,6 +10,7 @@ import torch.nn as nn
 from sklearn.metrics import r2_score
 from tabulate import tabulate
 import os
+import copy
 
 num_epochs = 500 
 #num_epochs = 300 
@@ -25,15 +26,24 @@ data_seed = 123 # it is used for random_state of splitting data into source and 
 # Since the number of data is low changing it can largely affect the results
 torch.manual_seed(model_seed)
 np.random.seed(model_seed)
-learning_rate = 0.05
-# The learnign rate used in ANN
+learning_rate = 0.0005
+# Industrially conservative ANN learning rate. The previous 0.05 setting is
+# unstable for a standardized, small (~174-row) tabular dataset.
+ann_weight_decay = 1e-4
+early_stopping_patience = 20
+early_stopping_min_delta = 1e-4
+validation_fraction = 0.2
+lr_plateau_patience = 8
+lr_plateau_factor = 0.5
+min_learning_rate = 1e-5
+max_gradient_norm = 0.5
 #hidden_size1 = 10
-hidden_size1 = 15
+hidden_size1 = 8
 
-hidden_size2 = 10
+hidden_size2 = 4
 
-hidden_size3 = 5
-# the number of neurons in hidden layers
+hidden_size3 = 2
+# the number of neurons in hidden layers; kept small to limit overfitting.
 
 # https://alexlenail.me/NN-SVG/
 # use the site above to draw the following network
@@ -115,43 +125,131 @@ class Relu2HiddenLayer(Linear2HiddenLayer):
 # Return predictions, MSE and R-Squared
 def fit_model(model_class, X_train, X_test, y_train, y_test, num_epochs, 
         display_steps=False):
-   # Fit feature and target scalers on the training split only.
-    x_scaler = StandardScaler()
-    y_scaler = StandardScaler()
-    X_train_normalized = torch.tensor(x_scaler.fit_transform(X_train), dtype=torch.float32)
-    X_test_normalized = torch.tensor(x_scaler.transform(X_test), dtype=torch.float32)
+   # Fit feature and target scalers on the fitting split only.
+    X_train_values = np.asarray(X_train, dtype=float)
+    X_test_values = np.asarray(X_test, dtype=float)
     y_train_values = np.asarray(y_train.values if hasattr(y_train, "values") else y_train).reshape(-1, 1)
     y_test_values = np.asarray(y_test.values if hasattr(y_test, "values") else y_test).reshape(-1, 1)
-    y_train_normalized = torch.tensor(y_scaler.fit_transform(y_train_values), dtype=torch.float32)
+
+    use_validation = len(X_train_values) >= 10 and validation_fraction > 0
+    if use_validation:
+        x_fit, x_val, y_fit, y_val = train_test_split(
+            X_train_values,
+            y_train_values,
+            test_size=validation_fraction,
+            random_state=data_seed,
+            shuffle=True,
+        )
+    else:
+        x_fit, y_fit = X_train_values, y_train_values
+        x_val, y_val = None, None
+
+    x_scaler = StandardScaler()
+    y_scaler = StandardScaler()
+    X_fit_normalized = torch.tensor(x_scaler.fit_transform(x_fit), dtype=torch.float32)
+    X_val_normalized = (
+        torch.tensor(x_scaler.transform(x_val), dtype=torch.float32)
+        if x_val is not None else None
+    )
+    X_test_normalized = torch.tensor(x_scaler.transform(X_test_values), dtype=torch.float32)
+    y_fit_normalized = torch.tensor(y_scaler.fit_transform(y_fit), dtype=torch.float32)
+    y_val_normalized = (
+        torch.tensor(y_scaler.transform(y_val), dtype=torch.float32)
+        if y_val is not None else None
+    )
     y_test_normalized = torch.tensor(y_scaler.transform(y_test_values), dtype=torch.float32)
 
-    input_size = X_train.shape[1]
+    input_size = X_train_values.shape[1]
     # Instantiate the model and define loss function and optimizer
     model = model_class(input_size)
     model.input_scaler_ = x_scaler
     model.target_scaler_ = y_scaler
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-    # Train the model
+    def weights_init(layer):
+        if isinstance(layer, nn.Linear):
+            nn.init.kaiming_uniform_(layer.weight)
+            if layer.bias is not None:
+                nn.init.zeros_(layer.bias)
+
+    model.apply(weights_init)
+    criterion = nn.MSELoss()
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=ann_weight_decay)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=lr_plateau_factor,
+        patience=lr_plateau_patience,
+        min_lr=min_learning_rate,
+    )
+
+    best_monitor_loss = float("inf")
+    best_epoch = 0
+    best_state_dict = copy.deepcopy(model.state_dict())
+    epochs_without_improvement = 0
+
+    # Train the model with validation-monitored early stopping.
     for epoch in range(num_epochs):
         model.train()
         optimizer.zero_grad()
-        outputs = model(X_train_normalized)
-        loss = criterion(outputs, y_train_normalized)
+        outputs = model(X_fit_normalized)
+
+        if not torch.isfinite(outputs).all():
+            raise FloatingPointError(f"Non-finite ANN outputs at epoch {epoch + 1}")
+
+        loss = criterion(outputs, y_fit_normalized)
+        if not torch.isfinite(loss):
+            raise FloatingPointError(f"Non-finite ANN loss at epoch {epoch + 1}")
+
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_gradient_norm)
         optimizer.step()
 
+        model.eval()
+        with torch.no_grad():
+            if X_val_normalized is not None:
+                monitor_outputs = model(X_val_normalized)
+                monitor_loss = criterion(monitor_outputs, y_val_normalized).item()
+            else:
+                monitor_loss = loss.item()
+
+        if not np.isfinite(monitor_loss):
+            raise FloatingPointError(f"Non-finite ANN monitor loss at epoch {epoch + 1}")
+
+        scheduler.step(monitor_loss)
+
+        if monitor_loss < best_monitor_loss - early_stopping_min_delta:
+            best_monitor_loss = monitor_loss
+            best_epoch = epoch + 1
+            best_state_dict = copy.deepcopy(model.state_dict())
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
+
         if (epoch + 1) % 10 == 0 and display_steps:
-            print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item()}')
+            print(
+                f'Epoch [{epoch+1}/{num_epochs}], '
+                f'Train Loss: {loss.item():.6f}, Monitor Loss: {monitor_loss:.6f}'
+            )
+
+        if epochs_without_improvement >= early_stopping_patience:
+            if display_steps:
+                print(
+                    f"Early stopping at epoch {epoch + 1}; "
+                    f"best epoch {best_epoch} with monitor loss {best_monitor_loss:.6f}"
+                )
+            break
+
+    model.load_state_dict(best_state_dict)
 
     # Evaluate the model on the test set
     model.eval()
     with torch.no_grad():
         predictions = model(X_test_normalized)
+
+    if not torch.isfinite(predictions).all():
+        raise FloatingPointError("Non-finite ANN predictions")
     
     mse = nn.MSELoss()(predictions, y_test_normalized)
-    mae = nn.L1Loss()(predictions, y_test_normalized)
     # Denormalize the predictions and y_test
     predictions_np = y_scaler.inverse_transform(predictions.numpy())
     y_test_np = y_test_values
