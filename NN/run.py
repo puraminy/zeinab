@@ -1,5 +1,4 @@
 from matplotlib import pyplot as plt
-from matplotlib import pyplot as plt
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -19,7 +18,6 @@ from sklearn.tree import DecisionTreeRegressor
 from sklearn.multioutput import MultiOutputRegressor
 import pandas as pd
 import numpy as np
-import torch.nn as nn
 import re
 from sklearn.metrics import r2_score
 from tabulate import tabulate
@@ -358,7 +356,7 @@ def normalize_hidden_size_groups(raw_groups, fallback_groups):
     return parsed if parsed else [list(group) for group in fallback_groups]
 
 list_epochs = [50, 100, 200, 300]
-best_epochs = 100 
+best_epochs = 100
 
 exp_df = pd.DataFrame()
 
@@ -990,7 +988,87 @@ def compute_regression_report_metrics(y_true, y_pred):
 
 # Function to apply model on data and generate predictions
 # Return predictions, MSE and R-Squared
-import torch.nn.init as init
+
+
+
+def as_2d_float_array(data, name):
+    """Convert pandas/numpy-like regression data to a finite 2D float array."""
+    values = data.values if hasattr(data, "values") else data
+    arr = np.asarray(values, dtype=float)
+    if arr.ndim == 1:
+        arr = arr.reshape(-1, 1)
+    if arr.ndim != 2:
+        raise ValueError(f"{name} must be a 1D or 2D array; got shape {arr.shape}.")
+    if arr.shape[0] == 0:
+        raise ValueError(f"{name} must contain at least one row.")
+    if not np.isfinite(arr).all():
+        raise ValueError(f"{name} contains NaN or infinite values.")
+    return arr
+
+
+def as_feature_matrix(data, name):
+    """Convert tabular feature data to a finite 2D float matrix."""
+    arr = as_2d_float_array(data, name)
+    if arr.shape[1] == 0:
+        raise ValueError(f"{name} must contain at least one feature column.")
+    return arr
+
+
+def safe_r2_score(y_true, y_pred):
+    """Compute finite multi-output R², returning None when undefined."""
+    y_true_arr = as_2d_float_array(y_true, "y_true")
+    y_pred_arr = as_2d_float_array(y_pred, "y_pred")
+    if y_true_arr.shape != y_pred_arr.shape:
+        raise ValueError(
+            f"y_true and y_pred must have matching shapes; got "
+            f"{y_true_arr.shape} and {y_pred_arr.shape}."
+        )
+    if y_true_arr.shape[0] < 2:
+        return None
+    score = r2_score(y_true_arr, y_pred_arr, multioutput="uniform_average")
+    return float(score) if np.isfinite(score) else None
+
+
+def initialize_linear_weights(module):
+    """Initialize Linear layers with activation-aware fan-in scaling."""
+    if isinstance(module, nn.Linear):
+        nn.init.kaiming_uniform_(module.weight, nonlinearity="relu")
+        if module.bias is not None:
+            nn.init.zeros_(module.bias)
+
+
+def make_torch_model(model_class, input_size, hidden_sizes, output_size):
+    """Instantiate a torch model while preserving older constructors."""
+    try:
+        return model_class(input_size, hidden_sizes, output_size=output_size)
+    except TypeError:
+        return model_class(input_size, hidden_sizes)
+
+
+def validate_hidden_size_compatibility(model, hidden_sizes):
+    """Check whether the requested hidden-size layout matches a model class."""
+    hidden_layers = getattr(model, "hidden_layers", None)
+    return hidden_layers is None or len(hidden_sizes) == len(hidden_layers)
+
+
+def load_model_state_dict(model, checkpoint_path):
+    """Safely restore model weights from a checkpoint path when compatible."""
+    if not checkpoint_path:
+        return False
+    if not os.path.isfile(checkpoint_path):
+        print(f"Checkpoint not found: {checkpoint_path}. Training from initialized weights.")
+        return False
+    try:
+        try:
+            state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+        except TypeError:
+            state_dict = torch.load(checkpoint_path, map_location="cpu")
+        model.load_state_dict(state_dict)
+    except (OSError, RuntimeError, ValueError) as err:
+        print(f"Could not load checkpoint '{checkpoint_path}' ({err}). Training from initialized weights.")
+        return False
+    print(f"Loaded pretrained weights from: {checkpoint_path}")
+    return True
 
 
 def parse_optimization_scope(answer):
@@ -1033,19 +1111,56 @@ def prompt_optimized_input_features(input_features):
     return [input_features.index(name) for name in selected]
 
 
-def fit_model(model, X_train, X_test, y_train, y_test,
-        num_epochs, display_steps=False, run=0, optimization_scope="weights", optimize_feature_indexes=None, pretrained_state_dict_path=None):
+def fit_model(
+    model,
+    X_train,
+    X_test,
+    y_train,
+    y_test,
+    num_epochs,
+    display_steps=False,
+    run=0,
+    optimization_scope="weights",
+    optimize_feature_indexes=None,
+    pretrained_state_dict_path=None,
+):
+    """Train one ANN on tabular data with train-only normalization.
 
+    Returns ``(predictions_original_scale, mse_original_scale, r2, model,
+    optimized_inputs_report)`` for every success/failure path so callers can
+    safely unpack results.  Scalers are fitted only on the training subset used
+    for optimization and are then reused for validation/test data.
+    """
     set_model_seed(model_seed + run)
-    y_train_values = np.asarray(y_train.values if hasattr(y_train, "values") else y_train)
-    y_test_values = np.asarray(y_test.values if hasattr(y_test, "values") else y_test)
-    if y_train_values.ndim == 1:
-        y_train_values = y_train_values.reshape(-1, 1)
-    if y_test_values.ndim == 1:
-        y_test_values = y_test_values.reshape(-1, 1)
+    try:
+        X_train_values = as_feature_matrix(X_train, "X_train")
+        X_test_values = as_feature_matrix(X_test, "X_test")
+        y_train_values = as_2d_float_array(y_train, "y_train")
+        y_test_values = as_2d_float_array(y_test, "y_test")
+    except ValueError as err:
+        print(f"Invalid training data: {err}")
+        return None, None, None, model, None
 
-    X_train_values = np.asarray(X_train, dtype=float)
-    X_test_values = np.asarray(X_test, dtype=float)
+    if X_train_values.shape[0] != y_train_values.shape[0]:
+        print("X_train and y_train row counts do not match.")
+        return None, None, None, model, None
+    if X_test_values.shape[0] != y_test_values.shape[0]:
+        print("X_test and y_test row counts do not match.")
+        return None, None, None, model, None
+
+    optimize_weights = optimization_scope in ("weights", "both")
+    optimize_inputs = optimization_scope in ("inputs", "both")
+    if not optimize_weights and not optimize_inputs:
+        print(f"Invalid optimization scope: {optimization_scope}")
+        return None, None, None, model, None
+
+    if optimize_feature_indexes is not None:
+        optimize_feature_indexes = [int(idx) for idx in optimize_feature_indexes]
+        invalid_indexes = [idx for idx in optimize_feature_indexes if idx < 0 or idx >= X_train_values.shape[1]]
+        if invalid_indexes:
+            print(f"Invalid optimized-input feature indexes: {invalid_indexes}")
+            return None, None, None, model, None
+
     use_validation = len(X_train_values) >= 10 and validation_fraction > 0
     if use_validation:
         x_fit, x_val, y_fit, y_val = train_test_split(
@@ -1061,51 +1176,39 @@ def fit_model(model, X_train, X_test, y_train, y_test,
 
     x_scaler = StandardScaler()
     y_scaler = StandardScaler()
-    X_fit_normalized = torch.tensor(x_scaler.fit_transform(x_fit), dtype=torch.float32)
-    X_val_normalized = (
-        torch.tensor(x_scaler.transform(x_val), dtype=torch.float32)
-        if x_val is not None else None
-    )
-    X_test_normalized = torch.tensor(x_scaler.transform(X_test_values), dtype=torch.float32)
-    y_fit_normalized = torch.tensor(y_scaler.fit_transform(y_fit), dtype=torch.float32)
-    y_val_normalized = (
-        torch.tensor(y_scaler.transform(y_val), dtype=torch.float32)
-        if y_val is not None else None
-    )
-    y_test_normalized = torch.tensor(y_scaler.transform(y_test_values), dtype=torch.float32)
+    try:
+        X_fit_normalized = torch.as_tensor(x_scaler.fit_transform(x_fit), dtype=torch.float32)
+        X_val_normalized = (
+            torch.as_tensor(x_scaler.transform(x_val), dtype=torch.float32)
+            if x_val is not None
+            else None
+        )
+        X_test_normalized = torch.as_tensor(x_scaler.transform(X_test_values), dtype=torch.float32)
+        y_fit_normalized = torch.as_tensor(y_scaler.fit_transform(y_fit), dtype=torch.float32)
+        y_val_normalized = (
+            torch.as_tensor(y_scaler.transform(y_val), dtype=torch.float32)
+            if y_val is not None
+            else None
+        )
+    except ValueError as err:
+        print(f"Could not normalize data safely: {err}")
+        return None, None, None, model, None
+
     model.input_scaler_ = x_scaler
     model.target_scaler_ = y_scaler
 
-    # Initialize weights with fan-in scaling so activations start in a stable range.
-    def weights_init(m):
-        if isinstance(m, nn.Linear):
-            init.kaiming_uniform_(m.weight.data)
-            if m.bias is not None:
-                init.constant_(m.bias.data, 0)
-
-    loaded_pretrained_weights = False
-    if pretrained_state_dict_path and os.path.isfile(pretrained_state_dict_path):
-        try:
-            state_dict = torch.load(pretrained_state_dict_path, map_location="cpu")
-            model.load_state_dict(state_dict)
-            loaded_pretrained_weights = True
-            print(f"Loaded pretrained weights from: {pretrained_state_dict_path}")
-        except Exception as err:
-            print(f"Could not load pretrained weights ({err}). Reinitializing weights.")
-    if not loaded_pretrained_weights:
-        model.apply(weights_init)
+    model.apply(initialize_linear_weights)
+    load_model_state_dict(model, pretrained_state_dict_path)
 
     criterion = nn.MSELoss()
-    optimize_weights = optimization_scope in ("weights", "both")
-    optimize_inputs = optimization_scope in ("inputs", "both")
-
     optimizer = (
-        optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=ann_weight_decay)
-        if optimize_weights else None
+        optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=ann_weight_decay, eps=1e-8)
+        if optimize_weights
+        else None
     )
     original_train_inputs = X_fit_normalized.clone().detach()
     train_inputs = X_fit_normalized.clone().detach().requires_grad_(optimize_inputs)
-    input_optimizer = optim.Adam([train_inputs], lr=input_learning_rate) if optimize_inputs else None
+    input_optimizer = optim.Adam([train_inputs], lr=input_learning_rate, eps=1e-8) if optimize_inputs else None
     weight_scheduler = (
         optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
@@ -1114,7 +1217,8 @@ def fit_model(model, X_train, X_test, y_train, y_test,
             patience=lr_plateau_patience,
             min_lr=min_learning_rate,
         )
-        if optimizer is not None else None
+        if optimizer is not None
+        else None
     )
 
     best_monitor_loss = float("inf")
@@ -1123,20 +1227,25 @@ def fit_model(model, X_train, X_test, y_train, y_test,
     best_train_inputs = train_inputs.detach().clone()
     epochs_without_improvement = 0
 
-    for epoch in range(num_epochs):
+    for epoch in range(int(num_epochs)):
         model.train()
         if optimizer is not None:
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
         if input_optimizer is not None:
-            input_optimizer.zero_grad()
-        outputs = model(train_inputs)
+            input_optimizer.zero_grad(set_to_none=True)
 
+        outputs = model(train_inputs)
+        if outputs.shape != y_fit_normalized.shape:
+            print(
+                f"Model output shape {tuple(outputs.shape)} does not match "
+                f"target shape {tuple(y_fit_normalized.shape)}."
+            )
+            return None, None, None, model, None
         if not torch.isfinite(outputs).all():
             print(f"Non-finite outputs detected at epoch {epoch + 1}")
             return None, None, None, model, None
 
         loss = criterion(outputs, y_fit_normalized)
-
         if not torch.isfinite(loss):
             print(f"Non-finite loss detected at epoch {epoch + 1}")
             return None, None, None, model, None
@@ -1146,7 +1255,7 @@ def fit_model(model, X_train, X_test, y_train, y_test,
         if optimize_inputs and optimize_feature_indexes is not None and train_inputs.grad is not None:
             mask = torch.zeros_like(train_inputs.grad)
             mask[:, optimize_feature_indexes] = 1.0
-            train_inputs.grad *= mask
+            train_inputs.grad.mul_(mask)
 
         if optimize_weights:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_gradient_norm)
@@ -1158,7 +1267,7 @@ def fit_model(model, X_train, X_test, y_train, y_test,
             with torch.no_grad():
                 lower_bound = original_train_inputs - max_input_delta
                 upper_bound = original_train_inputs + max_input_delta
-                train_inputs.copy_(torch.max(torch.min(train_inputs, upper_bound), lower_bound))
+                train_inputs.clamp_(min=lower_bound, max=upper_bound)
 
         model.eval()
         with torch.no_grad():
@@ -1186,8 +1295,8 @@ def fit_model(model, X_train, X_test, y_train, y_test,
 
         if (epoch + 1) % 10 == 0 and display_steps:
             print(
-                f'Epoch [{epoch + 1}/{num_epochs}], '
-                f'Train Loss: {loss.item():.6f}, Monitor Loss: {monitor_loss:.6f}'
+                f"Epoch [{epoch + 1}/{num_epochs}], "
+                f"Train Loss: {loss.item():.6f}, Monitor Loss: {monitor_loss:.6f}"
             )
 
         if epochs_without_improvement >= early_stopping_patience:
@@ -1198,6 +1307,10 @@ def fit_model(model, X_train, X_test, y_train, y_test,
                 )
             break
 
+    if best_epoch == 0:
+        print("Training did not complete a finite epoch.")
+        return None, None, None, model, None
+
     model.load_state_dict(best_state_dict)
     train_inputs = best_train_inputs
     model.best_epoch_ = best_epoch
@@ -1205,107 +1318,102 @@ def fit_model(model, X_train, X_test, y_train, y_test,
 
     model.eval()
     with torch.no_grad():
-        predictions = model(X_test_normalized)
-
-        if not torch.isfinite(predictions).all():
+        predictions_norm = model(X_test_normalized)
+        if not torch.isfinite(predictions_norm).all():
             print("Non-finite predictions detected")
             return None, None, None, model, None
 
-    mse = float(nn.MSELoss()(predictions, y_test_normalized).item())
-    predictions_np = y_scaler.inverse_transform(predictions.detach().numpy())
-    y_test_np = y_test_values
-    r2 = r2_score(y_test_np, predictions_np, multioutput='uniform_average')
+    try:
+        predictions_np = y_scaler.inverse_transform(predictions_norm.detach().cpu().numpy())
+        predictions_np = as_2d_float_array(predictions_np, "predictions")
+        mse = float(np.mean((predictions_np - y_test_values) ** 2))
+        r2 = safe_r2_score(y_test_values, predictions_np)
+    except ValueError as err:
+        print(f"Could not compute prediction metrics: {err}")
+        return None, None, None, model, None
 
     optimized_inputs_report = None
     if optimize_inputs:
         with torch.no_grad():
             delta = train_inputs.detach() - original_train_inputs
             optimized_inputs_report = {
-                "original_inputs": original_train_inputs.detach().numpy(),
-                "optimized_inputs": train_inputs.detach().numpy(),
-                "delta_inputs": delta.numpy(),
-                "mean_abs_delta_per_feature": np.mean(np.abs(delta.numpy()), axis=0),
+                "original_inputs": original_train_inputs.detach().cpu().numpy(),
+                "optimized_inputs": train_inputs.detach().cpu().numpy(),
+                "delta_inputs": delta.cpu().numpy(),
+                "mean_abs_delta_per_feature": np.mean(np.abs(delta.cpu().numpy()), axis=0),
             }
     return predictions_np, mse, r2, model, optimized_inputs_report
 
 
 def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
+    """Fit a scikit-learn regressor with train-only feature scaling."""
+    X_train_values = as_feature_matrix(X_train, "X_train")
+    X_test_values = as_feature_matrix(X_test, "X_test")
+    y_train_values = as_2d_float_array(y_train, "y_train")
+    y_test_values = as_2d_float_array(y_test, "y_test")
+
     scaler_x = StandardScaler()
-    X_train_scaled = scaler_x.fit_transform(X_train)
-    X_test_scaled = scaler_x.transform(X_test)
-    model.feature_scaler_ = scaler_x
+    X_train_scaled = scaler_x.fit_transform(X_train_values)
+    X_test_scaled = scaler_x.transform(X_test_values)
 
-    y_train_values = y_train.values if hasattr(y_train, "values") else y_train
-    y_test_values = y_test.values if hasattr(y_test, "values") else y_test
-    y_test_2d = y_test_values.reshape(-1, 1) if y_test_values.ndim == 1 else y_test_values
-
-    is_multi_output = y_train_values.ndim == 2 and y_train_values.shape[1] > 1
-    fit_model = model
+    is_multi_output = y_train_values.shape[1] > 1
+    fit_estimator = model
+    y_train_fit = y_train_values if is_multi_output else y_train_values.ravel()
 
     if is_multi_output:
         model_name = getattr(model, "__class__", type(model)).__name__
         supports_multioutput = False
         if hasattr(model, "_get_tags"):
             supports_multioutput = bool(model._get_tags().get("multioutput", False))
-
         if not supports_multioutput:
             print(
                 f"{model_name} does not natively support multi-output regression. "
                 "Wrapping it with MultiOutputRegressor."
             )
-            fit_model = MultiOutputRegressor(model)
+            fit_estimator = MultiOutputRegressor(model)
 
-        y_train_fit = y_train_values
-    elif y_train_values.ndim == 2 and y_train_values.shape[1] == 1:
-        y_train_fit = y_train_values.ravel()
-    else:
-        y_train_fit = y_train_values
+    fit_estimator.fit(X_train_scaled, y_train_fit)
+    predictions = fit_estimator.predict(X_test_scaled)
+    predictions_2d = as_2d_float_array(predictions, "predictions")
 
-    try:
-        fit_model.fit(X_train_scaled, y_train_fit)
-        predictions = fit_model.predict(X_test_scaled)
-    except ValueError as err:
-        if is_multi_output:
-            model_name = getattr(model, "__class__", type(model)).__name__
-            print(
-                f"Warning: {model_name} could not be trained on all outputs ({err}). "
-                "Falling back to the last selected output only."
-            )
-            y_train_last = y_train_values[:, -1]
-            y_test_2d = y_test_values[:, -1].reshape(-1, 1)
-            fit_model = model
-            fit_model.fit(X_train_scaled, y_train_last)
-            predictions = fit_model.predict(X_test_scaled)
-        else:
-            raise
+    if predictions_2d.shape != y_test_values.shape:
+        raise ValueError(
+            f"Prediction shape {predictions_2d.shape} does not match target shape {y_test_values.shape}."
+        )
 
-    if predictions.ndim == 1:
-        predictions_2d = predictions.reshape(-1, 1)
-    else:
-        predictions_2d = predictions
-
-    mse = float(np.mean((predictions_2d - y_test_2d) ** 2))
-    r2 = r2_score(y_test_2d, predictions_2d, multioutput='uniform_average')
-    return predictions_2d, mse, r2, fit_model
+    fit_estimator.feature_scaler_ = scaler_x
+    mse = float(np.mean((predictions_2d - y_test_values) ** 2))
+    r2 = safe_r2_score(y_test_values, predictions_2d)
+    return predictions_2d, mse, r2, fit_estimator
 
 
 def is_torch_model(model_class):
     return isinstance(model_class, type) and issubclass(model_class, nn.Module)
 
 
-def select_epochs_with_cv_early_stopping(model_class, hidden_sizes, features=None, folds=5, patience=early_stopping_patience, min_delta=early_stopping_min_delta):
-    """
-    Estimate a good epoch count via K-Fold CV with early stopping on validation loss.
-    Returns an integer epoch recommendation or None if it cannot be computed.
-    """
+def select_epochs_with_cv_early_stopping(
+    model_class,
+    hidden_sizes,
+    features=None,
+    folds=5,
+    patience=early_stopping_patience,
+    min_delta=early_stopping_min_delta,
+):
+    """Recommend an epoch count using leakage-safe K-Fold early stopping."""
     X_train, _, y_train, _ = read_prep_data(features)
     full_X = X_train.reset_index(drop=True)
     full_y = y_train.reset_index(drop=True)
+    if len(full_X) < 2:
+        return None
 
-    kfold = KFold(n_splits=folds, shuffle=True, random_state=data_seed)
+    n_splits = min(int(folds), len(full_X))
+    if n_splits < 2:
+        return None
+
+    kfold = KFold(n_splits=n_splits, shuffle=True, random_state=data_seed)
     best_epochs = []
     input_size = full_X.shape[1]
-    output_size = full_y.shape[1] if hasattr(full_y, "shape") and len(full_y.shape) > 1 else 1
+    output_size = as_2d_float_array(full_y, "full_y").shape[1]
     max_epochs = max(list_epochs) if list_epochs else 200
 
     for fold_index, (train_idx, val_idx) in enumerate(kfold.split(full_X), start=1):
@@ -1316,44 +1424,42 @@ def select_epochs_with_cv_early_stopping(model_class, hidden_sizes, features=Non
 
         x_scaler = StandardScaler()
         y_scaler = StandardScaler()
-        x_train_fold = torch.tensor(x_scaler.fit_transform(x_train_fold), dtype=torch.float32)
-        x_val_fold = torch.tensor(x_scaler.transform(x_val_fold), dtype=torch.float32)
-        y_train_values = np.asarray(y_train_fold.values if hasattr(y_train_fold, "values") else y_train_fold)
-        y_val_values = np.asarray(y_val_fold.values if hasattr(y_val_fold, "values") else y_val_fold)
-        if y_train_values.ndim == 1:
-            y_train_values = y_train_values.reshape(-1, 1)
-        if y_val_values.ndim == 1:
-            y_val_values = y_val_values.reshape(-1, 1)
-        y_train_fold = torch.tensor(y_scaler.fit_transform(y_train_values), dtype=torch.float32)
-        y_val_fold = torch.tensor(y_scaler.transform(y_val_values), dtype=torch.float32)
-
         try:
-            model = model_class(input_size, hidden_sizes, output_size=output_size)
-        except TypeError:
-            model = model_class(input_size, hidden_sizes)
+            x_train_tensor = torch.as_tensor(x_scaler.fit_transform(x_train_fold), dtype=torch.float32)
+            x_val_tensor = torch.as_tensor(x_scaler.transform(x_val_fold), dtype=torch.float32)
+            y_train_values = as_2d_float_array(y_train_fold, "y_train_fold")
+            y_val_values = as_2d_float_array(y_val_fold, "y_val_fold")
+            y_train_tensor = torch.as_tensor(y_scaler.fit_transform(y_train_values), dtype=torch.float32)
+            y_val_tensor = torch.as_tensor(y_scaler.transform(y_val_values), dtype=torch.float32)
+            model = make_torch_model(model_class, input_size, hidden_sizes, output_size)
+        except (TypeError, ValueError) as err:
+            print(f"CV fold {fold_index} skipped: {err}")
+            continue
 
-        if len(hidden_sizes) != len(model.hidden_layers):
+        if not validate_hidden_size_compatibility(model, hidden_sizes):
             return None
 
         set_model_seed(model_seed + fold_index)
-        model.apply(
-            lambda m: (
-                init.kaiming_uniform_(m.weight.data),
-                init.constant_(m.bias.data, 0) if m.bias is not None else None
-            ) if isinstance(m, nn.Linear) else None
-        )
+        model.apply(initialize_linear_weights)
         criterion = nn.MSELoss()
-        optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=ann_weight_decay)
+        optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=ann_weight_decay, eps=1e-8)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=lr_plateau_factor,
+            patience=lr_plateau_patience,
+            min_lr=min_learning_rate,
+        )
 
         best_val_loss = float("inf")
-        best_epoch = 1
+        best_epoch = None
         epochs_without_improvement = 0
 
-        for epoch in range(1, max_epochs + 1):
+        for epoch in range(1, int(max_epochs) + 1):
             model.train()
-            optimizer.zero_grad()
-            train_outputs = model(x_train_fold)
-            train_loss = criterion(train_outputs, y_train_fold)
+            optimizer.zero_grad(set_to_none=True)
+            train_outputs = model(x_train_tensor)
+            train_loss = criterion(train_outputs, y_train_tensor)
             if not torch.isfinite(train_loss):
                 break
             train_loss.backward()
@@ -1362,13 +1468,14 @@ def select_epochs_with_cv_early_stopping(model_class, hidden_sizes, features=Non
 
             model.eval()
             with torch.no_grad():
-                val_outputs = model(x_val_fold)
-                val_loss = criterion(val_outputs, y_val_fold).item()
+                val_outputs = model(x_val_tensor)
+                val_loss = criterion(val_outputs, y_val_tensor).item()
 
             if not np.isfinite(val_loss):
                 break
+            scheduler.step(val_loss)
 
-            if val_loss + min_delta < best_val_loss:
+            if val_loss < best_val_loss - min_delta:
                 best_val_loss = val_loss
                 best_epoch = epoch
                 epochs_without_improvement = 0
@@ -1378,15 +1485,17 @@ def select_epochs_with_cv_early_stopping(model_class, hidden_sizes, features=Non
             if epochs_without_improvement >= patience:
                 break
 
-        best_epochs.append(best_epoch)
+        if best_epoch is not None:
+            best_epochs.append(best_epoch)
 
     if not best_epochs:
         return None
     return int(np.median(best_epochs))
 
+
 ############################ Feature Selection ####################
 # Selects the best combination of features by removing features one by one
-# Search about Backward Feature Elimination 
+# Search about Backward Feature Elimination
 # Sensitivity Analysis Functions
 
 
@@ -1396,10 +1505,7 @@ def train_single_model(model_class, num_epochs, hidden_sizes, features=None, run
     X_train, X_test, y_train, y_test = read_prep_data(features)
     input_size = X_train.shape[1]
     output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
-    try:
-        model = model_class(input_size, hidden_sizes, output_size=output_size)
-    except TypeError:
-        model = model_class(input_size, hidden_sizes)
+    model = make_torch_model(model_class, input_size, hidden_sizes, output_size)
 
     _, _, r2, model, _ = fit_model(
         model, X_train, X_test, y_train, y_test, num_epochs, display_steps=False, run=run
@@ -1522,11 +1628,8 @@ def weight_analysis(model_class, data, inputs, output, num_epochs, hidden_sizes)
     input_size = X_train.shape[1]
 
     output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
-    try:
-        model = model_class(input_size, hidden_sizes, output_size=output_size)
-    except TypeError:
-        model = model_class(input_size, hidden_sizes)
-    _,_,r2, model = fit_model(model, X_train, X_test, y_train, y_test, num_epochs)
+    model = make_torch_model(model_class, input_size, hidden_sizes, output_size)
+    _, _, r2, model, _ = fit_model(model, X_train, X_test, y_train, y_test, num_epochs)
     print("R2:", r2)
 
     weight_importances = {}
@@ -1534,13 +1637,13 @@ def weight_analysis(model_class, data, inputs, output, num_epochs, hidden_sizes)
         for i, feature in enumerate(inputs):
             importance = np.abs(model.hidden_layers[0].weight[:, i].numpy()).mean()
             weight_importances[feature] = importance
-    
+
     weight_table = pd.DataFrame(list(weight_importances.items()), columns=['Feature', 'Weight Importance'])
     return weight_table
 
 
 def jackknife_sensitivity_analysis(model_class, data, inputs, output, num_epochs, hidden_sizes):
-    base_model_r2, _, _, _, _, _, run = repeat_fit_model(model_class, 
+    base_model_r2, _, _, _, _, _, run, _ = repeat_fit_model(model_class,
             num_repeats, num_epochs, hidden_sizes)
     sensitivities = {}
     variances = []
@@ -1552,9 +1655,13 @@ def jackknife_sensitivity_analysis(model_class, data, inputs, output, num_epochs
         reduced_inputs = [f for f in inputs if f != input_feature]
         reduced_r2_list = []
         for _ in range(_num_repeats):
-            reduced_r2, _, _, _, _, _, _run = repeat_fit_model(model_class,
-                    1, num_epochs, hidden_sizes, features= reduced_inputs)
-            reduced_r2_list.append(reduced_r2)
+            reduced_r2, _, _, _, _, _, _run, _ = repeat_fit_model(
+                model_class, 1, num_epochs, hidden_sizes, features=reduced_inputs
+            )
+            if reduced_r2 is not None:
+                reduced_r2_list.append(reduced_r2)
+        if not reduced_r2_list or base_model_r2 is None:
+            continue
         reduced_r2_mean = np.mean(reduced_r2_list)
         sensitivity = base_model_r2 - reduced_r2_mean
         variance = np.var(reduced_r2_list)
@@ -1566,13 +1673,16 @@ def jackknife_sensitivity_analysis(model_class, data, inputs, output, num_epochs
     return sensitivity_table
 
 def backward_feature_elimination(model_class, data, inputs, output, num_epochs, hidden_sizes):
-    mean_r2, _, _, _, _,_, _run = repeat_fit_model(model_class,
+    mean_r2, _, _, _, _, _, _run, _ = repeat_fit_model(model_class,
             num_repeats, num_epochs, hidden_sizes,features=inputs)
+    if mean_r2 is None:
+        print("Backward elimination skipped because the baseline model did not train successfully.")
+        return pd.DataFrame(columns=["features", "R2"])
     best_r2 = mean_r2
     print("Using all features")
     print("Features:", inputs)
     print("R2:", mean_r2)
-    candidates = inputs
+    candidates = list(inputs)
     rows = [] # Rows of a table to show the features and the result
     rows.append({"features": ", ".join(inputs), "R2": round(mean_r2,2)})
     while(True):
@@ -1580,7 +1690,9 @@ def backward_feature_elimination(model_class, data, inputs, output, num_epochs, 
         for feature in candidates:
             # Selet other features except for current feature
             features = [f for f in candidates if f != feature]
-            mean_r2, _, _, _,_,_, _run = repeat_fit_model(model_class, num_repeats, num_epochs, hidden_sizes, features=features)
+            mean_r2, _, _, _, _, _, _run, _ = repeat_fit_model(model_class, num_repeats, num_epochs, hidden_sizes, features=features)
+            if mean_r2 is None:
+                continue
             results[feature] = mean_r2
             print("---------------------------------------")
             # Results of removing the feature
@@ -1628,13 +1740,13 @@ def forward_feature_selection(model_class, data, inputs, output, num_epochs, hid
     while(True):
         results = {}
         # for all features except for the candidates
-        for feature in data.drop(candidates, axis=1).columns:
+        for feature in [feature for feature in inputs if feature not in candidates]:
             if len(candidates) == 0:
                 features = [feature]
             else:
-                features = [feature] + candidates 
+                features = [feature] + candidates
 
-            mean_r2, _, _, _,_,_, _run = repeat_fit_model(model_class, num_repeats, num_epochs, hidden_sizes, features=features)
+            mean_r2, _, _, _, _, _, _run, _ = repeat_fit_model(model_class, num_repeats, num_epochs, hidden_sizes, features=features)
             if mean_r2 is None:
                 continue
             results[feature] = mean_r2
@@ -1675,49 +1787,62 @@ def forward_feature_selection(model_class, data, inputs, output, num_epochs, hid
 
 
 # Repeats an fit_model to get average of results
-def repeat_fit_model(model_class, num_repeats, 
-        num_epochs, hidden_sizes, 
-        display_steps=False, features=None, optimization_scope="weights", optimize_feature_indexes=None, pretrained_state_dict_path=None):
+def repeat_fit_model(
+    model_class,
+    num_repeats,
+    num_epochs,
+    hidden_sizes,
+    display_steps=False,
+    features=None,
+    optimization_scope="weights",
+    optimize_feature_indexes=None,
+    pretrained_state_dict_path=None,
+):
+    """Run repeated training/evaluation and summarize successful runs.
+
+    Returns eight values in all cases: mean R² (%), std R² (%), mean MSE,
+    best predictions, best R² (%), per-run R² list (%), best run index, and
+    the optimized-input report from the best run.
+    """
     X_train, X_test, y_train, y_test = read_prep_data(features)
     r2_list = []
     mse_list = []
-    max_r2 = 0
+    max_r2 = -float("inf")
     max_run = 0
     best_preds = None
     best_optimized_inputs_report = None
     input_size = X_train.shape[1]
-    output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
-    for i in range(num_repeats):
-        if is_torch_model(model_class):
-            # Recreate model on each run so repeats are independent.
-            try:
-                model = model_class(input_size, hidden_sizes, output_size=output_size)
-            except TypeError:
-                model = model_class(input_size, hidden_sizes)
+    output_size = as_2d_float_array(y_train, "y_train").shape[1]
 
-            if len(hidden_sizes) != len(model.hidden_layers):
-                continue
+    for i in range(int(num_repeats)):
+        try:
+            if is_torch_model(model_class):
+                model = make_torch_model(model_class, input_size, hidden_sizes, output_size)
+                if not validate_hidden_size_compatibility(model, hidden_sizes):
+                    print(f"Skipping incompatible hidden sizes {hidden_sizes} for {model_class.__name__}.")
+                    continue
+                predictions, mse, r2, model, optimized_inputs_report = fit_model(
+                    model,
+                    X_train,
+                    X_test,
+                    y_train,
+                    y_test,
+                    num_epochs,
+                    display_steps=display_steps,
+                    run=i,
+                    optimization_scope=optimization_scope,
+                    optimize_feature_indexes=optimize_feature_indexes,
+                    pretrained_state_dict_path=pretrained_state_dict_path,
+                )
+            else:
+                model = model_class(model_seed + i)
+                predictions, mse, r2, model = fit_sklearn_model(model, X_train, X_test, y_train, y_test)
+                optimized_inputs_report = None
+        except (TypeError, ValueError, RuntimeError) as err:
+            print(f"Run {i + 1} failed: {err}")
+            continue
 
-            predictions, mse, r2, model, optimized_inputs_report = fit_model(
-                model,
-                X_train,
-                X_test,
-                y_train,
-                y_test,
-                num_epochs,
-                display_steps=display_steps,
-                run=i,
-                optimization_scope=optimization_scope,
-                optimize_feature_indexes=optimize_feature_indexes,
-                pretrained_state_dict_path=pretrained_state_dict_path,
-            )
-        else:
-            model = model_class(model_seed + i)
-            predictions, mse, r2, model = fit_sklearn_model(
-                model, X_train, X_test, y_train, y_test
-            )
-            optimized_inputs_report = None
-        if r2 is None:
+        if r2 is None or mse is None or predictions is None:
             continue
 
         if r2 > max_r2:
@@ -1726,17 +1851,29 @@ def repeat_fit_model(model_class, num_repeats,
             best_preds = predictions
             best_optimized_inputs_report = optimized_inputs_report
 
-        r2_list.append(r2*100)
-        mse_list.append(mse)
+        r2_list.append(float(r2) * 100.0)
+        mse_list.append(float(mse))
+
     if display_steps:
         print(r2_list)
 
-    mean_r2 = np.mean(r2_list) if r2_list else None
-    mean_mse = np.mean(mse_list) if mse_list else None
-    std_r2 = np.std(r2_list) if r2_list else None
-    std_mse = np.std(mse_list) if mse_list else None
+    if not r2_list:
+        return None, None, None, None, None, [], max_run, None
 
-    return mean_r2, std_r2, mean_mse, best_preds, max_r2*100, r2_list, max_run, best_optimized_inputs_report
+    mean_r2 = float(np.mean(r2_list))
+    mean_mse = float(np.mean(mse_list))
+    std_r2 = float(np.std(r2_list))
+    return (
+        mean_r2,
+        std_r2,
+        mean_mse,
+        best_preds,
+        float(max_r2) * 100.0,
+        r2_list,
+        max_run,
+        best_optimized_inputs_report,
+    )
+
 
 ############################### Start of Program ###################
 dataset_path = "convert/sugar_all_days_clean_7.csv"
@@ -1879,7 +2016,7 @@ if answer != "0":
     if not list_epochs and not use_cv_early_stop:
         print("No valid epoch values were provided.")
         exit()
-    
+
     if list_epochs and has_nn_model:
         print("Manual epoch candidates:", list_epochs)
     if use_cv_early_stop and has_nn_model:
@@ -2025,12 +2162,12 @@ if answer != "0":
                     best_model_index = model_index
                     best_epochs = num_epochs
                     best_hidden_sizes = hidden_sizes
-                
+
                 total_nodes = sum(hidden_sizes) if hidden_sizes else 0
 
                 result = {
-                        "model":model_name, 
-                        "R2": round(mean_r2,1), 
+                        "model":model_name,
+                        "R2": round(mean_r2,1),
                         "MSE": round(mean_mse,2),
                         "R2 std": round(std_r2, 1),
                         "R2 List": [round(x, 1) for x in r2_list],
@@ -2065,7 +2202,7 @@ if answer != "0":
     # Create and save latex code for table
     latex_table["R2"] = latex_table.apply(lambda row: f"{row['R2']} ± {row['R2 std']}", axis=1)
     latex_table = latex_table.drop(columns=["R2 List","R2 std"])
-    results_table_latex = generate_latex_table(latex_table, 
+    results_table_latex = generate_latex_table(latex_table,
             caption="Results of different models", label="models")
     with open(os.path.join("tables", "results.tex"), 'w', encoding='utf-8') as f:
         print(results_table_latex, file=f)
@@ -2083,21 +2220,24 @@ if answer != "0":
     print(results_table)
     print("========================== Best Mean Model ===============================")
     print("Best Mean R-Squred:", best_mean_r2)
-    print("Best model with better mean R-Squred:", best_model_name) 
-    print("Best Hidden sizes:", best_hidden_sizes) 
-    print("Best epochs:", best_epochs) 
+    print("Best model with better mean R-Squred:", best_model_name)
+    print("Best Hidden sizes:", best_hidden_sizes)
+    print("Best epochs:", best_epochs)
     print("=========================== Max Model ================================")
-    print("Best model with better max R-Squred:", max_model_name) 
-    print("Best Hidden sizes:", max_hidden_sizes) 
-    print("Best epochs:", max_epochs) 
+    print("Best model with better max R-Squred:", max_model_name)
+    print("Best Hidden sizes:", max_hidden_sizes)
+    print("Best epochs:", max_epochs)
     print("Max R-Squred:", best_r2)
- 
+
     results_table.to_csv("exp.csv")
 
     X_train, X_test, y_train, y_test = read_prep_data(active_features)
 
     # Show and save the plot for best results
-    best_predictions = model_best_predictions[max_model_name] 
+    best_predictions = model_best_predictions.get(max_model_name)
+    if best_predictions is None:
+        print("Best model did not produce predictions. Skipping reporting/plots.")
+        exit()
     output_title = ", ".join(outputs)
     title = "Prediction of " + output_title + " with " + max_model_name + " epochs:" + str(max_epochs)
     file_name = f"R2-{best_r2:.2f}-" + max_model_name + "-" + "-".join(outputs) + ".png"
@@ -2172,7 +2312,7 @@ if answer != "0":
 
     print("\n\n")
     print("Plot was saved in plots folder")
-    answer = input("Do you want to see them? [y]:") 
+    answer = input("Do you want to see them? [y]:")
     if len(outputs) == 1:
         target_series = y_test[outputs[0]]
         pred_series = best_predictions[:, 0] if best_predictions.ndim > 1 else best_predictions
@@ -2196,13 +2336,10 @@ if answer != "0":
         os.makedirs(CHECKPOINTS_DIR, exist_ok=True)
         checkpoint_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{max_model_name}_R2-{best_r2:.2f}_run-{best_run}.pt")
         weights_path = os.path.join(CHECKPOINTS_DIR, checkpoint_name)
-        try:
-            input_size = X_train.shape[1]
-            output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
-            best_model_instance = models[max_model_index](input_size, max_hidden_sizes, output_size=output_size)
-        except TypeError:
-            best_model_instance = models[max_model_index](input_size, max_hidden_sizes)
-        _, _, _, best_model_instance, _ = fit_model(
+        input_size = X_train.shape[1]
+        output_size = as_2d_float_array(y_train, "y_train").shape[1]
+        best_model_instance = make_torch_model(models[max_model_index], input_size, max_hidden_sizes, output_size)
+        checkpoint_predictions, checkpoint_mse, checkpoint_r2, best_model_instance, _ = fit_model(
             best_model_instance,
             X_train,
             X_test,
@@ -2215,29 +2352,39 @@ if answer != "0":
             optimize_feature_indexes=None,
             pretrained_state_dict_path=None,
         )
-        torch.save(best_model_instance.state_dict(), weights_path)
-        print(f"Saved model checkpoint: {weights_path}")
+        checkpoint_ready = (
+            checkpoint_r2 is not None
+            and checkpoint_predictions is not None
+            and getattr(best_model_instance, "input_scaler_", None) is not None
+            and getattr(best_model_instance, "target_scaler_", None) is not None
+        )
+        if checkpoint_ready:
+            torch.save(best_model_instance.state_dict(), weights_path)
+            print(f"Saved model checkpoint: {weights_path}")
 
-        try:
-            recommendation = recommend_operating_conditions(
-                current_conditions=X_test.iloc[0],
-                trained_model=best_model_instance,
-                input_features=active_features,
-                output_features=outputs,
-                historical_inputs=X_train,
-                historical_targets=y_train,
-            )
-            recommendation_path = os.path.join("tables", "recommended-operating-conditions.json")
-            with open(recommendation_path, "w", encoding="utf-8") as fp:
-                json.dump(recommendation, fp, indent=2, ensure_ascii=False, default=float)
-            print_industrial_operator_demo(
-                recommendation=recommendation,
-                input_features=active_features,
-                output_features=outputs,
-            )
-            print(f"Saved recommendation: {recommendation_path}")
-        except (RecommendationError, ValueError, KeyError, TypeError) as err:
-            print(f"Recommendation engine skipped: {err}")
+            try:
+                recommendation = recommend_operating_conditions(
+                    current_conditions=X_test.iloc[0],
+                    trained_model=best_model_instance,
+                    input_features=active_features,
+                    output_features=outputs,
+                    historical_inputs=X_train,
+                    historical_targets=y_train,
+                )
+                recommendation_path = os.path.join("tables", "recommended-operating-conditions.json")
+                with open(recommendation_path, "w", encoding="utf-8") as fp:
+                    json.dump(recommendation, fp, indent=2, ensure_ascii=False, default=float)
+                print_industrial_operator_demo(
+                    recommendation=recommendation,
+                    input_features=active_features,
+                    output_features=outputs,
+                )
+                print(f"Saved recommendation: {recommendation_path}")
+            except (RecommendationError, ValueError, KeyError, TypeError) as err:
+                print(f"Recommendation engine skipped: {err}")
+        else:
+            print("Checkpoint save skipped because the best model could not be retrained safely.")
+            weights_path = None
 
     save_run_summary(
         model_name=max_model_name,
@@ -2250,7 +2397,7 @@ if answer != "0":
         optimization_scope=optimization_scope,
         weights_path=weights_path,
     )
-    answer = input("Do you want to see them? [y]:") 
+    answer = input("Do you want to see them? [y]:")
     if answer == "y" or answer == "yes":
        print("======= Predictions of best model:", best_model_name)
        print(results_df)

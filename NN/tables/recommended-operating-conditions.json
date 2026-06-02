@@ -1,0 +1,100 @@
+{
+  "recommended_settings": {
+    "co2_percent": 7.5995,
+    "carbonated_pH": 7.245417,
+    "lime_alkalinity": 7.143
+  },
+  "predicted_future_quality": {
+    "white_total_points": 14.553244590759277
+  },
+  "risk_prediction": {
+    "risk_level": "LOW",
+    "target_risks": [
+      {
+        "target": "white_total_points",
+        "predicted_value": 14.553244590759277,
+        "risk_level": "LOW",
+        "reason": "at or below historical P50 (15.340)"
+      }
+    ],
+    "risk_drivers": [
+      {
+        "target": "white_total_points",
+        "predicted_value": 14.553244590759277,
+        "risk_level": "LOW",
+        "reason": "at or below historical P50 (15.340)"
+      }
+    ],
+    "operator_warnings": [
+      "LOW RISK: predicted sugar quality is inside the normal operating band.",
+      "Operator action: continue routine monitoring and keep set-points stable."
+    ]
+  },
+  "objective_score": 59082505.98594321,
+  "full_candidate_inputs": {
+    "raw_sugar_color": 1847.0,
+    "raw_syrup_brix": 64.68,
+    "raw_syrup_color": 2652.0,
+    "lime_alkalinity": 7.143,
+    "co2_percent": 7.5995,
+    "carbonated_alkalinity": 0.0,
+    "carbonated_pH": 7.245417
+  },
+  "current_settings": {
+    "co2_percent": 11.08,
+    "carbonated_pH": 7.73,
+    "lime_alkalinity": 7.98
+  },
+  "current_prediction": {
+    "white_total_points": 16.213661193847656
+  },
+  "current_risk_prediction": {
+    "risk_level": "MEDIUM",
+    "target_risks": [
+      {
+        "target": "white_total_points",
+        "predicted_value": 16.213661193847656,
+        "risk_level": "MEDIUM",
+        "reason": "between historical P50 (15.340) and P80 (17.290)"
+      }
+    ],
+    "risk_drivers": [
+      {
+        "target": "white_total_points",
+        "predicted_value": 16.213661193847656,
+        "risk_level": "MEDIUM",
+        "reason": "between historical P50 (15.340) and P80 (17.290)"
+      }
+    ],
+    "operator_warnings": [
+      "MEDIUM RISK: predicted sugar quality is moving toward the high-risk band.",
+      "Operator action: apply the recommended set-points and monitor quality/color trend closely."
+    ]
+  },
+  "searched_candidates": 343,
+  "control_ranges": {
+    "co2_percent": [
+      7.599500000000001,
+      8.0
+    ],
+    "carbonated_pH": [
+      7.1065000000000005,
+      7.940000000000001
+    ],
+    "lime_alkalinity": [
+      7.143000000000001,
+      0.25
+    ]
+  },
+  "target_weights": {
+    "white_total_points": 1.0
+  },
+  "logic": [
+    "Only approved controllable refinery variables are changed; early/raw conditions remain fixed.",
+    "Each controllable variable is searched over an industrially realistic range, tightened by historical 5th-95th percentiles when available.",
+    "Every candidate is sent through the trained future-quality model using the same scalers saved during training.",
+    "Predicted sugar quality is classified as LOW, MEDIUM, or HIGH risk using historical P50/P80 quality thresholds when available.",
+    "The objective minimizes predicted future sugar color/quality output, adds penalties for MEDIUM/HIGH risk predictions, and adds a small movement/edge penalty to avoid unrealistic set-point jumps.",
+    "The returned recommendation is the feasible candidate with the lowest total objective score."
+  ]
+}

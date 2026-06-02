@@ -158,3 +158,13 @@ After the best PyTorch model is saved, `run.py` now prints a professional operat
 5. the AI prints the industrial risk level, risk drivers, and operator advisory messages.
 
 The demo is formatted as readable shift-log tables so that engineers and operators can compare current values, recommended set-points, expected quality improvement, safe search ranges, and the final `LOW`, `MEDIUM`, or `HIGH` risk level during an industrial presentation.
+
+## Sequence-model migration note
+
+Before replacing the feedforward ANN with LSTM or GRU, see
+[`sequence_model_evaluation.md`](sequence_model_evaluation.md). The current
+recommendation is to keep the feedforward/tabular approach as the production
+candidate, add leakage-safe temporal features where justified, and test a small
+GRU/LSTM only as a controlled benchmark after grouped time-series validation is
+available.
+
