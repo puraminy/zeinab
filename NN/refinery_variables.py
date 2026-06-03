@@ -80,33 +80,58 @@ def is_target_variable(column_name, output_features=None):
     )
 
 
-def is_allowed_model_input(column_name, output_features=None):
-    """Return True only for early/control variables that are not targets."""
+def _optional_future_quality_input_set(optional_future_quality_inputs=None):
+    """Normalize opt-in future-quality variables that may be used as inputs."""
+    return {_canonical_name(name) for name in (optional_future_quality_inputs or [])}
+
+
+def is_allowed_model_input(column_name, output_features=None, optional_future_quality_inputs=None):
+    """Return True for standard inputs plus explicitly opted-in future-quality inputs."""
+    output_features = set(output_features or [])
+    base_name = base_variable_name(column_name)
+    if column_name in output_features or base_name in output_features:
+        return False
+
+    optional_quality_inputs = _optional_future_quality_input_set(optional_future_quality_inputs)
+    if _canonical_name(base_name) in optional_quality_inputs:
+        return True
+
     if is_target_variable(column_name, output_features=output_features):
         return False
-    base_name = base_variable_name(column_name)
     return _canonical_name(base_name) in _ALLOWED_CANONICAL
 
 
-def filter_allowed_model_inputs(columns, output_features=None):
-    """Keep only early + control columns, preserving the incoming order."""
+def filter_allowed_model_inputs(columns, output_features=None, optional_future_quality_inputs=None):
+    """Keep allowed input columns, preserving the incoming order."""
     return [
         column for column in columns
-        if is_allowed_model_input(column, output_features=output_features)
+        if is_allowed_model_input(
+            column,
+            output_features=output_features,
+            optional_future_quality_inputs=optional_future_quality_inputs,
+        )
     ]
 
 
-def find_leakage_columns(input_features, output_features=None):
+def find_leakage_columns(input_features, output_features=None, optional_future_quality_inputs=None):
     """Identify selected inputs that would leak future quality information."""
     return [
         column for column in input_features
-        if not is_allowed_model_input(column, output_features=output_features)
+        if not is_allowed_model_input(
+            column,
+            output_features=output_features,
+            optional_future_quality_inputs=optional_future_quality_inputs,
+        )
     ]
 
 
-def validate_model_inputs(input_features, output_features=None):
+def validate_model_inputs(input_features, output_features=None, optional_future_quality_inputs=None):
     """Raise a clear error if an input list contains leaked/disallowed variables."""
-    leakage_columns = find_leakage_columns(input_features, output_features=output_features)
+    leakage_columns = find_leakage_columns(
+        input_features,
+        output_features=output_features,
+        optional_future_quality_inputs=optional_future_quality_inputs,
+    )
     if leakage_columns:
         allowed = list(EARLY_VARIABLES) + list(CONTROL_VARIABLES)
         targets = list(TARGET_VARIABLES)
@@ -114,7 +139,9 @@ def validate_model_inputs(input_features, output_features=None):
             "Target-leakage prevention blocked disallowed model inputs: "
             f"{leakage_columns}. Allowed inputs are EARLY_VARIABLES + "
             f"CONTROL_VARIABLES only: {allowed}. Future quality variables are "
-            f"TARGET_VARIABLES and must be predicted, not used as inputs: {targets}."
+            "TARGET_VARIABLES and must be predicted, not used as inputs unless "
+            "explicitly selected in run.py's Future Quality Variables prompt "
+            f"and not also selected as output targets: {targets}."
         )
     return list(input_features)
 

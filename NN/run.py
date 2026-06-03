@@ -65,6 +65,19 @@ SAVED_RUNS_DIR = "saved_runs"
 CHECKPOINTS_DIR = "checkpoints"
 
 
+FUTURE_QUALITY_INPUT_CANDIDATES = [
+    "filtercake_moisture",
+    "filtercake_sugar",
+    "sweetwater_brix",
+    "sulphited_pH",
+    "sulphited_brix",
+    "sulphited_color",
+    "standard_liquor_pH",
+    "standard_liquor_brix",
+    "standard_liquor_color",
+]
+
+
 def color_text(text, color):
     return f"{color}{text}{ANSI_RESET}"
 
@@ -529,6 +542,95 @@ def parse_multi_select(answer, options, allow_all=True, one_based=False):
     return selected_values
 
 
+def print_future_quality_variables_menu():
+    print("\n" + "-" * 50)
+    print("Future Quality Variables")
+    for idx, variable_name in enumerate(FUTURE_QUALITY_INPUT_CANDIDATES, start=1):
+        print(f"{idx}) {variable_name}")
+    print("-" * 50)
+
+
+def append_future_quality_input_candidates(
+    active_input_features,
+    available_columns,
+    selected_output_features=None,
+    prompt_label="Select future-quality variables to add as candidate input features",
+):
+    """Prompt for optional future-quality inputs and append valid, unique selections.
+
+    Future-quality variables are normally targets. This opt-in prompt lets the
+    user include available non-target quality measurements as normal model
+    inputs for future-quality prediction while preserving feature order and
+    preventing duplicates.
+    """
+    active_input_features = list(active_input_features)
+    available_columns = list(available_columns)
+    selected_output_features = set(selected_output_features or [])
+
+    print_future_quality_variables_menu()
+    answer = input(
+        f"{prompt_label} (indexes/ranges), [all], or Enter for none [none]: "
+    ).strip()
+    if not answer:
+        print("No additional future-quality input variables selected.")
+        return active_input_features, []
+
+    try:
+        selected_variables = parse_multi_select(
+            answer,
+            FUTURE_QUALITY_INPUT_CANDIDATES,
+            allow_all=True,
+            one_based=True,
+        )
+    except ValueError as err:
+        print(f"Invalid future-quality input selection: {err}")
+        exit()
+
+    if selected_variables is None:
+        selected_variables = list(FUTURE_QUALITY_INPUT_CANDIDATES)
+
+    appended_variables = []
+    skipped_missing = []
+    skipped_outputs = []
+    skipped_duplicates = []
+
+    for variable_name in selected_variables:
+        if variable_name in selected_output_features:
+            skipped_outputs.append(variable_name)
+            continue
+        if variable_name not in available_columns:
+            skipped_missing.append(variable_name)
+            continue
+        if variable_name in active_input_features:
+            skipped_duplicates.append(variable_name)
+            continue
+        active_input_features.append(variable_name)
+        appended_variables.append(variable_name)
+
+    if appended_variables:
+        print("Added future-quality candidate input feature(s): " + ", ".join(appended_variables))
+    else:
+        print("No future-quality variables were added to the input feature list.")
+
+    if skipped_outputs:
+        print(
+            "Warning: selected future-quality variable(s) are current output target(s) "
+            "and were skipped to avoid target leakage: " + ", ".join(skipped_outputs)
+        )
+    if skipped_missing:
+        print(
+            "Warning: selected future-quality variable(s) are not present in X_train.columns "
+            "and were skipped: " + ", ".join(skipped_missing)
+        )
+    if skipped_duplicates:
+        print(
+            "Already selected as input feature(s); duplicates were ignored: "
+            + ", ".join(skipped_duplicates)
+        )
+
+    return active_input_features, appended_variables
+
+
 def print_selection_guide():
     print("\nSelection guide:")
     print("- Single indexes: 1 3 5")
@@ -637,7 +739,9 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
         existing_all_inputs = pd.read_csv(prep_x_train_path, nrows=0).columns.tolist()
         existing_outputs = pd.read_csv(prep_y_train_path, nrows=0).columns.tolist()
         leaked_existing_inputs = find_leakage_columns(
-            existing_all_inputs, output_features=existing_outputs
+            existing_all_inputs,
+            output_features=existing_outputs,
+            optional_future_quality_inputs=FUTURE_QUALITY_INPUT_CANDIDATES,
         )
         if leaked_existing_inputs:
             print(
@@ -648,6 +752,17 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
             X_train_existing, _, y_train_existing, _ = read_prep_data(inputs=None, prep_folder=prep_folder)
             existing_inputs = X_train_existing.columns.tolist()
             print_numbered_feature_list("Prepared Input Features (prep_data)", existing_inputs, ANSI_GREEN)
+            existing_inputs, optional_future_quality_inputs = append_future_quality_input_candidates(
+                existing_inputs,
+                existing_all_inputs,
+                selected_output_features=existing_outputs,
+            )
+            if optional_future_quality_inputs:
+                X_train_existing, _, y_train_existing, _ = read_prep_data(
+                    inputs=existing_inputs,
+                    prep_folder=prep_folder,
+                    optional_future_quality_inputs=optional_future_quality_inputs,
+                )
             print_numbered_feature_list("Prepared Output Features (prep_data)", existing_outputs, ANSI_BLUE)
 
             metadata = read_prep_metadata(prep_folder)
@@ -701,7 +816,16 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
                         resolved_inputs = (
                             available_inputs if selected_input_features is None else selected_input_features
                         )
-                        validate_model_inputs(resolved_inputs, output_features=existing_outputs)
+                        resolved_inputs, optional_future_quality_inputs = append_future_quality_input_candidates(
+                            resolved_inputs,
+                            train_df.columns,
+                            selected_output_features=existing_outputs,
+                        )
+                        validate_model_inputs(
+                            resolved_inputs,
+                            output_features=existing_outputs,
+                            optional_future_quality_inputs=optional_future_quality_inputs,
+                        )
                         missing_inputs_in_test = [
                             col for col in resolved_inputs if col not in test_df.columns
                         ]
@@ -821,7 +945,16 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
     resolved_inputs = (
         available_input_features if selected_input_features is None else selected_input_features
     )
-    validate_model_inputs(resolved_inputs, output_features=selected_output_features)
+    resolved_inputs, optional_future_quality_inputs = append_future_quality_input_candidates(
+        resolved_inputs,
+        data.columns,
+        selected_output_features=selected_output_features,
+    )
+    validate_model_inputs(
+        resolved_inputs,
+        output_features=selected_output_features,
+        optional_future_quality_inputs=optional_future_quality_inputs,
+    )
     (
         sequential_features,
         sequential_groups,
@@ -852,9 +985,14 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all_days_clean_7.csv", pre
         rnn_window_size=rnn_window_size,
         add_rolling_dynamics=add_rolling_dynamics,
         rolling_window=rolling_window,
+        optional_future_quality_inputs=optional_future_quality_inputs,
     )
 
-    X_train, X_test, y_train, y_test = read_prep_data(inputs=None, prep_folder=prep_folder)
+    X_train, X_test, y_train, y_test = read_prep_data(
+        inputs=resolved_inputs,
+        prep_folder=prep_folder,
+        optional_future_quality_inputs=optional_future_quality_inputs,
+    )
     _ = (X_test, y_test)
     return X_train, y_train.columns.tolist(), use_auto_feature_selection, reused_prep_data
 
@@ -1878,16 +2016,22 @@ def repeat_fit_model(
 ############################### Start of Program ###################
 dataset_path = "convert/sugar_all_days_clean_7.csv"
 selected_saved_run, loaded_optimization_scope = prompt_saved_run_choice()
-_, _, use_auto_feature_selection, reused_prep_data = prepare_or_reuse_data(
+prepared_X_train, prepared_outputs, use_auto_feature_selection, reused_prep_data = prepare_or_reuse_data(
     dataset_path=dataset_path,
     prep_folder="prep_data",
 )
 
 saved_inputs = selected_saved_run.get("inputs") if selected_saved_run else None
 saved_outputs = selected_saved_run.get("outputs") if selected_saved_run else None
+run_inputs = saved_inputs if saved_inputs else prepared_X_train.columns.tolist()
+run_optional_future_quality_inputs = [
+    feature for feature in run_inputs
+    if feature in FUTURE_QUALITY_INPUT_CANDIDATES
+]
 X_train, X_test, y_train, y_test = read_prep_data(
-    inputs=saved_inputs if saved_inputs else None,
+    inputs=run_inputs,
     prep_folder="prep_data",
+    optional_future_quality_inputs=run_optional_future_quality_inputs,
 )
 
 # After loading, get the column names from X_train

@@ -37,13 +37,15 @@ def _normalize_output_features(output_feature, all_columns):
     return output_features
 
 
-def resolve_data_columns(data, output_feature=None, input_features=None):
+def resolve_data_columns(data, output_feature=None, input_features=None, optional_future_quality_inputs=None):
     """Resolve targets and enforce refinery-safe input columns."""
     output_features = _normalize_output_features(output_feature, data.columns)
 
     if input_features is None:
         input_features = filter_allowed_model_inputs(
-            data.columns, output_features=output_features
+            data.columns,
+            output_features=output_features,
+            optional_future_quality_inputs=optional_future_quality_inputs,
         )
     else:
         input_features = list(input_features)
@@ -55,7 +57,7 @@ def resolve_data_columns(data, output_feature=None, input_features=None):
             f"Available columns: {list(data.columns)}"
         )
 
-    validate_model_inputs(input_features, output_features=output_features)
+    validate_model_inputs(input_features, output_features=output_features, optional_future_quality_inputs=optional_future_quality_inputs)
 
     if len(input_features) == 0:
         raise ValueError(
@@ -485,6 +487,7 @@ def prepare_data_from_file(
     rnn_window_size=3,
     add_rolling_dynamics=False,
     rolling_window=3,
+    optional_future_quality_inputs=None,
 ):
     """Prepare prep_data files directly from a raw CSV dataset."""
     if not os.path.isfile(dataset_path):
@@ -494,7 +497,12 @@ def prepare_data_from_file(
     base_input_features, requested_derived_features = split_base_and_derived_input_features(
         data.columns, input_features
     )
-    output_features, input_features = resolve_data_columns(data, output_feature, base_input_features)
+    output_features, input_features = resolve_data_columns(
+        data,
+        output_feature,
+        base_input_features,
+        optional_future_quality_inputs=optional_future_quality_inputs,
+    )
     data, input_features = apply_temporal_feature_engineering(
         data=data,
         input_features=input_features,
@@ -518,7 +526,7 @@ def prepare_data_from_file(
                 f"Generated columns: {list(data.columns)}"
             )
         input_features = list(base_input_features) + list(requested_derived_features)
-    validate_model_inputs(input_features, output_features=output_features)
+    validate_model_inputs(input_features, output_features=output_features, optional_future_quality_inputs=optional_future_quality_inputs)
 
     X = data[input_features]
     y = data[output_features]
@@ -531,6 +539,7 @@ def prepare_data_from_file(
         "dataset_path": dataset_path,
         "output_features": list(output_features),
         "input_features": list(input_features),
+        "optional_future_quality_inputs": list(optional_future_quality_inputs or []),
         "sequential_features": list(sequential_features or []),
         "sequential_groups": [list(group) for group in (sequential_groups or [])],
         "add_differences": bool(add_differences),
@@ -566,6 +575,7 @@ def sync_prep_data_with_dataset(
     rnn_window_size=3,
     add_rolling_dynamics=False,
     rolling_window=3,
+    optional_future_quality_inputs=None,
 ):
     """Rebuild prep_data if files are missing or schema differs from dataset."""
     if not os.path.isfile(dataset_path):
@@ -575,7 +585,12 @@ def sync_prep_data_with_dataset(
     base_input_features, requested_derived_features = split_base_and_derived_input_features(
         data.columns, input_features
     )
-    output_features, input_features = resolve_data_columns(data, output_feature, base_input_features)
+    output_features, input_features = resolve_data_columns(
+        data,
+        output_feature,
+        base_input_features,
+        optional_future_quality_inputs=optional_future_quality_inputs,
+    )
     _, input_features = apply_temporal_feature_engineering(
         data=data,
         input_features=input_features,
@@ -593,7 +608,7 @@ def sync_prep_data_with_dataset(
     )
     if requested_derived_features:
         input_features = list(base_input_features) + list(requested_derived_features)
-    validate_model_inputs(input_features, output_features=output_features)
+    validate_model_inputs(input_features, output_features=output_features, optional_future_quality_inputs=optional_future_quality_inputs)
 
     paths = prep_data_file_paths(prep_folder)
     expected_files = [paths["X_train"], paths["X_test"], paths["y_train"], paths["y_test"]]
@@ -642,12 +657,13 @@ def sync_prep_data_with_dataset(
             rnn_window_size=rnn_window_size,
             add_rolling_dynamics=add_rolling_dynamics,
             rolling_window=rolling_window,
+            optional_future_quality_inputs=optional_future_quality_inputs,
         )
     else:
         print("prep_data matches dataset columns. Reusing existing files.")
 
 
-def read_prep_data(inputs=None, prep_folder="prep_data"):
+def read_prep_data(inputs=None, prep_folder="prep_data", optional_future_quality_inputs=None):
     """Read preprocessed train/test files, optionally filtering input columns."""
     print(f"Reading data from '{prep_folder}'...")
 
@@ -677,7 +693,13 @@ def read_prep_data(inputs=None, prep_folder="prep_data"):
 
     if inputs is not None:
         print(f"Filtering inputs: {inputs}")
-        validate_model_inputs(inputs, output_features=y_train.columns.tolist())
+        if optional_future_quality_inputs is None:
+            optional_future_quality_inputs = list(inputs)
+        validate_model_inputs(
+            inputs,
+            output_features=y_train.columns.tolist(),
+            optional_future_quality_inputs=optional_future_quality_inputs,
+        )
         missing_inputs = [col for col in inputs if col not in X_train_full.columns]
         if missing_inputs:
             raise KeyError(
@@ -689,9 +711,15 @@ def read_prep_data(inputs=None, prep_folder="prep_data"):
     else:
         print("No specific inputs provided; returning all refinery-safe columns.")
         safe_inputs = filter_allowed_model_inputs(
-            X_train_full.columns, output_features=y_train.columns.tolist()
+            X_train_full.columns,
+            output_features=y_train.columns.tolist(),
+            optional_future_quality_inputs=optional_future_quality_inputs,
         )
-        validate_model_inputs(safe_inputs, output_features=y_train.columns.tolist())
+        validate_model_inputs(
+            safe_inputs,
+            output_features=y_train.columns.tolist(),
+            optional_future_quality_inputs=optional_future_quality_inputs,
+        )
         if not safe_inputs:
             raise ValueError(
                 "prep_data does not contain any refinery-safe model inputs. "
