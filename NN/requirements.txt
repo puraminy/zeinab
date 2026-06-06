@@ -1,0 +1,13 @@
+# Third-party Python packages required by the project.
+# Install with: pip install -r requirement.txt
+
+lightgbm
+matplotlib
+numpy
+pandas
+scikit-learn
+seaborn
+shap
+tabulate
+torch
+xgboost
