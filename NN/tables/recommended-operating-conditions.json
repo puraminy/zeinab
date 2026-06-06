@@ -1,69 +1,83 @@
 {
   "recommended_settings": {
-    "co2_percent": 7.5995,
-    "carbonated_pH": 7.245417,
-    "lime_alkalinity": 7.143
+    "co2_percent": 8.0,
+    "carbonated_pH": 7.131,
+    "lime_alkalinity": 7.255
   },
   "predicted_future_quality": {
-    "white_total_points": 14.553244590759277
+    "standard_liquor_color": 549.7518310546875
   },
   "risk_prediction": {
-    "risk_level": "LOW",
+    "risk_level": "MEDIUM",
     "target_risks": [
       {
-        "target": "white_total_points",
-        "predicted_value": 14.553244590759277,
-        "risk_level": "LOW",
-        "reason": "at or below historical P50 (15.340)"
+        "target": "standard_liquor_color",
+        "predicted_value": 549.7518310546875,
+        "risk_level": "MEDIUM",
+        "reason": "between historical P50 (506.500) and P80 (603.600)"
       }
     ],
     "risk_drivers": [
       {
-        "target": "white_total_points",
-        "predicted_value": 14.553244590759277,
-        "risk_level": "LOW",
-        "reason": "at or below historical P50 (15.340)"
+        "target": "standard_liquor_color",
+        "predicted_value": 549.7518310546875,
+        "risk_level": "MEDIUM",
+        "reason": "between historical P50 (506.500) and P80 (603.600)"
       }
     ],
     "operator_warnings": [
-      "LOW RISK: predicted sugar quality is inside the normal operating band.",
-      "Operator action: continue routine monitoring and keep set-points stable."
+      "MEDIUM RISK: predicted sugar quality is moving toward the high-risk band.",
+      "Operator action: apply the recommended set-points and monitor quality/color trend closely."
     ]
   },
-  "objective_score": 59082505.98594321,
+  "objective_score": 88262505.72923982,
   "full_candidate_inputs": {
-    "raw_sugar_color": 1847.0,
-    "raw_syrup_brix": 64.68,
-    "raw_syrup_color": 2652.0,
-    "lime_alkalinity": 7.143,
-    "co2_percent": 7.5995,
+    "raw_sugar_color": 2191.0,
+    "raw_syrup_brix": 60.13,
+    "raw_syrup_color": 4261.0,
+    "lime_alkalinity": 7.255,
+    "co2_percent": 8.0,
     "carbonated_alkalinity": 0.0,
-    "carbonated_pH": 7.245417
+    "carbonated_pH": 7.131,
+    "raw_sugar_color__diff_1": 173.0,
+    "raw_syrup_color__diff_1": 676.0,
+    "raw_syrup_brix__diff_1": -0.4899999999999949,
+    "carbonated_pH__diff_1": 0.7599999999999998,
+    "raw_syrup_color__minus_raw_sugar_color__seqdiff_1": 2070.0,
+    "raw_sugar_color__normchg_1": 0.0857284440039643,
+    "raw_syrup_color__normchg_1": 0.1885634588563458,
+    "raw_syrup_brix__normchg_1": -0.008083140877598,
+    "carbonated_pH__normchg_1": 0.1054091539528432,
+    "raw_syrup_color__minus_raw_sugar_color__normchg_1": 0.9447740757644912,
+    "raw_sugar_color__lag_1": 2018.0,
+    "raw_syrup_color__lag_1": 3585.0,
+    "raw_syrup_brix__lag_1": 60.62,
+    "carbonated_pH__lag_1": 7.21
   },
   "current_settings": {
-    "co2_percent": 11.08,
-    "carbonated_pH": 7.73,
-    "lime_alkalinity": 7.98
+    "co2_percent": 10.71,
+    "carbonated_pH": 7.97,
+    "lime_alkalinity": 8.67
   },
   "current_prediction": {
-    "white_total_points": 16.213661193847656
+    "standard_liquor_color": 572.1895751953125
   },
   "current_risk_prediction": {
     "risk_level": "MEDIUM",
     "target_risks": [
       {
-        "target": "white_total_points",
-        "predicted_value": 16.213661193847656,
+        "target": "standard_liquor_color",
+        "predicted_value": 572.1895751953125,
         "risk_level": "MEDIUM",
-        "reason": "between historical P50 (15.340) and P80 (17.290)"
+        "reason": "between historical P50 (506.500) and P80 (603.600)"
       }
     ],
     "risk_drivers": [
       {
-        "target": "white_total_points",
-        "predicted_value": 16.213661193847656,
+        "target": "standard_liquor_color",
+        "predicted_value": 572.1895751953125,
         "risk_level": "MEDIUM",
-        "reason": "between historical P50 (15.340) and P80 (17.290)"
+        "reason": "between historical P50 (506.500) and P80 (603.600)"
       }
     ],
     "operator_warnings": [
@@ -74,20 +88,20 @@
   "searched_candidates": 343,
   "control_ranges": {
     "co2_percent": [
-      7.599500000000001,
+      7.7395,
       8.0
     ],
     "carbonated_pH": [
-      7.1065000000000005,
-      7.940000000000001
+      7.131,
+      7.94
     ],
     "lime_alkalinity": [
-      7.143000000000001,
+      7.255,
       0.25
     ]
   },
   "target_weights": {
-    "white_total_points": 1.0
+    "standard_liquor_color": 1.0
   },
   "logic": [
     "Only approved controllable refinery variables are changed; early/raw conditions remain fixed.",
