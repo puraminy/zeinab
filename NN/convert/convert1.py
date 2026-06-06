@@ -1,4 +1,3 @@
-import re
 from pathlib import Path
 
 import pandas as pd
@@ -94,22 +93,6 @@ def clean_number(x):
         return float(x)
     except ValueError:
         return None
-
-
-def clean_cell_value(x):
-    """Return a spreadsheet cell as a useful CSV value, keeping text ranges like 10-12."""
-    if pd.isna(x):
-        return None
-
-    text = str(x).strip()
-    if not text or text.lower() == "nan" or text in {"...", "…"}:
-        return None
-
-    number = clean_number(text)
-    if number is not None:
-        return number
-
-    return text
 
 
 # ==========================================
@@ -299,315 +282,6 @@ def find_section_shift_values(
     return None, None
 
 
-def extract_value_near_column(df, row_idx, target_col_idx, max_row_lookahead=0, max_col_offset=2):
-    """
-    Extract a useful value close to a target column anchor for a specific row.
-    Unlike extract_number_near_column, this preserves non-numeric values such as "10-12".
-    """
-    if target_col_idx is None:
-        return None
-
-    row = df.iloc[row_idx]
-    for offset in range(0, max_col_offset + 1):
-        for col_idx in (target_col_idx + offset, target_col_idx - offset):
-            if 0 <= col_idx < len(row):
-                value = clean_cell_value(row.iloc[col_idx])
-                if value is not None:
-                    return value
-
-    for r in range(row_idx + 1, min(row_idx + 1 + max_row_lookahead, len(df))):
-        next_row = df.iloc[r]
-        for offset in range(0, max_col_offset + 1):
-            for col_idx in (target_col_idx + offset, target_col_idx - offset):
-                if 0 <= col_idx < len(next_row):
-                    value = clean_cell_value(next_row.iloc[col_idx])
-                    if value is not None:
-                        return value
-
-    return None
-
-
-def find_section_shift_cell_values(
-    df,
-    section_keyword,
-    property_keyword,
-    day_col_idx,
-    night_col_idx,
-    search_depth=6,
-    max_row_lookahead=0,
-):
-    """Find day/night values for a section/property pair while preserving text values."""
-    for i in range(len(df)):
-        row = df.iloc[i].astype(str)
-
-        if any(section_keyword in cell for cell in row):
-            for j in range(i, min(i + search_depth, len(df))):
-                subrow = df.iloc[j].astype(str)
-
-                if any(property_keyword in cell for cell in subrow):
-                    day_value = extract_value_near_column(
-                        df, j, day_col_idx, max_row_lookahead=max_row_lookahead
-                    )
-                    night_value = extract_value_near_column(
-                        df, j, night_col_idx, max_row_lookahead=max_row_lookahead
-                    )
-
-                    if day_value is None or night_value is None:
-                        values = [clean_cell_value(cell) for cell in df.iloc[j]]
-                        values = [value for value in values if value is not None]
-                        if day_value is None and len(values) >= 1:
-                            day_value = values[0]
-                        if night_value is None and len(values) >= 2:
-                            night_value = values[1]
-
-                    return day_value, night_value
-
-    return None, None
-
-
-def extract_first_number(x):
-    """Extract the first numeric token from a text cell, supporting Persian digits."""
-    if pd.isna(x):
-        return None
-
-    text = str(x)
-    persian_digits = "۰۱۲۳۴۵۶۷۸۹"
-    english_digits = "0123456789"
-    for p, e in zip(persian_digits, english_digits):
-        text = text.replace(p, e)
-    text = text.replace("٫", ".")
-
-    match = re.search(r"\d+(?:\.\d+)?", text)
-    if not match:
-        return None
-
-    return clean_number(match.group(0))
-
-
-def find_row_containing(df, keyword, start_row=0):
-    """Return the first row index containing keyword, or None when missing."""
-    for row_idx in range(start_row, len(df)):
-        row = df.iloc[row_idx].astype(str)
-        if any(keyword in cell for cell in row):
-            return row_idx
-    return None
-
-
-def first_column_containing(df, row_idx, keyword):
-    """Return the first column index in a row containing keyword, or None."""
-    row = df.iloc[row_idx].astype(str)
-    for col_idx, cell in enumerate(row):
-        if keyword in cell:
-            return col_idx
-    return None
-
-
-def extract_numeric_to_right(df, row_idx, col_idx, max_offset=4):
-    """Extract the first numeric value to the right of a label cell."""
-    row = df.iloc[row_idx]
-    for offset in range(1, max_offset + 1):
-        target_col = col_idx + offset
-        if target_col >= len(row):
-            break
-        value = clean_number(row.iloc[target_col])
-        if value is not None:
-            return value
-    return None
-
-
-def extract_report_metadata(df):
-    """Extract report header fields that apply to both day and night rows."""
-    metadata = {}
-
-    for row_idx in range(len(df)):
-        row = df.iloc[row_idx].astype(str)
-        for col_idx, cell in enumerate(row):
-            if "سال" in cell and "report_year" not in metadata:
-                metadata["report_year"] = extract_first_number(cell)
-                if metadata["report_year"] is None:
-                    metadata["report_year"] = extract_value_near_column(
-                        df, row_idx, col_idx, max_col_offset=2
-                    )
-
-            if "دوره کاری" in cell and "work_period" not in metadata:
-                metadata["work_period"] = extract_numeric_to_right(
-                    df, row_idx, col_idx, max_offset=4
-                )
-
-            if "روز کاری" in cell and "work_day" not in metadata:
-                metadata["work_day"] = extract_numeric_to_right(
-                    df, row_idx, col_idx, max_offset=4
-                )
-
-            if "تاریخ" in cell and "report_date_day" not in metadata:
-                metadata["report_date_day"] = extract_value_near_column(
-                    df, row_idx, col_idx + 1, max_col_offset=1
-                )
-                metadata["report_date_month"] = extract_value_near_column(
-                    df, row_idx, col_idx + 2, max_col_offset=1
-                )
-                metadata["report_date_year"] = extract_value_near_column(
-                    df, row_idx, col_idx + 3, max_col_offset=1
-                )
-
-    return metadata
-
-
-def extract_table_by_row_labels(
-    df,
-    section_keyword,
-    row_labels,
-    day_metrics,
-    night_metrics=None,
-    prefix="",
-    max_rows=None,
-):
-    """
-    Extract two-shift matrix sections such as پخت ها and پساب ها.
-
-    The Persian report stores the row label in the column immediately after the section
-    label and then writes day metrics followed by night metrics. This helper reads the
-    cell coordinates directly so rows like R1/R2/R3 are not skipped by the simpler
-    section/property finder.
-    """
-    section_row = find_row_containing(df, section_keyword)
-    if section_row is None:
-        return {}, {}
-
-    label_col = first_column_containing(df, section_row, "نوع")
-    if label_col is None:
-        # Wastewater tables do not repeat the "نوع" header; their labels still sit in
-        # the first non-empty column to the right of the section name.
-        section_col = first_column_containing(df, section_row, section_keyword)
-        label_col = section_col + 1 if section_col is not None else 2
-
-    day_start_col = label_col + 1
-    night_start_col = day_start_col + len(day_metrics)
-    if night_metrics is None:
-        night_metrics = day_metrics
-
-    rows_to_scan = max_rows if max_rows is not None else len(row_labels) + 3
-    day_values = {}
-    night_values = {}
-
-    for row_idx in range(section_row + 1, min(section_row + 1 + rows_to_scan, len(df))):
-        label_value = str(df.iloc[row_idx, label_col]).strip()
-        if label_value not in row_labels:
-            continue
-
-        normalized_label = row_labels[label_value]
-        for offset, metric_name in enumerate(day_metrics):
-            value = clean_cell_value(df.iloc[row_idx, day_start_col + offset])
-            day_values[f"{prefix}_{normalized_label}_{metric_name}"] = value
-
-        for offset, metric_name in enumerate(night_metrics):
-            value = clean_cell_value(df.iloc[row_idx, night_start_col + offset])
-            night_values[f"{prefix}_{normalized_label}_{metric_name}"] = value
-
-    return day_values, night_values
-
-
-def extract_white_sugar_quality_shift_values(df):
-    """Extract the per-shift white sugar quality/point rows."""
-    section_row = find_row_containing(df, "کیفیت شکر سفید")
-    if section_row is None:
-        return {}, {}
-
-    label_col = first_column_containing(df, section_row, "رطوبت")
-    if label_col is None:
-        label_col = 2
-
-    day_start_col = label_col + 1
-    day_sample_cols = 3
-    night_start_col = day_start_col + day_sample_cols + 1
-    night_sample_cols = 4
-    row_map = {
-        "رطوبت": "moisture",
-        "رنگ محلول": "solution_color",
-        "رنگ ظاهری": "apparent_color",
-        "خاکستر": "ash",
-        "جمع پوئن": "total_points",
-    }
-    day_values = {}
-    night_values = {}
-
-    for row_idx in range(section_row, min(section_row + len(row_map) + 2, len(df))):
-        label_text = str(df.iloc[row_idx, label_col]).strip()
-        metric_name = None
-        for keyword, normalized in row_map.items():
-            if keyword in label_text:
-                metric_name = normalized
-                break
-        if metric_name is None:
-            continue
-
-        for sample_offset in range(day_sample_cols):
-            value = clean_cell_value(df.iloc[row_idx, day_start_col + sample_offset])
-            day_values[f"white_quality_{metric_name}_{sample_offset + 1}"] = value
-
-        for sample_offset in range(night_sample_cols):
-            value = clean_cell_value(df.iloc[row_idx, night_start_col + sample_offset])
-            night_values[f"white_quality_{metric_name}_{sample_offset + 1}"] = value
-
-    return day_values, night_values
-
-
-def extract_boiler_shift_values(df):
-    """Extract boiler water measurements for both shifts."""
-    header_row = find_row_containing(df, "مشخصات آب مصرفی")
-    if header_row is None or header_row + 1 >= len(df):
-        return {}, {}
-
-    metrics = ["pH", "alkalinity", "hardness", "tds"]
-    first_metric_col = first_column_containing(df, header_row, "pH")
-    if first_metric_col is None:
-        first_metric_col = 3
-
-    day_values = {}
-    night_values = {}
-    for offset, metric_name in enumerate(metrics):
-        day_values[f"boiler_{metric_name}"] = clean_cell_value(
-            df.iloc[header_row + 1, first_metric_col + offset]
-        )
-        night_values[f"boiler_{metric_name}"] = clean_cell_value(
-            df.iloc[header_row + 1, first_metric_col + len(metrics) + offset]
-        )
-
-    return day_values, night_values
-
-
-def extract_average_row_values(df, section_keyword, prefix):
-    """Extract average-summary rows whose headers are followed by values in the next row."""
-    header_row = find_row_containing(df, section_keyword)
-    if header_row is None or header_row + 1 >= len(df):
-        return {}
-
-    metric_map = {
-        "رطوبت": "moisture",
-        "اینورت": "invert",
-        "رنگ محلول": "solution_color",
-        "رنگ ظاهری": "apparent_color",
-        "خاکستر": "ash",
-        "جمع پوئن": "total_points",
-    }
-    values = {}
-    for col_idx, cell in enumerate(df.iloc[header_row].astype(str)):
-        for keyword, metric_name in metric_map.items():
-            if keyword in cell:
-                values[f"{prefix}_{metric_name}"] = clean_cell_value(
-                    df.iloc[header_row + 1, col_idx]
-                )
-
-        if "سولفیت" in cell:
-            values[f"{prefix}_sulfite"] = clean_cell_value(cell)
-
-    for cell in df.iloc[header_row + 1].astype(str):
-        if "MA" in cell or "CV" in cell:
-            values[f"{prefix}_ma_cv"] = clean_cell_value(cell)
-
-    return values
-
-
 # ==========================================
 # 4️⃣ EXCEL PROCESSING
 # ==========================================
@@ -632,10 +306,6 @@ def extract_excel_to_dataframe(input_file):
         day_data = {"sheet_name": sheet, "shift_name": "0"}
         night_data = {"sheet_name": sheet, "shift_name": "1"}
 
-        report_metadata = extract_report_metadata(df)
-        day_data.update(report_metadata)
-        night_data.update(report_metadata)
-
         # -------------------------------
         # RAW SUGAR
         # -------------------------------
@@ -655,12 +325,8 @@ def extract_excel_to_dataframe(input_file):
         night_data["raw_syrup_color"] = night_value
 
         # -------------------------------
-        # LIME MILK + LIME TREATED SYRUP
+        # LIME TREATED SYRUP
         # -------------------------------
-        day_value, night_value = find_section_shift_cell_values(df, "بومه", "بومه", day_col_idx, night_col_idx)
-        day_data["lime_milk_baume"] = day_value
-        night_data["lime_milk_baume"] = night_value
-
         day_value, night_value = find_section_shift_values(df, "شربت آهک", "قلیایی", day_col_idx, night_col_idx)
         day_data["lime_alkalinity"] = day_value
         night_data["lime_alkalinity"] = night_value
@@ -690,10 +356,6 @@ def extract_excel_to_dataframe(input_file):
         day_value, night_value = find_section_shift_values(df, "گل فیلتر", "قند", day_col_idx, night_col_idx)
         day_data["filtercake_sugar"] = day_value
         night_data["filtercake_sugar"] = night_value
-
-        average_filtercake_sugar = find_section_value(df, "میانگین قند گل فیلتر", "میانگین قند گل فیلتر")
-        day_data["filtercake_sugar_average_to_date"] = average_filtercake_sugar
-        night_data["filtercake_sugar_average_to_date"] = average_filtercake_sugar
 
         # -------------------------------
         # SWEET WATER
@@ -733,51 +395,6 @@ def extract_excel_to_dataframe(input_file):
         night_data["standard_liquor_color"] = night_value
 
         # -------------------------------
-        # BOILING MASSECUITES (پخت ها)
-        # -------------------------------
-        row_labels = {"R1": "r1", "R2": "r2", "R3": "r3", "A": "a", "B": "b", "C": "c"}
-        day_values, night_values = extract_table_by_row_labels(
-            df,
-            "پخت",
-            row_labels,
-            ["brix", "pol", "q", "pH"],
-            prefix="boiling",
-            max_rows=8,
-        )
-        day_data.update(day_values)
-        night_data.update(night_values)
-
-        # -------------------------------
-        # WASTEWATER / RUNOFFS (پساب ها)
-        # -------------------------------
-        wastewater_row_labels = {
-            "R1": "r1",
-            "R2": "r2",
-            "R3": "r3",
-            "A": "a",
-            "B": "b",
-            "C": "c",
-            "ملاس": "molasses",
-        }
-        day_values, night_values = extract_table_by_row_labels(
-            df,
-            "پساب",
-            wastewater_row_labels,
-            ["brix", "pol", "q", "pH"],
-            prefix="wastewater",
-            max_rows=9,
-        )
-        day_data.update(day_values)
-        night_data.update(night_values)
-
-        # -------------------------------
-        # WHITE SUGAR QUALITY SAMPLES + POINTS
-        # -------------------------------
-        day_values, night_values = extract_white_sugar_quality_shift_values(df)
-        day_data.update(day_values)
-        night_data.update(night_values)
-
-        # -------------------------------
         # FINAL WHITE SUGAR (AVERAGE TWO SHIFTS)
         # -------------------------------
         white_moisture = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "رطوبت")
@@ -801,25 +418,6 @@ def extract_excel_to_dataframe(input_file):
         night_data["white_apparent_color"] = white_apparent_color
         night_data["white_ash"] = white_ash
         night_data["white_total_points"] = white_total_points
-
-        white_average_values = extract_average_row_values(
-            df, "میانگین نتایج شکر سفید در دو شیفت", "white_average_two_shifts"
-        )
-        day_data.update(white_average_values)
-        night_data.update(white_average_values)
-
-        white_to_date_values = extract_average_row_values(
-            df, "میانگین نتایج شکر سفید تا این تاریخ", "white_average_to_date"
-        )
-        day_data.update(white_to_date_values)
-        night_data.update(white_to_date_values)
-
-        # -------------------------------
-        # BOILER WATER
-        # -------------------------------
-        day_values, night_values = extract_boiler_shift_values(df)
-        day_data.update(day_values)
-        night_data.update(night_values)
 
         all_days_data.append(day_data)
         all_days_data.append(night_data)

@@ -1,7 +1,7 @@
 {
-  "dataset_path": "convert/sugar_all_days_clean_7.csv",
+  "dataset_path": "convert/sugar_all.csv",
   "output_features": [
-    "standard_liquor_color"
+    "white_total_points"
   ],
   "input_features": [
     "raw_sugar_color",
@@ -10,89 +10,18 @@
     "lime_alkalinity",
     "co2_percent",
     "carbonated_alkalinity",
-    "carbonated_pH",
-    "filtercake_moisture",
-    "filtercake_sugar",
-    "sweetwater_brix",
-    "sulphited_pH",
-    "sulphited_brix",
-    "sulphited_color",
-    "raw_sugar_color__diff_1",
-    "raw_syrup_color__diff_1",
-    "sulphited_color__diff_1",
-    "raw_syrup_brix__diff_1",
-    "sweetwater_brix__diff_1",
-    "sulphited_brix__diff_1",
-    "carbonated_pH__diff_1",
-    "sulphited_pH__diff_1",
-    "raw_syrup_color__minus_raw_sugar_color__seqdiff_1",
-    "sulphited_color__minus_raw_syrup_color__seqdiff_1",
-    "sweetwater_brix__minus_raw_syrup_brix__seqdiff_1",
-    "sulphited_brix__minus_sweetwater_brix__seqdiff_1",
-    "sulphited_pH__minus_carbonated_pH__seqdiff_1",
-    "raw_sugar_color__normchg_1",
-    "raw_syrup_color__normchg_1",
-    "sulphited_color__normchg_1",
-    "raw_syrup_brix__normchg_1",
-    "sweetwater_brix__normchg_1",
-    "sulphited_brix__normchg_1",
-    "carbonated_pH__normchg_1",
-    "sulphited_pH__normchg_1",
-    "raw_syrup_color__minus_raw_sugar_color__normchg_1",
-    "sulphited_color__minus_raw_syrup_color__normchg_1",
-    "sweetwater_brix__minus_raw_syrup_brix__normchg_1",
-    "sulphited_brix__minus_sweetwater_brix__normchg_1",
-    "sulphited_pH__minus_carbonated_pH__normchg_1",
-    "raw_sugar_color__lag_1",
-    "raw_syrup_color__lag_1",
-    "sulphited_color__lag_1",
-    "raw_syrup_brix__lag_1",
-    "sweetwater_brix__lag_1",
-    "sulphited_brix__lag_1",
-    "carbonated_pH__lag_1",
-    "sulphited_pH__lag_1"
+    "carbonated_pH"
   ],
-  "optional_future_quality_inputs": [
-    "filtercake_moisture",
-    "filtercake_sugar",
-    "sweetwater_brix",
-    "sulphited_pH",
-    "sulphited_brix",
-    "sulphited_color"
-  ],
-  "sequential_features": [
-    "raw_sugar_color",
-    "raw_syrup_color",
-    "sulphited_color",
-    "raw_syrup_brix",
-    "sweetwater_brix",
-    "sulphited_brix",
-    "carbonated_pH",
-    "sulphited_pH"
-  ],
-  "sequential_groups": [
-    [
-      "raw_sugar_color",
-      "raw_syrup_color",
-      "sulphited_color"
-    ],
-    [
-      "raw_syrup_brix",
-      "sweetwater_brix",
-      "sulphited_brix"
-    ],
-    [
-      "carbonated_pH",
-      "sulphited_pH"
-    ]
-  ],
-  "add_differences": true,
+  "optional_future_quality_inputs": [],
+  "sequential_features": [],
+  "sequential_groups": [],
+  "add_differences": false,
   "difference_order": 1,
   "add_ratio_features": false,
   "add_acceleration_features": false,
-  "add_normalized_change_features": true,
-  "create_rnn_windows": true,
-  "rnn_window_size": 1,
+  "add_normalized_change_features": false,
+  "create_rnn_windows": false,
+  "rnn_window_size": 3,
   "add_rolling_dynamics": false,
   "rolling_window": 3,
   "test_size": 0.2,
