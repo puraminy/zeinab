@@ -31,6 +31,7 @@ from read_data import (
     prep_data_exists,
     read_prep_metadata,
     save_data,
+    print_path_debug,
 )
 from refinery_variables import (
     CONTROL_VARIABLES,
@@ -728,6 +729,11 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all.csv", prep_folder="pre
     print("====================================")
     print("DATASET PATH: " + dataset_path)
     print("====================================")
+    print(f"[path-debug] run.py file: {os.path.abspath(__file__)}")
+    dataset_path = print_path_debug("raw dataset CSV", dataset_path)
+    prep_folder = print_path_debug("prep_data folder", prep_folder)
+    print(f"[path-debug] Effective dataset path: {dataset_path}")
+    print(f"[path-debug] Effective prep_data folder: {prep_folder}")
 
     use_auto_feature_selection = False
     reused_prep_data = False
@@ -770,12 +776,18 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all.csv", prep_folder="pre
                 print("prep_data metadata:")
                 print(metadata)
 
+            print(
+                "[path-debug] Complete prep_data files were found. If you continue with prep_data, "
+                "the raw dataset CSV will not be read in this run."
+            )
             reuse_answer = input(
                 "Continue with these prepared refinery-safe inputs/outputs? [y]: "
             ).strip().lower()
             if reuse_answer in ("", "y", "yes"):
+                print("[path-debug] prep_data reuse selected; skipping raw dataset CSV read.")
                 reused_prep_data = True
                 return X_train_existing, existing_outputs, use_auto_feature_selection, reused_prep_data
+            print("[path-debug] prep_data reuse declined; raw dataset CSV flow will be used.")
 
             prep_train_path = os.path.join(prep_folder, "train.csv")
             prep_test_path = os.path.join(prep_folder, "test.csv")
@@ -879,6 +891,7 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all.csv", prep_folder="pre
             else:
                 print("prep_data/train.csv or prep_data/test.csv not found. Preparing data again from the raw dataset...")
 
+    print(f"[path-debug] prep_data did not prevent raw CSV flow; reading dataset now: {dataset_path}")
     data = pd.read_csv(dataset_path)
     print_selection_guide()
 

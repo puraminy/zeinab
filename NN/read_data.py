@@ -13,6 +13,43 @@ ANSI_RED = "\033[91m"
 ANSI_YELLOW = "\033[93m"
 ANSI_RESET = "\033[0m"
 
+MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def resolve_relative_path(path, base_dir=MODULE_DIR):
+    """Resolve relative data paths from CWD first, then the NN module directory."""
+    path_text = os.fspath(path)
+    if os.path.isabs(path_text):
+        return os.path.abspath(path_text)
+
+    cwd_candidate = os.path.abspath(path_text)
+    module_candidate = os.path.abspath(os.path.join(base_dir, path_text))
+
+    if os.path.exists(cwd_candidate):
+        return cwd_candidate
+    if os.path.exists(module_candidate):
+        return module_candidate
+    return cwd_candidate
+
+
+def print_path_debug(label, path, resolved_path=None):
+    """Print debug information for a path that may depend on the working directory."""
+    path_text = os.fspath(path)
+    if resolved_path is None:
+        resolved_path = resolve_relative_path(path_text)
+    cwd_candidate = path_text if os.path.isabs(path_text) else os.path.abspath(path_text)
+    module_candidate = (
+        path_text if os.path.isabs(path_text) else os.path.abspath(os.path.join(MODULE_DIR, path_text))
+    )
+    print(f"[path-debug] {label}")
+    print(f"[path-debug]   cwd: {os.getcwd()}")
+    print(f"[path-debug]   module_dir: {MODULE_DIR}")
+    print(f"[path-debug]   requested: {path_text}")
+    print(f"[path-debug]   cwd candidate: {cwd_candidate} (exists={os.path.exists(cwd_candidate)})")
+    print(f"[path-debug]   module candidate: {module_candidate} (exists={os.path.exists(module_candidate)})")
+    print(f"[path-debug]   resolved: {resolved_path} (exists={os.path.exists(resolved_path)})")
+    return resolved_path
+
 
 def _normalize_output_features(output_feature, all_columns):
     """Normalize output feature(s) to a validated list."""
@@ -96,12 +133,13 @@ def split_base_and_derived_input_features(data_columns, input_features):
 
 def prep_data_file_paths(prep_folder="prep_data"):
     """Return canonical prep_data file paths."""
+    resolved_prep_folder = resolve_relative_path(prep_folder)
     return {
-        "X_train": os.path.join(prep_folder, "X_train.csv"),
-        "X_test": os.path.join(prep_folder, "X_test.csv"),
-        "y_train": os.path.join(prep_folder, "y_train.csv"),
-        "y_test": os.path.join(prep_folder, "y_test.csv"),
-        "metadata": os.path.join(prep_folder, "metadata.json"),
+        "X_train": os.path.join(resolved_prep_folder, "X_train.csv"),
+        "X_test": os.path.join(resolved_prep_folder, "X_test.csv"),
+        "y_train": os.path.join(resolved_prep_folder, "y_train.csv"),
+        "y_test": os.path.join(resolved_prep_folder, "y_test.csv"),
+        "metadata": os.path.join(resolved_prep_folder, "metadata.json"),
     }
 
 
@@ -109,15 +147,21 @@ def prep_data_exists(prep_folder="prep_data"):
     """Check whether all required prep_data CSV files exist."""
     paths = prep_data_file_paths(prep_folder)
     required = [paths["X_train"], paths["X_test"], paths["y_train"], paths["y_test"]]
-    return all(os.path.isfile(path) for path in required)
+    exists = all(os.path.isfile(path) for path in required)
+    print(f"[path-debug] prep_data folder resolved to: {os.path.dirname(paths['X_train'])}")
+    print(f"[path-debug] prep_data required files exist: {exists}")
+    if not exists:
+        missing = [path for path in required if not os.path.isfile(path)]
+        print(f"[path-debug] prep_data missing required files: {missing}")
+    return exists
 
 
 def save_prep_metadata(prep_folder="prep_data", metadata=None):
     """Save prep-data configuration metadata as JSON."""
     if metadata is None:
         metadata = {}
-    os.makedirs(prep_folder, exist_ok=True)
     metadata_path = prep_data_file_paths(prep_folder)["metadata"]
+    os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
     with open(metadata_path, "w", encoding="utf-8") as metadata_file:
         json.dump(metadata, metadata_file, indent=2, ensure_ascii=False)
 
@@ -443,6 +487,7 @@ def select_features(data):
 
 def save_data(folder, X_train, X_test, y_train, y_test, metadata=None, after_prepare=False):
     """Save train/test splits to prep_data files."""
+    folder = resolve_relative_path(folder)
     os.makedirs(folder, exist_ok=True)
     print(f"\nSaving processed data to '{folder}'...")
     X_train.to_csv(os.path.join(folder, "X_train.csv"), index=False)
@@ -490,9 +535,11 @@ def prepare_data_from_file(
     optional_future_quality_inputs=None,
 ):
     """Prepare prep_data files directly from a raw CSV dataset."""
+    dataset_path = print_path_debug("prepare_data_from_file dataset", dataset_path)
     if not os.path.isfile(dataset_path):
         raise FileNotFoundError(f"Dataset file '{dataset_path}' not found.")
 
+    print(f"[path-debug] Reading raw dataset CSV: {dataset_path}")
     data = pd.read_csv(dataset_path)
     base_input_features, requested_derived_features = split_base_and_derived_input_features(
         data.columns, input_features
@@ -578,9 +625,11 @@ def sync_prep_data_with_dataset(
     optional_future_quality_inputs=None,
 ):
     """Rebuild prep_data if files are missing or schema differs from dataset."""
+    dataset_path = print_path_debug("sync_prep_data_with_dataset dataset", dataset_path)
     if not os.path.isfile(dataset_path):
         raise FileNotFoundError(f"Dataset file '{dataset_path}' not found.")
 
+    print(f"[path-debug] Reading raw dataset CSV for prep_data sync: {dataset_path}")
     data = pd.read_csv(dataset_path)
     base_input_features, requested_derived_features = split_base_and_derived_input_features(
         data.columns, input_features
@@ -665,6 +714,7 @@ def sync_prep_data_with_dataset(
 
 def read_prep_data(inputs=None, prep_folder="prep_data", optional_future_quality_inputs=None):
     """Read preprocessed train/test files, optionally filtering input columns."""
+    prep_folder = print_path_debug("read_prep_data prep_folder", prep_folder)
     print(f"Reading data from '{prep_folder}'...")
 
     X_train_path = os.path.join(prep_folder, "X_train.csv")
@@ -676,9 +726,13 @@ def read_prep_data(inputs=None, prep_folder="prep_data", optional_future_quality
         if not os.path.isfile(file_path):
             raise FileNotFoundError(f"Required file '{file_path}' not found in '{prep_folder}'.")
 
+    print(f"[path-debug] Reading prep_data CSV: {X_train_path}")
     X_train_full = pd.read_csv(X_train_path)
+    print(f"[path-debug] Reading prep_data CSV: {X_test_path}")
     X_test_full = pd.read_csv(X_test_path)
+    print(f"[path-debug] Reading prep_data CSV: {y_train_path}")
     y_train = pd.read_csv(y_train_path)
+    print(f"[path-debug] Reading prep_data CSV: {y_test_path}")
     y_test = pd.read_csv(y_test_path)
 
     if list(X_train_full.columns) != list(X_test_full.columns):

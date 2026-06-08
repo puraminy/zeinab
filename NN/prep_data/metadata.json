@@ -4,6 +4,8 @@
     "white_total_points"
   ],
   "input_features": [
+    "sheet_name",
+    "shift_name",
     "raw_sugar_color",
     "raw_syrup_brix",
     "raw_syrup_color",

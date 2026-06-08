@@ -1,672 +1,399 @@
-diff --git a/convert/convert2.py b/convert/convert2.py
-index bc4de3456995a73b08839be5c05bb4aefd456a55..7cda0b21aef26a98bcad4d9dacf06db7712a1e54 100644
---- a/convert/convert2.py
-+++ b/convert/convert2.py
-@@ -1,25 +1,26 @@
-+import re
- from pathlib import Path
- 
+diff --git a/NN/read_data.py b/NN/read_data.py
+index eb95c4948f9ef824dfe83595c6bfd8868ba62f1a..a43b1346f1bce5c04faead0630bcb1e4867df82a 100644
+--- a/NN/read_data.py
++++ b/NN/read_data.py
+@@ -1,40 +1,77 @@
+ import os
+ import json
+ import re
  import pandas as pd
+ from sklearn.model_selection import train_test_split
+ from refinery_variables import (
+     filter_allowed_model_inputs,
+     refinery_variable_group_metadata,
+     validate_model_inputs,
+ )
+ 
+ ANSI_RED = "\033[91m"
+ ANSI_YELLOW = "\033[93m"
+ ANSI_RESET = "\033[0m"
+ 
++MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
++
++
++def resolve_relative_path(path, base_dir=MODULE_DIR):
++    """Resolve relative data paths from CWD first, then the NN module directory."""
++    path_text = os.fspath(path)
++    if os.path.isabs(path_text):
++        return os.path.abspath(path_text)
++
++    cwd_candidate = os.path.abspath(path_text)
++    module_candidate = os.path.abspath(os.path.join(base_dir, path_text))
++
++    if os.path.exists(cwd_candidate):
++        return cwd_candidate
++    if os.path.exists(module_candidate):
++        return module_candidate
++    return cwd_candidate
++
++
++def print_path_debug(label, path, resolved_path=None):
++    """Print debug information for a path that may depend on the working directory."""
++    path_text = os.fspath(path)
++    if resolved_path is None:
++        resolved_path = resolve_relative_path(path_text)
++    cwd_candidate = path_text if os.path.isabs(path_text) else os.path.abspath(path_text)
++    module_candidate = (
++        path_text if os.path.isabs(path_text) else os.path.abspath(os.path.join(MODULE_DIR, path_text))
++    )
++    print(f"[path-debug] {label}")
++    print(f"[path-debug]   cwd: {os.getcwd()}")
++    print(f"[path-debug]   module_dir: {MODULE_DIR}")
++    print(f"[path-debug]   requested: {path_text}")
++    print(f"[path-debug]   cwd candidate: {cwd_candidate} (exists={os.path.exists(cwd_candidate)})")
++    print(f"[path-debug]   module candidate: {module_candidate} (exists={os.path.exists(module_candidate)})")
++    print(f"[path-debug]   resolved: {resolved_path} (exists={os.path.exists(resolved_path)})")
++    return resolved_path
++
+ 
+ def _normalize_output_features(output_feature, all_columns):
+     """Normalize output feature(s) to a validated list."""
+     if output_feature is None:
+         return [all_columns[-1]]
+ 
+     if isinstance(output_feature, str):
+         output_features = [output_feature]
+     else:
+         output_features = list(output_feature)
+ 
+     missing_outputs = [col for col in output_features if col not in all_columns]
+     if missing_outputs:
+         raise ValueError(
+             f"Target column(s) '{missing_outputs}' not found in dataset. "
+             f"Available columns: {list(all_columns)}"
+         )
+ 
+     if len(output_features) == 0:
+         raise ValueError("At least one output feature must be selected.")
+ 
+     return output_features
  
  
- # ==========================================
- # 1️⃣ INTERACTIVE HELPERS
- # ==========================================
- 
- SCRIPT_DIR = Path(__file__).resolve().parent
- DEFAULT_INPUT_FILE = "gozaresh.xlsx"
- DEFAULT_OUTPUT_FILE = "sugar_all_days_clean_7.csv"
+ def resolve_data_columns(data, output_feature=None, input_features=None, optional_future_quality_inputs=None):
+@@ -74,72 +111,79 @@ TEMPORAL_DERIVED_COLUMN_PATTERN = re.compile(
+ )
  
  
- def ask_text(prompt, default=None):
-     """Ask for text input, returning the default when the user presses Enter."""
-     suffix = f" [{default}]" if default else ""
-     value = input(f"{prompt}{suffix}: ").strip()
-     return value or default
+ def split_base_and_derived_input_features(data_columns, input_features):
+     """Split user-provided inputs into dataset columns and temporal-derived columns."""
+     if input_features is None:
+         return None, []
+ 
+     base_input_features = [col for col in input_features if col in data_columns]
+     derived_input_features = [col for col in input_features if col not in data_columns]
+ 
+     invalid_derived = [
+         col for col in derived_input_features if not TEMPORAL_DERIVED_COLUMN_PATTERN.match(col)
+     ]
+     if invalid_derived:
+         raise ValueError(
+             f"Input columns not found in dataset and not recognized as temporal-derived columns: "
+             f"{invalid_derived}. Available columns: {list(data_columns)}"
+         )
+ 
+     return base_input_features, derived_input_features
  
  
- def ask_yes_no(prompt, default=False):
-     """Ask a yes/no question and return True for yes, False for no."""
-     default_text = "Y/n" if default else "y/N"
- 
-@@ -73,50 +74,66 @@ def ask_csv_files(prompt):
- 
- 
- def clean_number(x):
-     if pd.isna(x):
-         return None
- 
-     x = str(x)
- 
-     # Persian → English digits
-     persian_digits = "۰۱۲۳۴۵۶۷۸۹"
-     english_digits = "0123456789"
-     for p, e in zip(persian_digits, english_digits):
-         x = x.replace(p, e)
- 
-     x = x.replace(",", "")
-     x = x.replace("٫", ".")
-     x = x.replace("...", "")
-     x = x.strip()
- 
-     try:
-         return float(x)
-     except ValueError:
-         return None
+ def prep_data_file_paths(prep_folder="prep_data"):
+     """Return canonical prep_data file paths."""
++    resolved_prep_folder = resolve_relative_path(prep_folder)
+     return {
+-        "X_train": os.path.join(prep_folder, "X_train.csv"),
+-        "X_test": os.path.join(prep_folder, "X_test.csv"),
+-        "y_train": os.path.join(prep_folder, "y_train.csv"),
+-        "y_test": os.path.join(prep_folder, "y_test.csv"),
+-        "metadata": os.path.join(prep_folder, "metadata.json"),
++        "X_train": os.path.join(resolved_prep_folder, "X_train.csv"),
++        "X_test": os.path.join(resolved_prep_folder, "X_test.csv"),
++        "y_train": os.path.join(resolved_prep_folder, "y_train.csv"),
++        "y_test": os.path.join(resolved_prep_folder, "y_test.csv"),
++        "metadata": os.path.join(resolved_prep_folder, "metadata.json"),
+     }
  
  
-+def clean_cell_value(x):
-+    """Return a spreadsheet cell as a useful CSV value, keeping text ranges like 10-12."""
-+    if pd.isna(x):
-+        return None
-+
-+    text = str(x).strip()
-+    if not text or text.lower() == "nan" or text in {"...", "…"}:
-+        return None
-+
-+    number = clean_number(text)
-+    if number is not None:
-+        return number
-+
-+    return text
-+
-+
- # ==========================================
- # 3️⃣ SECTION + PROPERTY FINDER
- # ==========================================
+ def prep_data_exists(prep_folder="prep_data"):
+     """Check whether all required prep_data CSV files exist."""
+     paths = prep_data_file_paths(prep_folder)
+     required = [paths["X_train"], paths["X_test"], paths["y_train"], paths["y_test"]]
+-    return all(os.path.isfile(path) for path in required)
++    exists = all(os.path.isfile(path) for path in required)
++    print(f"[path-debug] prep_data folder resolved to: {os.path.dirname(paths['X_train'])}")
++    print(f"[path-debug] prep_data required files exist: {exists}")
++    if not exists:
++        missing = [path for path in required if not os.path.isfile(path)]
++        print(f"[path-debug] prep_data missing required files: {missing}")
++    return exists
  
  
- def extract_number_near_property(df, row_idx, col_idx, max_row_lookahead=2, max_col_offset=2):
-     """
-     Extract a number that is most likely associated with a property label cell.
-     Priority:
-       1) Same cell
-       2) Same column in next rows (for header-above-value layouts, e.g. white_* section)
-       3) Nearby cells in same row (small horizontal window only)
-       4) Nearby columns in next rows (small horizontal window)
-     """
- 
-     current_row = df.iloc[row_idx]
- 
-     # 1) Same cell
-     num = clean_number(current_row.iloc[col_idx])
-     if num is not None:
-         return num
- 
-     # 2) Same column in next rows
-     for r in range(row_idx + 1, min(row_idx + 1 + max_row_lookahead, len(df))):
-         next_row = df.iloc[r]
-@@ -260,187 +277,572 @@ def find_section_shift_values(
-             for j in range(i, min(i + search_depth, len(df))):
-                 subrow = df.iloc[j].astype(str)
- 
-                 if any(property_keyword in cell for cell in subrow):
-                     day_value = extract_number_near_column(
-                         df, j, day_col_idx, max_row_lookahead=max_row_lookahead
-                     )
-                     night_value = extract_number_near_column(
-                         df, j, night_col_idx, max_row_lookahead=max_row_lookahead
-                     )
- 
-                     # Fallback if anchors fail: pick first two numeric values in row
-                     if day_value is None or night_value is None:
-                         nums = [clean_number(cell) for cell in df.iloc[j]]
-                         nums = [n for n in nums if n is not None]
-                         if day_value is None and len(nums) >= 1:
-                             day_value = nums[0]
-                         if night_value is None and len(nums) >= 2:
-                             night_value = nums[1]
- 
-                     return day_value, night_value
- 
-     return None, None
+ def save_prep_metadata(prep_folder="prep_data", metadata=None):
+     """Save prep-data configuration metadata as JSON."""
+     if metadata is None:
+         metadata = {}
+-    os.makedirs(prep_folder, exist_ok=True)
+     metadata_path = prep_data_file_paths(prep_folder)["metadata"]
++    os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
+     with open(metadata_path, "w", encoding="utf-8") as metadata_file:
+         json.dump(metadata, metadata_file, indent=2, ensure_ascii=False)
  
  
-+def extract_value_near_column(df, row_idx, target_col_idx, max_row_lookahead=0, max_col_offset=2):
-+    """
-+    Extract a useful value close to a target column anchor for a specific row.
-+    Unlike extract_number_near_column, this preserves non-numeric values such as "10-12".
-+    """
-+    if target_col_idx is None:
-+        return None
-+
-+    row = df.iloc[row_idx]
-+    for offset in range(0, max_col_offset + 1):
-+        for col_idx in (target_col_idx + offset, target_col_idx - offset):
-+            if 0 <= col_idx < len(row):
-+                value = clean_cell_value(row.iloc[col_idx])
-+                if value is not None:
-+                    return value
-+
-+    for r in range(row_idx + 1, min(row_idx + 1 + max_row_lookahead, len(df))):
-+        next_row = df.iloc[r]
-+        for offset in range(0, max_col_offset + 1):
-+            for col_idx in (target_col_idx + offset, target_col_idx - offset):
-+                if 0 <= col_idx < len(next_row):
-+                    value = clean_cell_value(next_row.iloc[col_idx])
-+                    if value is not None:
-+                        return value
-+
-+    return None
-+
-+
-+def find_section_shift_cell_values(
-+    df,
-+    section_keyword,
-+    property_keyword,
-+    day_col_idx,
-+    night_col_idx,
-+    search_depth=6,
-+    max_row_lookahead=0,
-+):
-+    """Find day/night values for a section/property pair while preserving text values."""
-+    for i in range(len(df)):
-+        row = df.iloc[i].astype(str)
-+
-+        if any(section_keyword in cell for cell in row):
-+            for j in range(i, min(i + search_depth, len(df))):
-+                subrow = df.iloc[j].astype(str)
-+
-+                if any(property_keyword in cell for cell in subrow):
-+                    day_value = extract_value_near_column(
-+                        df, j, day_col_idx, max_row_lookahead=max_row_lookahead
-+                    )
-+                    night_value = extract_value_near_column(
-+                        df, j, night_col_idx, max_row_lookahead=max_row_lookahead
-+                    )
-+
-+                    if day_value is None or night_value is None:
-+                        values = [clean_cell_value(cell) for cell in df.iloc[j]]
-+                        values = [value for value in values if value is not None]
-+                        if day_value is None and len(values) >= 1:
-+                            day_value = values[0]
-+                        if night_value is None and len(values) >= 2:
-+                            night_value = values[1]
-+
-+                    return day_value, night_value
-+
-+    return None, None
-+
-+
-+def extract_first_number(x):
-+    """Extract the first numeric token from a text cell, supporting Persian digits."""
-+    if pd.isna(x):
-+        return None
-+
-+    text = str(x)
-+    persian_digits = "۰۱۲۳۴۵۶۷۸۹"
-+    english_digits = "0123456789"
-+    for p, e in zip(persian_digits, english_digits):
-+        text = text.replace(p, e)
-+    text = text.replace("٫", ".")
-+
-+    match = re.search(r"\d+(?:\.\d+)?", text)
-+    if not match:
-+        return None
-+
-+    return clean_number(match.group(0))
-+
-+
-+def find_row_containing(df, keyword, start_row=0):
-+    """Return the first row index containing keyword, or None when missing."""
-+    for row_idx in range(start_row, len(df)):
-+        row = df.iloc[row_idx].astype(str)
-+        if any(keyword in cell for cell in row):
-+            return row_idx
-+    return None
-+
-+
-+def first_column_containing(df, row_idx, keyword):
-+    """Return the first column index in a row containing keyword, or None."""
-+    row = df.iloc[row_idx].astype(str)
-+    for col_idx, cell in enumerate(row):
-+        if keyword in cell:
-+            return col_idx
-+    return None
-+
-+
-+def extract_numeric_to_right(df, row_idx, col_idx, max_offset=4):
-+    """Extract the first numeric value to the right of a label cell."""
-+    row = df.iloc[row_idx]
-+    for offset in range(1, max_offset + 1):
-+        target_col = col_idx + offset
-+        if target_col >= len(row):
-+            break
-+        value = clean_number(row.iloc[target_col])
-+        if value is not None:
-+            return value
-+    return None
-+
-+
-+def extract_report_metadata(df):
-+    """Extract report header fields that apply to both day and night rows."""
-+    metadata = {}
-+
-+    for row_idx in range(len(df)):
-+        row = df.iloc[row_idx].astype(str)
-+        for col_idx, cell in enumerate(row):
-+            if "سال" in cell and "report_year" not in metadata:
-+                metadata["report_year"] = extract_first_number(cell)
-+                if metadata["report_year"] is None:
-+                    metadata["report_year"] = extract_value_near_column(
-+                        df, row_idx, col_idx, max_col_offset=2
-+                    )
-+
-+            if "دوره کاری" in cell and "work_period" not in metadata:
-+                metadata["work_period"] = extract_numeric_to_right(
-+                    df, row_idx, col_idx, max_offset=4
-+                )
-+
-+            if "روز کاری" in cell and "work_day" not in metadata:
-+                metadata["work_day"] = extract_numeric_to_right(
-+                    df, row_idx, col_idx, max_offset=4
-+                )
-+
-+            if "تاریخ" in cell and "report_date_day" not in metadata:
-+                metadata["report_date_day"] = extract_value_near_column(
-+                    df, row_idx, col_idx + 1, max_col_offset=1
-+                )
-+                metadata["report_date_month"] = extract_value_near_column(
-+                    df, row_idx, col_idx + 2, max_col_offset=1
-+                )
-+                metadata["report_date_year"] = extract_value_near_column(
-+                    df, row_idx, col_idx + 3, max_col_offset=1
-+                )
-+
-+    return metadata
-+
-+
-+def extract_table_by_row_labels(
-+    df,
-+    section_keyword,
-+    row_labels,
-+    day_metrics,
-+    night_metrics=None,
-+    prefix="",
-+    max_rows=None,
-+):
-+    """
-+    Extract two-shift matrix sections such as پخت ها and پساب ها.
-+
-+    The Persian report stores the row label in the column immediately after the section
-+    label and then writes day metrics followed by night metrics. This helper reads the
-+    cell coordinates directly so rows like R1/R2/R3 are not skipped by the simpler
-+    section/property finder.
-+    """
-+    section_row = find_row_containing(df, section_keyword)
-+    if section_row is None:
-+        return {}, {}
-+
-+    label_col = first_column_containing(df, section_row, "نوع")
-+    if label_col is None:
-+        # Wastewater tables do not repeat the "نوع" header; their labels still sit in
-+        # the first non-empty column to the right of the section name.
-+        section_col = first_column_containing(df, section_row, section_keyword)
-+        label_col = section_col + 1 if section_col is not None else 2
-+
-+    day_start_col = label_col + 1
-+    night_start_col = day_start_col + len(day_metrics)
-+    if night_metrics is None:
-+        night_metrics = day_metrics
-+
-+    rows_to_scan = max_rows if max_rows is not None else len(row_labels) + 3
-+    day_values = {}
-+    night_values = {}
-+
-+    for row_idx in range(section_row + 1, min(section_row + 1 + rows_to_scan, len(df))):
-+        label_value = str(df.iloc[row_idx, label_col]).strip()
-+        if label_value not in row_labels:
-+            continue
-+
-+        normalized_label = row_labels[label_value]
-+        for offset, metric_name in enumerate(day_metrics):
-+            value = clean_cell_value(df.iloc[row_idx, day_start_col + offset])
-+            day_values[f"{prefix}_{normalized_label}_{metric_name}"] = value
-+
-+        for offset, metric_name in enumerate(night_metrics):
-+            value = clean_cell_value(df.iloc[row_idx, night_start_col + offset])
-+            night_values[f"{prefix}_{normalized_label}_{metric_name}"] = value
-+
-+    return day_values, night_values
-+
-+
-+def extract_white_sugar_quality_shift_values(df):
-+    """Extract the per-shift white sugar quality/point rows."""
-+    section_row = find_row_containing(df, "کیفیت شکر سفید")
-+    if section_row is None:
-+        return {}, {}
-+
-+    label_col = first_column_containing(df, section_row, "رطوبت")
-+    if label_col is None:
-+        label_col = 2
-+
-+    day_start_col = label_col + 1
-+    day_sample_cols = 3
-+    night_start_col = day_start_col + day_sample_cols + 1
-+    night_sample_cols = 4
-+    row_map = {
-+        "رطوبت": "moisture",
-+        "رنگ محلول": "solution_color",
-+        "رنگ ظاهری": "apparent_color",
-+        "خاکستر": "ash",
-+        "جمع پوئن": "total_points",
-+    }
-+    day_values = {}
-+    night_values = {}
-+
-+    for row_idx in range(section_row, min(section_row + len(row_map) + 2, len(df))):
-+        label_text = str(df.iloc[row_idx, label_col]).strip()
-+        metric_name = None
-+        for keyword, normalized in row_map.items():
-+            if keyword in label_text:
-+                metric_name = normalized
-+                break
-+        if metric_name is None:
-+            continue
-+
-+        for sample_offset in range(day_sample_cols):
-+            value = clean_cell_value(df.iloc[row_idx, day_start_col + sample_offset])
-+            day_values[f"white_quality_{metric_name}_{sample_offset + 1}"] = value
-+
-+        for sample_offset in range(night_sample_cols):
-+            value = clean_cell_value(df.iloc[row_idx, night_start_col + sample_offset])
-+            night_values[f"white_quality_{metric_name}_{sample_offset + 1}"] = value
-+
-+    return day_values, night_values
-+
-+
-+def extract_boiler_shift_values(df):
-+    """Extract boiler water measurements for both shifts."""
-+    header_row = find_row_containing(df, "مشخصات آب مصرفی")
-+    if header_row is None or header_row + 1 >= len(df):
-+        return {}, {}
-+
-+    metrics = ["pH", "alkalinity", "hardness", "tds"]
-+    first_metric_col = first_column_containing(df, header_row, "pH")
-+    if first_metric_col is None:
-+        first_metric_col = 3
-+
-+    day_values = {}
-+    night_values = {}
-+    for offset, metric_name in enumerate(metrics):
-+        day_values[f"boiler_{metric_name}"] = clean_cell_value(
-+            df.iloc[header_row + 1, first_metric_col + offset]
-+        )
-+        night_values[f"boiler_{metric_name}"] = clean_cell_value(
-+            df.iloc[header_row + 1, first_metric_col + len(metrics) + offset]
-+        )
-+
-+    return day_values, night_values
-+
-+
-+def extract_average_row_values(df, section_keyword, prefix):
-+    """Extract average-summary rows whose headers are followed by values in the next row."""
-+    header_row = find_row_containing(df, section_keyword)
-+    if header_row is None or header_row + 1 >= len(df):
-+        return {}
-+
-+    metric_map = {
-+        "رطوبت": "moisture",
-+        "اینورت": "invert",
-+        "رنگ محلول": "solution_color",
-+        "رنگ ظاهری": "apparent_color",
-+        "خاکستر": "ash",
-+        "جمع پوئن": "total_points",
-+    }
-+    values = {}
-+    for col_idx, cell in enumerate(df.iloc[header_row].astype(str)):
-+        for keyword, metric_name in metric_map.items():
-+            if keyword in cell:
-+                values[f"{prefix}_{metric_name}"] = clean_cell_value(
-+                    df.iloc[header_row + 1, col_idx]
-+                )
-+
-+        if "سولفیت" in cell:
-+            values[f"{prefix}_sulfite"] = clean_cell_value(cell)
-+
-+    for cell in df.iloc[header_row + 1].astype(str):
-+        if "MA" in cell or "CV" in cell:
-+            values[f"{prefix}_ma_cv"] = clean_cell_value(cell)
-+
-+    return values
-+
-+
- # ==========================================
- # 4️⃣ EXCEL PROCESSING
- # ==========================================
+ def read_prep_metadata(prep_folder="prep_data"):
+     """Read prep-data metadata JSON if available."""
+     metadata_path = prep_data_file_paths(prep_folder)["metadata"]
+     if not os.path.isfile(metadata_path):
+         return {}
+     with open(metadata_path, "r", encoding="utf-8") as metadata_file:
+         return json.load(metadata_file)
  
  
- def extract_excel_to_dataframe(input_file):
-     """Extract all worksheets from the Excel report into a cleaned dataframe."""
-     xls = pd.ExcelFile(input_file)
-     all_sheets = xls.sheet_names
- 
-     all_days_data = []
- 
-     for sheet in all_sheets:
- 
-         print(f"Processing sheet: {sheet}")
- 
-         df = pd.read_excel(input_file, sheet_name=sheet, header=None)
-         df = df.fillna("").astype(str)
- 
-         day_col_idx, night_col_idx = find_day_night_columns(df)
- 
-         day_data = {"sheet_name": sheet, "shift_name": "0"}
-         night_data = {"sheet_name": sheet, "shift_name": "1"}
- 
-+        report_metadata = extract_report_metadata(df)
-+        day_data.update(report_metadata)
-+        night_data.update(report_metadata)
-+
-         # -------------------------------
-         # RAW SUGAR
-         # -------------------------------
-         day_value, night_value = find_section_shift_values(df, "شکرخام", "رنگ", day_col_idx, night_col_idx)
-         day_data["raw_sugar_color"] = day_value
-         night_data["raw_sugar_color"] = night_value
- 
-         # -------------------------------
-         # RAW SYRUP
-         # -------------------------------
-         day_value, night_value = find_section_shift_values(df, "شربت خام", "بریکس", day_col_idx, night_col_idx)
-         day_data["raw_syrup_brix"] = day_value
-         night_data["raw_syrup_brix"] = night_value
- 
-         day_value, night_value = find_section_shift_values(df, "شربت خام", "رنگ", day_col_idx, night_col_idx)
-         day_data["raw_syrup_color"] = day_value
-         night_data["raw_syrup_color"] = night_value
- 
-         # -------------------------------
--        # LIME TREATED SYRUP
-+        # LIME MILK + LIME TREATED SYRUP
-         # -------------------------------
-+        day_value, night_value = find_section_shift_cell_values(df, "بومه", "بومه", day_col_idx, night_col_idx)
-+        day_data["lime_milk_baume"] = day_value
-+        night_data["lime_milk_baume"] = night_value
-+
-         day_value, night_value = find_section_shift_values(df, "شربت آهک", "قلیایی", day_col_idx, night_col_idx)
-         day_data["lime_alkalinity"] = day_value
-         night_data["lime_alkalinity"] = night_value
- 
-         day_value, night_value = find_section_shift_values(df, "CO2", "درصد", day_col_idx, night_col_idx)
-         day_data["co2_percent"] = day_value
-         night_data["co2_percent"] = night_value
- 
-         # -------------------------------
-         # CARBONATED SYRUP
-         # -------------------------------
-         day_value, night_value = find_section_shift_values(df, "شربت کربناتور", "قلیایی", day_col_idx, night_col_idx)
-         day_data["carbonated_alkalinity"] = day_value
-         night_data["carbonated_alkalinity"] = night_value
- 
-         day_value, night_value = find_section_shift_values(df, "شربت کربناتور", "PH", day_col_idx, night_col_idx)
-         day_data["carbonated_pH"] = day_value
-         night_data["carbonated_pH"] = night_value
- 
-         # -------------------------------
-         # FILTER CAKE
-         # -------------------------------
-         day_value, night_value = find_section_shift_values(df, "گل فیلتر", "رطوبت", day_col_idx, night_col_idx)
-         day_data["filtercake_moisture"] = day_value
-         night_data["filtercake_moisture"] = night_value
- 
-         day_value, night_value = find_section_shift_values(df, "گل فیلتر", "قند", day_col_idx, night_col_idx)
-         day_data["filtercake_sugar"] = day_value
-         night_data["filtercake_sugar"] = night_value
- 
-+        average_filtercake_sugar = find_section_value(df, "میانگین قند گل فیلتر", "میانگین قند گل فیلتر")
-+        day_data["filtercake_sugar_average_to_date"] = average_filtercake_sugar
-+        night_data["filtercake_sugar_average_to_date"] = average_filtercake_sugar
-+
-         # -------------------------------
-         # SWEET WATER
-         # -------------------------------
-         day_value, night_value = find_section_shift_values(df, "آب شیرین", "بریکس", day_col_idx, night_col_idx)
-         day_data["sweetwater_brix"] = day_value
-         night_data["sweetwater_brix"] = night_value
- 
-         # -------------------------------
-         # SULPHITED SYRUP
-         # -------------------------------
-         day_value, night_value = find_section_shift_values(df, "شربت سولفیته", "PH", day_col_idx, night_col_idx)
-         day_data["sulphited_pH"] = day_value
-         night_data["sulphited_pH"] = night_value
- 
-         day_value, night_value = find_section_shift_values(df, "شربت سولفیته", "بریکس", day_col_idx, night_col_idx)
-         day_data["sulphited_brix"] = day_value
-         night_data["sulphited_brix"] = night_value
- 
-         day_value, night_value = find_section_shift_values(df, "شربت سولفیته", "رنگ", day_col_idx, night_col_idx)
-         day_data["sulphited_color"] = day_value
-         night_data["sulphited_color"] = night_value
- 
-         # -------------------------------
-         # STANDARD LIQUOR
-         # -------------------------------
-         day_value, night_value = find_section_shift_values(df, "لیکور استاندارد", "PH", day_col_idx, night_col_idx)
-         day_data["standard_liquor_pH"] = day_value
-         night_data["standard_liquor_pH"] = night_value
- 
-         day_value, night_value = find_section_shift_values(df, "لیکور استاندارد", "بریکس", day_col_idx, night_col_idx)
-         day_data["standard_liquor_brix"] = day_value
-         night_data["standard_liquor_brix"] = night_value
- 
-         day_value, night_value = find_section_shift_values(df, "لیکور استاندارد", "رنگ", day_col_idx, night_col_idx)
-         day_data["standard_liquor_color"] = day_value
-         night_data["standard_liquor_color"] = night_value
- 
-+        # -------------------------------
-+        # BOILING MASSECUITES (پخت ها)
-+        # -------------------------------
-+        row_labels = {"R1": "r1", "R2": "r2", "R3": "r3", "A": "a", "B": "b", "C": "c"}
-+        day_values, night_values = extract_table_by_row_labels(
-+            df,
-+            "پخت",
-+            row_labels,
-+            ["brix", "pol", "q", "pH"],
-+            prefix="boiling",
-+            max_rows=8,
-+        )
-+        day_data.update(day_values)
-+        night_data.update(night_values)
-+
-+        # -------------------------------
-+        # WASTEWATER / RUNOFFS (پساب ها)
-+        # -------------------------------
-+        wastewater_row_labels = {
-+            "R1": "r1",
-+            "R2": "r2",
-+            "R3": "r3",
-+            "A": "a",
-+            "B": "b",
-+            "C": "c",
-+            "ملاس": "molasses",
-+        }
-+        day_values, night_values = extract_table_by_row_labels(
-+            df,
-+            "پساب",
-+            wastewater_row_labels,
-+            ["brix", "pol", "q", "pH"],
-+            prefix="wastewater",
-+            max_rows=9,
-+        )
-+        day_data.update(day_values)
-+        night_data.update(night_values)
-+
-+        # -------------------------------
-+        # WHITE SUGAR QUALITY SAMPLES + POINTS
-+        # -------------------------------
-+        day_values, night_values = extract_white_sugar_quality_shift_values(df)
-+        day_data.update(day_values)
-+        night_data.update(night_values)
-+
-         # -------------------------------
-         # FINAL WHITE SUGAR (AVERAGE TWO SHIFTS)
-         # -------------------------------
-         white_moisture = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "رطوبت")
-         white_invert = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "اینورت")
-         white_solution_color = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "رنگ محلول")
-         white_apparent_color = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "رنگ ظاهری")
-         white_ash = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "خاکستر")
-         white_total_points = find_section_value(df, "میانگین نتایج شکر سفید در دو شیفت", "جمع پوئن")
- 
-         # These are already two-shift averages, so keep same value for both rows.
-         day_data["white_moisture"] = white_moisture
-         day_data["white_invert"] = white_invert
-         day_data["white_solution_color"] = white_solution_color
-         day_data["white_apparent_color"] = white_apparent_color
-         day_data["white_ash"] = white_ash
-         day_data["white_total_points"] = white_total_points
- 
-         night_data["white_moisture"] = white_moisture
-         night_data["white_invert"] = white_invert
-         night_data["white_solution_color"] = white_solution_color
-         night_data["white_apparent_color"] = white_apparent_color
-         night_data["white_ash"] = white_ash
-         night_data["white_total_points"] = white_total_points
- 
-+        white_average_values = extract_average_row_values(
-+            df, "میانگین نتایج شکر سفید در دو شیفت", "white_average_two_shifts"
-+        )
-+        day_data.update(white_average_values)
-+        night_data.update(white_average_values)
-+
-+        white_to_date_values = extract_average_row_values(
-+            df, "میانگین نتایج شکر سفید تا این تاریخ", "white_average_to_date"
-+        )
-+        day_data.update(white_to_date_values)
-+        night_data.update(white_to_date_values)
-+
-+        # -------------------------------
-+        # BOILER WATER
-+        # -------------------------------
-+        day_values, night_values = extract_boiler_shift_values(df)
-+        day_data.update(day_values)
-+        night_data.update(night_values)
-+
-         all_days_data.append(day_data)
-         all_days_data.append(night_data)
- 
-     return pd.DataFrame(all_days_data)
  
  
- # ==========================================
- # 5️⃣ CSV SAVING + MERGING
- # ==========================================
+ 
+ def _append_engineered_input(resolved_inputs, column_name):
+     """Append a generated feature name once while preserving feature order."""
+     if column_name not in resolved_inputs:
+         resolved_inputs.append(column_name)
  
  
- def remove_duplicate_rows(df):
-     """Remove duplicate rows and print how many rows were dropped."""
-     before_count = len(df)
-     df = df.drop_duplicates()
-     removed_count = before_count - len(df)
-     print(f"Removed {removed_count} duplicate row(s).")
-     return df
+ def _safe_divide(numerator, denominator):
+     """Divide process signals while treating zero denominators as missing values."""
+     return numerator / denominator.mask(denominator == 0)
+@@ -421,100 +465,103 @@ def select_features(data):
+         "\nEnter output (target) feature(s), comma-separated [last column]: "
+     ).strip()
+     if not output_answer:
+         output_features = [data.columns[-1]]
+     else:
+         output_features = [col.strip() for col in output_answer.split(",") if col.strip()]
+ 
+     default_inputs = [col for col in data.columns if col not in output_features]
+     print("\nDefault input features (excluding selected output(s)):")
+     print(", ".join(default_inputs))
+ 
+     input_features = input(
+         "Press Enter to use the default input features, or enter comma-separated feature names: "
+     ).strip()
+ 
+     if not input_features:
+         input_features = default_inputs
+     else:
+         input_features = [col.strip() for col in input_features.split(",")]
+ 
+     return output_features, input_features
  
  
- def save_csv(df, output_file):
-     """Save a dataframe as CSV."""
-     df.to_csv(output_file, index=False)
-     print(f"Output file: {output_file}")
+ def save_data(folder, X_train, X_test, y_train, y_test, metadata=None, after_prepare=False):
+     """Save train/test splits to prep_data files."""
++    folder = resolve_relative_path(folder)
+     os.makedirs(folder, exist_ok=True)
+     print(f"\nSaving processed data to '{folder}'...")
+     X_train.to_csv(os.path.join(folder, "X_train.csv"), index=False)
+     X_test.to_csv(os.path.join(folder, "X_test.csv"), index=False)
+     y_train.to_csv(os.path.join(folder, "y_train.csv"), index=False)
+     y_test.to_csv(os.path.join(folder, "y_test.csv"), index=False)
+     
+     if after_prepare is True:
+         pd.concat([X_train.reset_index(drop=True), y_train.reset_index(drop=True)], axis=1).to_csv(
+             os.path.join(folder, "train.csv"), index=False
+         )
+         pd.concat([X_test.reset_index(drop=True), y_test.reset_index(drop=True)], axis=1).to_csv(
+             os.path.join(folder, "test.csv"), index=False
+         )
  
+     pd.concat([X_train.reset_index(drop=True), y_train.reset_index(drop=True)], axis=1).to_csv(
+         os.path.join(folder, "Xy_train.csv"), index=False
+     )
+     pd.concat([X_test.reset_index(drop=True), y_test.reset_index(drop=True)], axis=1).to_csv(
+         os.path.join(folder, "Xy_test.csv"), index=False
+     )
+     if metadata is not None:
+         save_prep_metadata(folder, metadata)
+     print("Data saved successfully!")
+ 
+ 
+ def prepare_data_from_file(
+     dataset_path="data.csv",
+     output_feature="rate",
+     input_features=None,
+     prep_folder="prep_data",
+     test_size=0.2,
+     random_state=123,
+     sequential_features=None,
+     sequential_groups=None,
+     add_differences=False,
+     difference_order=1,
+     add_ratio_features=False,
+     add_acceleration_features=False,
+     add_normalized_change_features=False,
+     create_rnn_windows=False,
+     rnn_window_size=3,
+     add_rolling_dynamics=False,
+     rolling_window=3,
+     optional_future_quality_inputs=None,
+ ):
+     """Prepare prep_data files directly from a raw CSV dataset."""
++    dataset_path = print_path_debug("prepare_data_from_file dataset", dataset_path)
+     if not os.path.isfile(dataset_path):
+         raise FileNotFoundError(f"Dataset file '{dataset_path}' not found.")
+ 
++    print(f"[path-debug] Reading raw dataset CSV: {dataset_path}")
+     data = pd.read_csv(dataset_path)
+     base_input_features, requested_derived_features = split_base_and_derived_input_features(
+         data.columns, input_features
+     )
+     output_features, input_features = resolve_data_columns(
+         data,
+         output_feature,
+         base_input_features,
+         optional_future_quality_inputs=optional_future_quality_inputs,
+     )
+     data, input_features = apply_temporal_feature_engineering(
+         data=data,
+         input_features=input_features,
+         sequential_features=sequential_features,
+         sequential_groups=sequential_groups,
+         add_differences=add_differences,
+         difference_order=difference_order,
+         add_ratio_features=add_ratio_features,
+         add_acceleration_features=add_acceleration_features,
+         add_normalized_change_features=add_normalized_change_features,
+         create_rnn_windows=create_rnn_windows,
+         rnn_window_size=rnn_window_size,
+         add_rolling_dynamics=add_rolling_dynamics,
+         rolling_window=rolling_window,
+     )
+@@ -556,53 +603,55 @@ def prepare_data_from_file(
+         "refinery_variable_groups": refinery_variable_group_metadata(),
+     }
+     save_data(prep_folder, X_train, X_test, y_train, y_test, metadata=metadata, after_prepare = True)
+     return X_train, X_test, y_train, y_test
+ 
+ 
+ def sync_prep_data_with_dataset(
+     dataset_path="data.csv",
+     prep_folder="prep_data",
+     output_feature="rate",
+     input_features=None,
+     sequential_features=None,
+     sequential_groups=None,
+     add_differences=False,
+     difference_order=1,
+     add_ratio_features=False,
+     add_acceleration_features=False,
+     add_normalized_change_features=False,
+     create_rnn_windows=False,
+     rnn_window_size=3,
+     add_rolling_dynamics=False,
+     rolling_window=3,
+     optional_future_quality_inputs=None,
+ ):
+     """Rebuild prep_data if files are missing or schema differs from dataset."""
++    dataset_path = print_path_debug("sync_prep_data_with_dataset dataset", dataset_path)
+     if not os.path.isfile(dataset_path):
+         raise FileNotFoundError(f"Dataset file '{dataset_path}' not found.")
+ 
++    print(f"[path-debug] Reading raw dataset CSV for prep_data sync: {dataset_path}")
+     data = pd.read_csv(dataset_path)
+     base_input_features, requested_derived_features = split_base_and_derived_input_features(
+         data.columns, input_features
+     )
+     output_features, input_features = resolve_data_columns(
+         data,
+         output_feature,
+         base_input_features,
+         optional_future_quality_inputs=optional_future_quality_inputs,
+     )
+     _, input_features = apply_temporal_feature_engineering(
+         data=data,
+         input_features=input_features,
+         sequential_features=sequential_features,
+         sequential_groups=sequential_groups,
+         add_differences=add_differences,
+         difference_order=difference_order,
+         add_ratio_features=add_ratio_features,
+         add_acceleration_features=add_acceleration_features,
+         add_normalized_change_features=add_normalized_change_features,
+         create_rnn_windows=create_rnn_windows,
+         rnn_window_size=rnn_window_size,
+         add_rolling_dynamics=add_rolling_dynamics,
+         rolling_window=rolling_window,
+     )
+@@ -643,64 +692,69 @@ def sync_prep_data_with_dataset(
+         print("prep_data is missing or outdated. Rebuilding from dataset...")
+         prepare_data_from_file(
+             dataset_path=dataset_path,
+             output_feature=output_features,
+             input_features=input_features,
+             prep_folder=prep_folder,
+             sequential_features=sequential_features,
+             sequential_groups=sequential_groups,
+             add_differences=add_differences,
+             difference_order=difference_order,
+             add_ratio_features=add_ratio_features,
+             add_acceleration_features=add_acceleration_features,
+             add_normalized_change_features=add_normalized_change_features,
+             create_rnn_windows=create_rnn_windows,
+             rnn_window_size=rnn_window_size,
+             add_rolling_dynamics=add_rolling_dynamics,
+             rolling_window=rolling_window,
+             optional_future_quality_inputs=optional_future_quality_inputs,
+         )
+     else:
+         print("prep_data matches dataset columns. Reusing existing files.")
+ 
+ 
+ def read_prep_data(inputs=None, prep_folder="prep_data", optional_future_quality_inputs=None):
+     """Read preprocessed train/test files, optionally filtering input columns."""
++    prep_folder = print_path_debug("read_prep_data prep_folder", prep_folder)
+     print(f"Reading data from '{prep_folder}'...")
+ 
+     X_train_path = os.path.join(prep_folder, "X_train.csv")
+     X_test_path = os.path.join(prep_folder, "X_test.csv")
+     y_train_path = os.path.join(prep_folder, "y_train.csv")
+     y_test_path = os.path.join(prep_folder, "y_test.csv")
+ 
+     for file_path in [X_train_path, X_test_path, y_train_path, y_test_path]:
+         if not os.path.isfile(file_path):
+             raise FileNotFoundError(f"Required file '{file_path}' not found in '{prep_folder}'.")
+ 
++    print(f"[path-debug] Reading prep_data CSV: {X_train_path}")
+     X_train_full = pd.read_csv(X_train_path)
++    print(f"[path-debug] Reading prep_data CSV: {X_test_path}")
+     X_test_full = pd.read_csv(X_test_path)
++    print(f"[path-debug] Reading prep_data CSV: {y_train_path}")
+     y_train = pd.read_csv(y_train_path)
++    print(f"[path-debug] Reading prep_data CSV: {y_test_path}")
+     y_test = pd.read_csv(y_test_path)
+ 
+     if list(X_train_full.columns) != list(X_test_full.columns):
+         train_only = [col for col in X_train_full.columns if col not in X_test_full.columns]
+         test_only = [col for col in X_test_full.columns if col not in X_train_full.columns]
+         raise ValueError(
+             "prep_data schema mismatch between X_train and X_test. "
+             f"Columns only in X_train: {train_only}. "
+             f"Columns only in X_test: {test_only}. "
+             "Rebuild prep_data to keep train/test schemas aligned."
+         )
+ 
+     if inputs is not None:
+         print(f"Filtering inputs: {inputs}")
+         if optional_future_quality_inputs is None:
+             optional_future_quality_inputs = list(inputs)
+         validate_model_inputs(
+             inputs,
+             output_features=y_train.columns.tolist(),
+             optional_future_quality_inputs=optional_future_quality_inputs,
+         )
+         missing_inputs = [col for col in inputs if col not in X_train_full.columns]
+         if missing_inputs:
+             raise KeyError(
+                 f"Requested input columns are missing from prep_data: {missing_inputs}. "
