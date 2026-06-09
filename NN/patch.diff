@@ -1,218 +1,497 @@
 diff --git a/NN/run.py b/NN/run.py
-index 5482f265339a9aa18f11681a7545913264fa4da2..b6491a949d82d8ff622a495b92f1041647fb0f2b 100644
+index b6491a949d82d8ff622a495b92f1041647fb0f2b..5f50c52ecebea0d372391a4486c6cab3061d1ea7 100644
 --- a/NN/run.py
 +++ b/NN/run.py
-@@ -390,62 +390,62 @@ data_seed = 123 # it is used for random_state of splitting data into source and
- # changing it creates different source and train sets.
- # Since the number of data is low changing it can largely affect the results
- model_seed = 123 # it is used for random_state of models
- def set_model_seed(model_seed):
-     torch.manual_seed(model_seed)
-     np.random.seed(model_seed)
- 
- learning_rate = 0.0005
- # Industrially conservative ANN weight learning rate. 0.05 was too aggressive
- # for a small, standardized tabular dataset and can overshoot narrow minima.
- input_learning_rate = 0.00005
- # Input optimization is more sensitive than weight optimization because it moves
- # the normalized training data directly, so keep it an order of magnitude lower.
- ann_weight_decay = 1e-4
- # L2 regularization reduces small-sample overfitting without increasing model size.
- early_stopping_patience = 20
- early_stopping_min_delta = 1e-4
- validation_fraction = 0.2
- lr_plateau_patience = 8
- lr_plateau_factor = 0.5
- min_learning_rate = 1e-5
- max_gradient_norm = 0.5
- max_input_delta = 1.5
- # Conservative training guards for stable convergence on small industrial data.
- #hidden_size1 = 10
--hidden_size1 = 8
--hidden_size2 = 4
-+hidden_size1 = 32
-+hidden_size2 = 16
- 
- # the number of neurons in hidden layers
- 
- # https://alexlenail.me/NN-SVG/
- # use the site above to draw the following network
- #
--hidden_sizes = [8, 4]
-+hidden_sizes = [32, 16]
- # nn.ReLU(), nn.Tanh(), nn.Identity()
- 
--list_hidden_sizes = [[4], [6], [8], [8, 4]]
-+list_hidden_sizes = [[16], [32], [64], [16, 8], [32, 16], [48, 24], [64, 32], [64, 32, 16]]
- normalization_type = "standard_scaler"
- 
- EXTRA_TREES_RANDOM_SEARCH_ITERATIONS = 40
- EXTRA_TREES_RANDOM_SEARCH_CV_FOLDS = 5
- MODEL_EVALUATION_CV_FOLDS = 5
- 
- 
- def make_extra_trees_random_search(seed):
-     """Build a tuned ExtraTrees regressor while preserving the model menu name."""
-     base_model = ExtraTreesRegressor(random_state=seed, n_jobs=-1)
-     param_distributions = {
-         "n_estimators": [300, 500, 800, 1000],
-         "max_depth": [None, 4, 6, 8, 10, 12, 16],
-         "min_samples_split": [2, 3, 4, 5, 8, 10],
-         "min_samples_leaf": [1, 2, 3, 4, 6],
-         "max_features": ["sqrt", "log2", 0.5, 0.7, 0.9, 1.0],
-         "bootstrap": [False, True],
-     }
-     return RandomizedSearchCV(
-         estimator=base_model,
-         param_distributions=param_distributions,
-         n_iter=EXTRA_TREES_RANDOM_SEARCH_ITERATIONS,
-         scoring=make_scorer(r2_score, multioutput="uniform_average"),
-         cv=EXTRA_TREES_RANDOM_SEARCH_CV_FOLDS,
-         random_state=seed,
-@@ -1111,64 +1111,76 @@ def parse_epochs_input(answer, default_epochs):
-         if token.isdigit() and int(token) > 0:
-             parsed_epochs.append(int(token))
- 
-     if not parsed_epochs and not use_cv_early_stop:
-         parsed_epochs = list(default_epochs)
-     return sorted(set(parsed_epochs)), use_cv_early_stop
- 
- 
- 
- def print_ann_training_robustness_notes():
-     """Explain the safeguards used for neural-network training."""
-     print("\nANN industrial robustness safeguards:")
-     print(
-         f"- learning_rate={learning_rate}: conservative AdamW step size reduces "
-         "overshoot and run-to-run volatility on standardized tabular data; "
-         f"ReduceLROnPlateau halves it after {lr_plateau_patience} flat checks "
-         f"down to {min_learning_rate}."
-     )
-     print(
-         f"- input_learning_rate={input_learning_rate}: input optimization moves "
-         "data directly, so a smaller step prevents unrealistic optimized inputs."
-     )
-     print(
-         f"- validation_fraction={validation_fraction}, patience={early_stopping_patience}: "
-         "early stopping monitors held-out training data and restores the best weights, "
--        "which limits memorization on the ~174-row dataset."
-+        "which limits memorization on the 755-sample dataset."
-     )
-     print(
-         f"- ann_weight_decay={ann_weight_decay}: L2 regularization discourages oversized "
-         "weights and improves generalization without adding model complexity."
-     )
-+    print(
-+        "- BatchNorm1d after each hidden Linear/RBF basis layer stabilizes hidden "
-+        "activation scale; Dropout(p=0.10) reduces co-adaptation and small-sample "
-+        "memorization while preserving the existing model constructor API."
-+    )
-+    print(
-+        "- Xavier uniform initialization is applied to Linear layers so initial "
-+        "signal variance is balanced across input/output fan sizes before AdamW "
-+        "and the learning-rate scheduler begin updates."
-+    )
-     print(
-         f"- max_gradient_norm={max_gradient_norm}, max_input_delta={max_input_delta}: "
-         "gradient and input-update bounds prevent unstable convergence and non-physical "
-         "input drift."
-     )
-     print(
--        f"- hidden size candidates={list_hidden_sizes}: small candidate networks keep "
--        "capacity proportional to a small industrial dataset."
-+        f"- hidden size candidates={list_hidden_sizes}: for 755 samples, the current "
-+        "best [32, 16] is kept. One-hidden-layer candidates [16], [32], and "
-+        "[64] support the shallow models/RBFN; [16, 8], [48, 24], [64, 32], "
-+        "and [64, 32, 16] test moderate under/over-fitting around the current best."
-     )
- 
- def infer_selected_features_from_table(table, fallback_features):
-     """Infer selected features from the best-R2 row in a feature-selection table."""
-     if table is None or table.empty:
-         return list(fallback_features)
- 
-     if "R2" not in table.columns or "features" not in table.columns:
-         return list(fallback_features)
- 
-     ranked = table.dropna(subset=["R2"])
-     if ranked.empty:
-         return list(fallback_features)
- 
-     best_row = ranked.loc[ranked["R2"].astype(float).idxmax()]
-     features_text = str(best_row["features"]).strip()
-     if not features_text:
-         return list(fallback_features)
- 
-     selected = [f.strip() for f in features_text.split(",") if f.strip()]
-     return selected if selected else list(fallback_features)
- 
- 
- def compute_regression_report_metrics(y_true, y_pred):
-     """
-@@ -1240,59 +1252,64 @@ def as_2d_float_array(data, name):
- 
- def as_feature_matrix(data, name):
-     """Convert tabular feature data to a finite 2D float matrix."""
-     arr = as_2d_float_array(data, name)
-     if arr.shape[1] == 0:
-         raise ValueError(f"{name} must contain at least one feature column.")
-     return arr
- 
- 
- def safe_r2_score(y_true, y_pred):
-     """Compute finite multi-output R², returning None when undefined."""
-     y_true_arr = as_2d_float_array(y_true, "y_true")
-     y_pred_arr = as_2d_float_array(y_pred, "y_pred")
-     if y_true_arr.shape != y_pred_arr.shape:
-         raise ValueError(
-             f"y_true and y_pred must have matching shapes; got "
-             f"{y_true_arr.shape} and {y_pred_arr.shape}."
-         )
-     if y_true_arr.shape[0] < 2:
+@@ -1860,158 +1860,331 @@ def select_epochs_with_cv_early_stopping(
+     if not best_epochs:
          return None
-     score = r2_score(y_true_arr, y_pred_arr, multioutput="uniform_average")
-     return float(score) if np.isfinite(score) else None
+     return int(np.median(best_epochs))
  
  
- def initialize_linear_weights(module):
--    """Initialize Linear layers with activation-aware fan-in scaling."""
-+    """Initialize ANN layers with Xavier scaling and stable normalization defaults."""
-     if isinstance(module, nn.Linear):
--        nn.init.kaiming_uniform_(module.weight, nonlinearity="relu")
-+        nn.init.xavier_uniform_(module.weight)
-         if module.bias is not None:
-             nn.init.zeros_(module.bias)
-+    elif isinstance(module, nn.BatchNorm1d):
-+        nn.init.ones_(module.weight)
-+        nn.init.zeros_(module.bias)
+ ############################ Feature Selection ####################
+ # Selects the best combination of features by removing features one by one
+ # Search about Backward Feature Elimination
+ # Sensitivity Analysis Functions
  
  
- def make_torch_model(model_class, input_size, hidden_sizes, output_size):
-     """Instantiate a torch model while preserving older constructors."""
-+    if model_class.__name__ == "GRNN":
-+        return model_class(input_size, output_size=output_size)
+ 
+ def train_single_model(model_class, num_epochs, hidden_sizes, features=None, run=0):
+     """Train one model instance and return trained model with raw train/test splits."""
+     X_train, X_test, y_train, y_test = read_prep_data(features)
+     input_size = X_train.shape[1]
+     output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
+     model = make_torch_model(model_class, input_size, hidden_sizes, output_size)
+ 
+     _, _, r2, model, _ = fit_model(
+         model, X_train, X_test, y_train, y_test, num_epochs, display_steps=False, run=run
+     )
+     return model, X_train, X_test, y_train, y_test, r2
+ 
+ 
+-def shap_feature_importance(model_class, inputs, num_epochs, hidden_sizes):
+-    """Compute SHAP-based feature importance for the selected model."""
++def _parse_positive_int_with_default(answer, default_value, name):
++    """Parse a positive integer from interactive input while preserving defaults."""
++    if not answer:
++        return default_value
      try:
-         return model_class(input_size, hidden_sizes, output_size=output_size)
-     except TypeError:
-         return model_class(input_size, hidden_sizes)
+-        import shap
+-    except ImportError:
+-        print("SHAP is not installed. Install it with: pip install shap")
+-        return None
++        value = int(answer)
++    except ValueError:
++        print(f"Invalid {name} '{answer}'. Using default value {default_value}.")
++        return default_value
++    if value <= 0:
++        print(f"{name} must be > 0. Using default value {default_value}.")
++        return default_value
++    return value
++
++
++def _train_model_for_shap(model_class, inputs, num_epochs, hidden_sizes):
++    """Train the selected model type and return fitted model plus SHAP data splits."""
++    if is_torch_model(model_class):
++        model, X_train, X_test, _, _, r2 = train_single_model(
++            model_class, num_epochs, hidden_sizes, features=inputs, run=0
++        )
++        if r2 is None:
++            print("Could not train model for SHAP analysis.")
++            return None, None, None, None, False
++        scaler = getattr(model, "input_scaler_", None)
++        if scaler is None:
++            scaler = StandardScaler().fit(X_train)
++        X_train_explain = scaler.transform(X_train)
++        X_test_explain = scaler.transform(X_test)
++        return model, X_train, X_train_explain, X_test_explain, True
+ 
+-    model, X_train, X_test, y_train, _, r2 = train_single_model(
+-        model_class, num_epochs, hidden_sizes, features=inputs, run=0
+-    )
++    X_train, X_test, y_train, y_test = read_prep_data(inputs)
++    try:
++        model = model_class(model_seed)
++        _, _, r2, fitted_model = fit_sklearn_model(model, X_train, X_test, y_train, y_test)
++    except (TypeError, ValueError, RuntimeError) as err:
++        print(f"Could not train sklearn model for SHAP analysis: {err}")
++        return None, None, None, None, False
+     if r2 is None:
+-        print("Could not train model for SHAP analysis.")
+-        return None
+-
+-    scaler = getattr(model, "input_scaler_", None)
++        print("Could not train sklearn model for SHAP analysis.")
++        return None, None, None, None, False
++    scaler = getattr(fitted_model, "feature_scaler_", None)
+     if scaler is None:
+         scaler = StandardScaler().fit(X_train)
+-    X_train_norm = scaler.transform(X_train)
+-    X_test_norm = scaler.transform(X_test)
++    X_train_explain = scaler.transform(X_train)
++    X_test_explain = scaler.transform(X_test)
++    return fitted_model, X_train, X_train_explain, X_test_explain, False
+ 
+-    background_default = min(25, len(X_train_norm))
+-    explain_default = min(20, len(X_test_norm))
+-    nsamples_default = 100
+ 
+-    def parse_positive_int(answer, default_value, name):
+-        if not answer:
+-            return default_value
+-        try:
+-            value = int(answer)
+-        except ValueError:
+-            print(f"Invalid {name} '{answer}'. Using default value {default_value}.")
+-            return default_value
+-        if value <= 0:
+-            print(f"{name} must be > 0. Using default value {default_value}.")
+-            return default_value
+-        return value
+-
+-    background_size = parse_positive_int(
+-        input(f"Background sample size [{background_default}]:").strip(),
+-        background_default,
+-        "background sample size",
+-    )
+-    explain_size = parse_positive_int(
+-        input(f"Number of test samples to explain [{explain_default}]:").strip(),
+-        explain_default,
+-        "number of test samples",
+-    )
+-    nsamples = parse_positive_int(
+-        input(f"Kernel SHAP nsamples [{nsamples_default}]:").strip(),
+-        nsamples_default,
+-        "Kernel SHAP nsamples",
+-    )
++def _unwrap_tree_estimators_for_shap(model):
++    """Return fitted tree estimators that SHAP TreeExplainer can explain directly."""
++    if isinstance(model, MultiOutputRegressor):
++        return list(model.estimators_)
++    if isinstance(model, RandomizedSearchCV):
++        return [model.best_estimator_]
++    return [model]
+ 
+-    background_size = max(1, min(background_size, len(X_train_norm)))
+-    explain_size = max(1, min(explain_size, len(X_test_norm)))
+ 
+-    background = X_train_norm[:background_size]
+-    explain_points = X_test_norm[:explain_size]
++def _is_supported_tree_model(model):
++    """Detect tree models requested for fast SHAP support, including wrappers."""
++    tree_type_names = {
++        "ExtraTreesRegressor",
++        "XGBRegressor",
++        "LGBMRegressor",
++        "CatBoostRegressor",
++    }
++    return all(type(estimator).__name__ in tree_type_names for estimator in _unwrap_tree_estimators_for_shap(model))
+ 
+-    model.eval()
+ 
++def _torch_predict_fn(model):
+     def predict_fn(x):
+         with torch.no_grad():
+             x_tensor = torch.tensor(x, dtype=torch.float32)
+             pred = model(x_tensor).detach().numpy()
+         return pred
+ 
+-    print("Computing SHAP values. This may take some time ...")
+-    explainer = shap.KernelExplainer(predict_fn, background)
+-    shap_values = explainer.shap_values(explain_points, nsamples=nsamples)
++    return predict_fn
++
+ 
+-    shap_array = np.asarray(shap_values)
++def _generic_predict_fn(model):
++    def predict_fn(x):
++        pred = model.predict(x)
++        return as_2d_float_array(pred, "SHAP predictions")
++
++    return predict_fn
++
++
++def _compute_tree_shap_values(shap_module, model, explain_points):
++    """Compute TreeExplainer SHAP values, preserving multi-output information."""
++    shap_values_by_output = []
++    for estimator in _unwrap_tree_estimators_for_shap(model):
++        explainer = shap_module.TreeExplainer(estimator)
++        shap_values_by_output.append(explainer.shap_values(explain_points))
++    if len(shap_values_by_output) == 1:
++        return shap_values_by_output[0]
++    return shap_values_by_output
++
++
++def _mean_abs_shap_by_feature(shap_values, n_features):
++    """Collapse SHAP output/sample axes into one mean absolute value per feature."""
+     if isinstance(shap_values, list):
+-        shap_array = np.stack([np.asarray(sv) for sv in shap_values], axis=0)
++        arrays = [np.asarray(values) for values in shap_values]
++        feature_vectors = [_mean_abs_shap_by_feature(values, n_features) for values in arrays]
++        return np.mean(np.vstack(feature_vectors), axis=0)
++
++    shap_abs = np.abs(np.asarray(shap_values))
++    if shap_abs.ndim == 1:
++        return shap_abs.reshape(-1)
++
++    feature_axes = [axis for axis, size in enumerate(shap_abs.shape) if size == n_features]
++    if not feature_axes:
++        return shap_abs.reshape(-1)
++
++    feature_axis = feature_axes[-1]
++    shap_abs = np.moveaxis(shap_abs, feature_axis, -1)
++    return shap_abs.reshape(-1, n_features).mean(axis=0)
++
++
++def _save_shap_plots(shap_module, shap_values, explain_points, feature_names, model_slug):
++    """Save SHAP summary and bar plots for the current model."""
++    os.makedirs("plots", exist_ok=True)
++    summary_path = os.path.join("plots", f"shap_summary_{model_slug}.png")
++    bar_path = os.path.join("plots", f"shap_bar_{model_slug}.png")
++
++    plot_values = shap_values
++    if isinstance(shap_values, list) and shap_values:
++        plot_values = shap_values[0]
++        if len(shap_values) > 1:
++            print("Multiple SHAP outputs detected; plots use the first output while CSV tables average all outputs.")
++    else:
++        plot_array = np.asarray(shap_values)
++        if plot_array.ndim > 2:
++            feature_axes = [axis for axis, size in enumerate(plot_array.shape) if size == len(feature_names)]
++            if feature_axes:
++                feature_axis = feature_axes[-1]
++                plot_array = np.moveaxis(plot_array, feature_axis, 1)
++                plot_values = plot_array.reshape(plot_array.shape[0], plot_array.shape[1], -1)[:, :, 0]
++                print("Multiple SHAP outputs detected; plots use the first output while CSV tables average all outputs.")
+ 
+-    shap_abs = np.abs(shap_array)
+-    # Collapse extra output dimensions (e.g., multi-output predictions) until we get
+-    # a 2D array with shape (n_samples, n_features) or a 1D feature vector.
+-    while shap_abs.ndim > 2:
+-        shap_abs = shap_abs.mean(axis=0)
++    try:
++        shap_module.summary_plot(plot_values, explain_points, feature_names=feature_names, show=False)
++        plt.tight_layout()
++        plt.savefig(summary_path, dpi=200, bbox_inches="tight")
++        plt.close()
++        print(f"SHAP summary plot saved at {summary_path}")
++    except Exception as err:
++        plt.close()
++        print(f"Could not save SHAP summary plot: {err}")
++
++    try:
++        shap_module.summary_plot(
++            plot_values,
++            explain_points,
++            feature_names=feature_names,
++            plot_type="bar",
++            show=False,
++        )
++        plt.tight_layout()
++        plt.savefig(bar_path, dpi=200, bbox_inches="tight")
++        plt.close()
++        print(f"SHAP bar plot saved at {bar_path}")
++    except Exception as err:
++        plt.close()
++        print(f"Could not save SHAP bar plot: {err}")
++
++    # Preserve the historical filename for callers that expect this artifact.
++    if model_slug != "best_model":
++        legacy_summary_path = os.path.join("plots", "shap_summary.png")
++        try:
++            shap_module.summary_plot(plot_values, explain_points, feature_names=feature_names, show=False)
++            plt.tight_layout()
++            plt.savefig(legacy_summary_path, dpi=200, bbox_inches="tight")
++            plt.close()
++            print(f"SHAP summary plot saved at {legacy_summary_path}")
++        except Exception:
++            plt.close()
++
++
++def _save_shap_tables(shap_table, model_slug):
++    """Save ranked SHAP tables and the top-20 feature subset."""
++    os.makedirs("tables", exist_ok=True)
++    ranked_path = os.path.join("tables", f"shap_ranked_importance_{model_slug}.csv")
++    top20_path = os.path.join("tables", f"shap_top20_features_{model_slug}.csv")
++    legacy_ranked_path = os.path.join("tables", "shap_ranked_importance.csv")
++    legacy_top20_path = os.path.join("tables", "shap_top20_features.csv")
++
++    shap_table.to_csv(ranked_path, index=False)
++    shap_table.head(20).to_csv(top20_path, index=False)
++    shap_table.to_csv(legacy_ranked_path, index=False)
++    shap_table.head(20).to_csv(legacy_top20_path, index=False)
++    print(f"SHAP ranked importance table saved at {ranked_path}")
++    print(f"SHAP top 20 features saved at {top20_path}")
++
++
++def shap_feature_importance(model_class, inputs, num_epochs, hidden_sizes, model_name=None):
++    """Compute and save SHAP feature importance for neural nets and supported tree models."""
++    import importlib.util
++    shap_spec = importlib.util.find_spec("shap")
++    if shap_spec is None:
++        print("SHAP is not installed. Install it with: pip install shap")
++        return None
++    import shap
++
++    model, X_train, X_train_explain, X_test_explain, is_nn_model = _train_model_for_shap(
++        model_class, inputs, num_epochs, hidden_sizes
++    )
++    if model is None:
++        return None
++
++    background_default = min(25, len(X_train_explain))
++    explain_default = min(20, len(X_test_explain))
++    nsamples_default = 100
++
++    background_size = _parse_positive_int_with_default(
++        input(f"Background sample size [{background_default}]:").strip(),
++        background_default,
++        "background sample size",
++    )
++    explain_size = _parse_positive_int_with_default(
++        input(f"Number of test samples to explain [{explain_default}]:").strip(),
++        explain_default,
++        "number of test samples",
++    )
++
++    background_size = max(1, min(background_size, len(X_train_explain)))
++    explain_size = max(1, min(explain_size, len(X_test_explain)))
++    background = X_train_explain[:background_size]
++    explain_points = X_test_explain[:explain_size]
++
++    print("Computing SHAP values. This may take some time ...")
++    if is_nn_model:
++        model.eval()
++        nsamples = _parse_positive_int_with_default(
++            input(f"Kernel SHAP nsamples [{nsamples_default}]:").strip(),
++            nsamples_default,
++            "Kernel SHAP nsamples",
++        )
++        explainer = shap.KernelExplainer(_torch_predict_fn(model), background)
++        shap_values = explainer.shap_values(explain_points, nsamples=nsamples)
++    elif _is_supported_tree_model(model):
++        shap_values = _compute_tree_shap_values(shap, model, explain_points)
++    else:
++        nsamples = _parse_positive_int_with_default(
++            input(f"Kernel SHAP nsamples [{nsamples_default}]:").strip(),
++            nsamples_default,
++            "Kernel SHAP nsamples",
++        )
++        explainer = shap.KernelExplainer(_generic_predict_fn(model), background)
++        shap_values = explainer.shap_values(explain_points, nsamples=nsamples)
+ 
+-    mean_abs_shap = shap_abs.mean(axis=0) if shap_abs.ndim == 2 else shap_abs
+-    mean_abs_shap = np.asarray(mean_abs_shap).reshape(-1)
+     feature_names = list(X_train.columns)
++    mean_abs_shap = _mean_abs_shap_by_feature(shap_values, len(feature_names))
++    mean_abs_shap = np.asarray(mean_abs_shap).reshape(-1)
+ 
+     if mean_abs_shap.shape[0] != len(feature_names):
+         print(
+             "Could not build SHAP table because feature and SHAP dimensions do not match. "
+             f"Got {mean_abs_shap.shape[0]} SHAP values for {len(feature_names)} features. "
+-            f"Raw SHAP shape: {np.asarray(shap_values).shape}"
++            f"Raw SHAP shape: {np.asarray(shap_values, dtype=object).shape}"
+         )
+         return None
+ 
+-    shap_table = pd.DataFrame({
+-        "Feature": feature_names,
+-        "Mean(|SHAP|)": mean_abs_shap
+-    }).sort_values(by="Mean(|SHAP|)", ascending=False)
+-
+-    try:
+-        os.makedirs("plots", exist_ok=True)
+-        shap.summary_plot(shap_values, explain_points, feature_names=list(X_train.columns), show=False)
+-        plt.tight_layout()
+-        plt.savefig(os.path.join("plots", "shap_summary.png"), dpi=200)
+-        plt.close()
+-        print("SHAP summary plot saved at plots/shap_summary.png")
+-    except Exception as err:
+-        print(f"Could not save SHAP summary plot: {err}")
++    total_importance = float(np.sum(mean_abs_shap))
++    if total_importance > 0:
++        normalized_importance = mean_abs_shap / total_importance
++    else:
++        normalized_importance = np.zeros_like(mean_abs_shap)
++
++    shap_table = pd.DataFrame(
++        {
++            "Feature": feature_names,
++            "Mean(|SHAP|)": mean_abs_shap,
++            "Normalized Importance": normalized_importance,
++        }
++    ).sort_values(by="Mean(|SHAP|)", ascending=False).reset_index(drop=True)
++    shap_table.insert(0, "Rank", np.arange(1, len(shap_table) + 1))
++
++    slug_source = model_name or getattr(model_class, "__name__", "best_model")
++    model_slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(slug_source)).strip("_") or "best_model"
++    _save_shap_plots(shap, shap_values, explain_points, feature_names, model_slug)
++    _save_shap_tables(shap_table, model_slug)
+ 
+     return shap_table
+ def weight_analysis(model_class, data, inputs, output, num_epochs, hidden_sizes):
+     X_train, X_test, y_train, y_test = read_prep_data(inputs)
+     input_size = X_train.shape[1]
+ 
+     output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
+     model = make_torch_model(model_class, input_size, hidden_sizes, output_size)
+     _, _, r2, model, _ = fit_model(model, X_train, X_test, y_train, y_test, num_epochs)
+     print("R2:", r2)
+ 
+     weight_importances = {}
+     with torch.no_grad():
+         for i, feature in enumerate(inputs):
+             importance = np.abs(model.hidden_layers[0].weight[:, i].numpy()).mean()
+             weight_importances[feature] = importance
+ 
+     weight_table = pd.DataFrame(list(weight_importances.items()), columns=['Feature', 'Weight Importance'])
+     return weight_table
  
  
- def validate_hidden_size_compatibility(model, hidden_sizes):
-     """Check whether the requested hidden-size layout matches a model class."""
-     hidden_layers = getattr(model, "hidden_layers", None)
-     return hidden_layers is None or len(hidden_sizes) == len(hidden_layers)
+ def jackknife_sensitivity_analysis(model_class, data, inputs, output, num_epochs, hidden_sizes):
+     base_model_r2, _, _, _, _, _, run, _ = repeat_fit_model(model_class,
+             num_repeats, num_epochs, hidden_sizes)
+     sensitivities = {}
+@@ -2845,56 +3018,80 @@ if is_torch_model(best_model):
+             weight_table_latex = generate_latex_table(weight_table, caption="Results of Weight Analysis", label="weight_analysis")
+             with open(os.path.join("tables", "weight-analysis.tex"), 'w', encoding='utf-8') as f:
+                 print(weight_table_latex, file=f)
+ 
+         elif answer == '4':
+             print("============================= Jackknife Sensitivity Analysis =============")
+             jackknife_table = jackknife_sensitivity_analysis(best_model,
+                     data, inputs, output, best_epochs, best_hidden_sizes)
+             print("------------ jackknife sensitivity analysis ---------------")
+             jackknife_table = jackknife_table.sort_values(by='Sensitivity', ascending=False)
+             print(jackknife_table)
+             jackknife_table_latex = generate_latex_table(jackknife_table, caption="Results of Jackknife Sensitivity Analysis", label="jackknife")
+             with open(os.path.join("tables", "jackknife.tex"), 'w', encoding='utf-8') as f:
+                 print(jackknife_table_latex, file=f)
+ 
+             important_features = jackknife_table.head(5)['Feature'].tolist()
+             print("\nTop 5 important features to focus on:")
+             print(important_features)
+ 
+             negative_sensitivity_features = jackknife_table[jackknife_table['Sensitivity'] < 0]
+             print("\nFeatures with negative sensitivity (potentially redundant or harmful):")
+             print(negative_sensitivity_features)
+ 
+         elif answer == '5':
+             print("============================= SHAP Feature Importance =============")
+-            shap_table = shap_feature_importance(best_model, inputs, best_epochs, best_hidden_sizes)
++            shap_table = shap_feature_importance(best_model, inputs, best_epochs, best_hidden_sizes, model_name=best_model_name)
+             if shap_table is not None:
+                 print("------------ SHAP feature importance ---------------")
+                 print(shap_table)
+                 shap_table_latex = generate_latex_table(shap_table, caption="Results of SHAP Feature Importance", label="shap")
+                 with open(os.path.join("tables", "shap.tex"), 'w', encoding='utf-8') as f:
+                     print(shap_table_latex, file=f)
+                 shap_table.to_csv(os.path.join("tables", "shap.csv"), index=False)
+ 
+         elif answer == 'q':
+             print("Exiting the feature selection and sensitivity analysis loop. Goodbye!")
+             break
+         else:
+             print("Invalid choice, please try again.")
+         print("\n----------------------------------------------------------")
+         input("Press any key to return to main menu ...")
+ else:
+-    print(f"Skipping feature-selection menu because best model '{best_model_name}' is a classical sklearn model.")
++    while True:
++        print("\n\n")
++        print(f"================= SHAP Analysis ({best_model_name}) ======")
++        print("1. SHAP (SHapley Additive exPlanations)")
++        print("q. Quit")
++
++        answer = input("Enter the number of the method you want to run (or 'q' to quit): ").strip().lower()
++
++        if answer == '1':
++            print("============================= SHAP Feature Importance =============")
++            shap_table = shap_feature_importance(best_model, inputs, best_epochs, best_hidden_sizes, model_name=best_model_name)
++            if shap_table is not None:
++                print("------------ SHAP feature importance ---------------")
++                print(shap_table)
++                shap_table_latex = generate_latex_table(shap_table, caption="Results of SHAP Feature Importance", label="shap")
++                with open(os.path.join("tables", "shap.tex"), 'w', encoding='utf-8') as f:
++                    print(shap_table_latex, file=f)
++                shap_table.to_csv(os.path.join("tables", "shap.csv"), index=False)
++        elif answer == 'q':
++            print("Exiting the SHAP analysis loop. Goodbye!")
++            break
++        else:
++            print("Invalid choice, please try again.")
++        print("\n----------------------------------------------------------")
++        input("Press any key to return to main menu ...")
  
  
- def load_model_state_dict(model, checkpoint_path):
-     """Safely restore model weights from a checkpoint path when compatible."""
-     if not checkpoint_path:
-         return False
-     if not os.path.isfile(checkpoint_path):
-         print(f"Checkpoint not found: {checkpoint_path}. Training from initialized weights.")
-         return False
-     try:
-         try:
-             state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-         except TypeError:
-             state_dict = torch.load(checkpoint_path, map_location="cpu")
-         model.load_state_dict(state_dict)
+ 
+ print("----------------------Important! READ -------------------")
+ print("latex code for tables are saved in tables folder")
+ print("predictions are saved in results.csv file")
+ input("Plots have been saved in the 'plots' folder. (press any key to exit)")
+ 
+ # Visualize the model and save it on mlp_structure image
+ # dummy_input = torch.randn(1, input_size)
+ # from torchviz import make_dot
+ # dot = make_dot(model(dummy_input), params=dict(model.named_parameters()))
+ # dot.render("mlp_structure", format="png", cleanup=True)
