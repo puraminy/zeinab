@@ -98,15 +98,16 @@ def print_numbered_feature_list(title, features, color):
 
 
 def print_refinery_variable_groups():
-    """Explain the industrial refinery groups used to avoid leakage."""
+    """Explain the refinery feature groups and the interactive override."""
     print_divider("=")
     print("Industrial refinery variable logic")
     print_divider("-")
     print("EARLY_VARIABLES (available early): " + ", ".join(EARLY_VARIABLES))
     print("CONTROL_VARIABLES (operator-adjustable): " + ", ".join(CONTROL_VARIABLES))
-    print("TARGET_VARIABLES (future quality outputs; never inputs): " + ", ".join(TARGET_VARIABLES))
-    print("Input rule: models train only on EARLY_VARIABLES + CONTROL_VARIABLES.")
-    print("Leakage rule: selected outputs and TARGET_VARIABLES are blocked from X.")
+    print("TARGET_VARIABLES (future quality outputs): " + ", ".join(TARGET_VARIABLES))
+    print("Default safe inputs are EARLY_VARIABLES + CONTROL_VARIABLES.")
+    print("Interactive mode now lets you choose any non-output column from sugar_all.csv as an input.")
+    print("Safety rule: a column selected as an output target is always blocked from X.")
     print_divider("=")
 
 
@@ -490,13 +491,14 @@ def _expand_index_token(token, options_len, one_based=False):
 
 
 def parse_multi_select(answer, options, allow_all=True, one_based=False):
-    """Parse indexes/ranges and return selected option values.
+    """Parse indexes/ranges/names and return selected option values.
 
     Supported syntax examples:
     - 0 2 4
     - 1-5
     - 1,3,6-9
     - !0 !4-6 (exclude indexes/ranges from current pool)
+    - raw_syrup_brix,standard_liquor_color (feature names)
     """
     if not answer:
         return None if allow_all else []
@@ -520,7 +522,19 @@ def parse_multi_select(answer, options, allow_all=True, one_based=False):
             include_indexes.update(range(len(options)))
             continue
 
-        indexes = _expand_index_token(clean, len(options), one_based=one_based)
+        if clean.isdigit() or ("-" in clean and clean.replace("-", "").isdigit()):
+            indexes = _expand_index_token(clean, len(options), one_based=one_based)
+        else:
+            matching_indexes = [
+                idx for idx, option in enumerate(options)
+                if str(option).lower() == clean
+            ]
+            if not matching_indexes:
+                raise ValueError(
+                    f"Invalid input '{token}'. Please use indexes, ranges like 1-4, "
+                    "or exact feature names from the menu."
+                )
+            indexes = matching_indexes
         if is_exclude:
             exclude_indexes.update(indexes)
         else:
@@ -543,6 +557,31 @@ def parse_multi_select(answer, options, allow_all=True, one_based=False):
     selected_values = [options[index] for index in final_indexes]
     return selected_values
 
+
+
+def selectable_output_features_from_csv(data):
+    """Return output choices from every column in sugar_all.csv, targets first."""
+    columns = list(data.columns)
+    target_first = [column for column in columns if column in TARGET_VARIABLES]
+    remaining = [column for column in columns if column not in target_first]
+    return target_first + remaining
+
+
+def selectable_input_features_from_csv(data, selected_output_features):
+    """Return every CSV column that is not currently selected as an output."""
+    selected_outputs = set(selected_output_features or [])
+    return [column for column in data.columns if column not in selected_outputs]
+
+
+def optional_input_overrides_for_selection(selected_input_features, selected_output_features):
+    """Whitelist explicitly selected non-output inputs for this interactive run.
+
+    read_data.py still prevents selected outputs from being used as inputs.  This
+    opt-in list lets run.py honor the user's sugar_all.csv input choices instead
+    of silently reducing the selection to refinery default groups.
+    """
+    selected_outputs = set(selected_output_features or [])
+    return [feature for feature in selected_input_features if feature not in selected_outputs]
 
 def print_future_quality_variables_menu():
     print("\n" + "-" * 50)
@@ -640,6 +679,7 @@ def print_selection_guide():
     print("- Mixed syntax: 1 2-4 7")
     print("- Commas are also allowed: 1,2-4,7")
     print("- Exclude indexes/ranges with ! : !1 !5-8")
+    print("- Exact feature names are accepted too: raw_syrup_brix,standard_liquor_color")
     print("- In auto mode, exclude-only means all features except those indexes.")
 
 
@@ -801,14 +841,14 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all.csv", prep_folder="pre
                 if reselect_mode in ("", "1"):
                     train_df = pd.read_csv(prep_train_path)
                     test_df = pd.read_csv(prep_test_path)
-                    available_inputs = filter_allowed_model_inputs(
-                        train_df.columns, output_features=existing_outputs
-                    )
+                    available_inputs = [
+                        column for column in train_df.columns if column not in set(existing_outputs)
+                    ]
                     if not available_inputs:
-                        print("No refinery-safe candidate input columns found. Falling back to full prepare flow.")
+                        print("No candidate input columns found. Falling back to full prepare flow.")
                     else:
                         print_numbered_feature_list(
-                            "Refinery-safe Input Features from prep_data/train.csv",
+                            "Input Features from prep_data/train.csv (prepared outputs excluded)",
                             available_inputs,
                             ANSI_GREEN,
                         )
@@ -829,10 +869,8 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all.csv", prep_folder="pre
                         resolved_inputs = (
                             available_inputs if selected_input_features is None else selected_input_features
                         )
-                        resolved_inputs, optional_future_quality_inputs = append_future_quality_input_candidates(
-                            resolved_inputs,
-                            train_df.columns,
-                            selected_output_features=existing_outputs,
+                        optional_future_quality_inputs = optional_input_overrides_for_selection(
+                            resolved_inputs, existing_outputs
                         )
                         validate_model_inputs(
                             resolved_inputs,
@@ -877,7 +915,7 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all.csv", prep_folder="pre
                             y_test_selected,
                             metadata=metadata,
                         )
-                        print("prep_data updated with the newly selected refinery-safe input features.")
+                        print("prep_data updated with the newly selected input features.")
                         reused_prep_data = True
                         return (
                             X_train_selected,
@@ -897,16 +935,15 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all.csv", prep_folder="pre
     data = pd.read_csv(dataset_path)
     print_selection_guide()
 
-    target_candidates = [col for col in data.columns if col in TARGET_VARIABLES]
-    output_options = target_candidates if target_candidates else data.columns.tolist()
-    print("\nFuture quality target candidates:")
+    output_options = selectable_output_features_from_csv(data)
+    print("\nOutput feature candidates from sugar_all.csv (TARGET_VARIABLES shown first):")
     print("\n".join([str(i) + ")" + name for i, name in enumerate(output_options, start=1)]))
     answer = input(
-        "Select one or several TARGET_VARIABLES/output features (indexes/ranges) [last target candidate]:"
+        "Select one or several output features (indexes/ranges/names) [first target candidate]:"
     )
     try:
         selected_output_features = (
-            [output_options[-1]]
+            [output_options[0]]
             if not answer
             else parse_multi_select(answer, output_options, allow_all=False, one_based=True)
         )
@@ -914,26 +951,21 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all.csv", prep_folder="pre
         print(f"Invalid output feature selection: {err}")
         exit()
 
-    available_input_features = filter_allowed_model_inputs(
-        data.columns, output_features=selected_output_features
-    )
+    available_input_features = selectable_input_features_from_csv(data, selected_output_features)
     if not available_input_features:
-        print(
-            "No EARLY_VARIABLES or CONTROL_VARIABLES were found in the dataset. "
-            "Cannot train without refinery-safe inputs."
-        )
+        print("No input columns are available after excluding selected output feature(s).")
         exit()
-    print("\nAvailable model inputs (EARLY_VARIABLES + CONTROL_VARIABLES only):")
+    print("\nAvailable model inputs from sugar_all.csv (selected outputs excluded):")
     print("\n".join([str(i) + ")" + name for i, name in enumerate(available_input_features, start=1)]))
 
     answer = input(
-        "\nSelect one or several input features (indexes/ranges), [all], or [auto]: "
+        "\nSelect one or several input features (indexes/ranges/names), [all], or [auto]: "
     ).strip()
 
     use_auto_feature_selection = answer.lower() == "auto"
     if use_auto_feature_selection:
         auto_pool_answer = input(
-            "Auto mode candidate pool [all refinery-safe inputs] (use ! to exclude, e.g. !1 !3-5): "
+            "Auto mode candidate pool [all non-output CSV inputs] (use ! to exclude, e.g. !1 !3-5): "
         ).strip()
         try:
             selected_input_features = parse_multi_select(
@@ -960,10 +992,8 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all.csv", prep_folder="pre
     resolved_inputs = (
         available_input_features if selected_input_features is None else selected_input_features
     )
-    resolved_inputs, optional_future_quality_inputs = append_future_quality_input_candidates(
-        resolved_inputs,
-        data.columns,
-        selected_output_features=selected_output_features,
+    optional_future_quality_inputs = optional_input_overrides_for_selection(
+        resolved_inputs, selected_output_features
     )
     validate_model_inputs(
         resolved_inputs,
@@ -2039,10 +2069,10 @@ prepared_X_train, prepared_outputs, use_auto_feature_selection, reused_prep_data
 saved_inputs = selected_saved_run.get("inputs") if selected_saved_run else None
 saved_outputs = selected_saved_run.get("outputs") if selected_saved_run else None
 run_inputs = saved_inputs if saved_inputs else prepared_X_train.columns.tolist()
-run_optional_future_quality_inputs = [
-    feature for feature in run_inputs
-    if feature in FUTURE_QUALITY_INPUT_CANDIDATES
-]
+run_outputs_for_validation = saved_outputs if saved_outputs else prepared_outputs
+run_optional_future_quality_inputs = optional_input_overrides_for_selection(
+    run_inputs, run_outputs_for_validation
+)
 X_train, X_test, y_train, y_test = read_prep_data(
     inputs=run_inputs,
     prep_folder="prep_data",
