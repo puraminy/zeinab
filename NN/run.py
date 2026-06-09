@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import KFold, train_test_split
+from sklearn.model_selection import KFold, RandomizedSearchCV, train_test_split
 from sklearn.ensemble import (
     RandomForestRegressor,
     ExtraTreesRegressor,
@@ -19,7 +19,7 @@ from sklearn.multioutput import MultiOutputRegressor
 import pandas as pd
 import numpy as np
 import re
-from sklearn.metrics import r2_score
+from sklearn.metrics import make_scorer, r2_score
 from tabulate import tabulate
 import os
 from latex import *
@@ -59,6 +59,11 @@ try:
     from lightgbm import LGBMRegressor
 except ImportError:
     LGBMRegressor = None
+
+try:
+    from catboost import CatBoostRegressor
+except ImportError:
+    CatBoostRegressor = None
 
 ANSI_RESET = "\033[0m"
 ANSI_GREEN = "\033[92m"
@@ -421,14 +426,53 @@ hidden_sizes = [8, 4]
 list_hidden_sizes = [[4], [6], [8], [8, 4]]
 normalization_type = "standard_scaler"
 
+EXTRA_TREES_RANDOM_SEARCH_ITERATIONS = 40
+EXTRA_TREES_RANDOM_SEARCH_CV_FOLDS = 5
+MODEL_EVALUATION_CV_FOLDS = 5
+
+
+def make_extra_trees_random_search(seed):
+    """Build a tuned ExtraTrees regressor while preserving the model menu name."""
+    base_model = ExtraTreesRegressor(random_state=seed, n_jobs=-1)
+    param_distributions = {
+        "n_estimators": [300, 500, 800, 1000],
+        "max_depth": [None, 4, 6, 8, 10, 12, 16],
+        "min_samples_split": [2, 3, 4, 5, 8, 10],
+        "min_samples_leaf": [1, 2, 3, 4, 6],
+        "max_features": ["sqrt", "log2", 0.5, 0.7, 0.9, 1.0],
+        "bootstrap": [False, True],
+    }
+    return RandomizedSearchCV(
+        estimator=base_model,
+        param_distributions=param_distributions,
+        n_iter=EXTRA_TREES_RANDOM_SEARCH_ITERATIONS,
+        scoring=make_scorer(r2_score, multioutput="uniform_average"),
+        cv=EXTRA_TREES_RANDOM_SEARCH_CV_FOLDS,
+        random_state=seed,
+        n_jobs=-1,
+        refit=True,
+    )
+
+
+def make_catboost_regressor(seed):
+    """Build a quiet CatBoost model for small tabular refinery datasets."""
+    return CatBoostRegressor(
+        iterations=1200,
+        learning_rate=0.03,
+        depth=6,
+        l2_leaf_reg=5.0,
+        loss_function="RMSE",
+        random_seed=seed,
+        verbose=False,
+        allow_writing_files=False,
+    )
+
 
 SKLEARN_MODEL_FACTORIES = {
     "RandomForestRegressor": lambda seed: RandomForestRegressor(
         n_estimators=300, random_state=seed
     ),
-    "ExtraTreesRegressor": lambda seed: ExtraTreesRegressor(
-        n_estimators=300, random_state=seed
-    ),
+    "ExtraTreesRegressor": make_extra_trees_random_search,
     "GradientBoostingRegressor": lambda seed: GradientBoostingRegressor(random_state=seed),
     "GBMRegressor": lambda seed: GradientBoostingRegressor(random_state=seed),
     "HistGradientBoostingRegressor": lambda seed: HistGradientBoostingRegressor(
@@ -461,6 +505,11 @@ if LGBMRegressor is not None:
     )
 else:
     print("Optional dependency not found: lightgbm. Skipping LightGBMRegressor.")
+
+if CatBoostRegressor is not None:
+    SKLEARN_MODEL_FACTORIES["CatBoostRegressor"] = make_catboost_regressor
+else:
+    print("Optional dependency not found: catboost. Skipping CatBoostRegressor.")
 
 
 def _expand_index_token(token, options_len, one_based=False):
@@ -1528,6 +1577,120 @@ def fit_model(
     return predictions_np, mse, r2, model, optimized_inputs_report
 
 
+
+def sklearn_model_supports_multioutput(model):
+    """Return whether an sklearn-style estimator can fit a 2D target directly."""
+    estimator = model.estimator if isinstance(model, RandomizedSearchCV) else model
+    if isinstance(estimator, ExtraTreesRegressor):
+        return True
+    if hasattr(estimator, "_get_tags"):
+        return bool(estimator._get_tags().get("multioutput", False))
+    return False
+
+
+def fit_model_on_split(
+    model_class,
+    X_train_fold,
+    X_test_fold,
+    y_train_fold,
+    y_test_fold,
+    num_epochs,
+    hidden_sizes,
+    run=0,
+    optimization_scope="weights",
+    optimize_feature_indexes=None,
+):
+    """Fit either an NN or sklearn model on one explicit train/test split."""
+    if is_torch_model(model_class):
+        input_size = X_train_fold.shape[1]
+        output_size = as_2d_float_array(y_train_fold, "y_train_fold").shape[1]
+        model = make_torch_model(model_class, input_size, hidden_sizes, output_size)
+        if not validate_hidden_size_compatibility(model, hidden_sizes):
+            raise ValueError(f"Incompatible hidden sizes {hidden_sizes} for {model_class.__name__}.")
+        predictions, mse, r2, _model, _optimized_inputs_report = fit_model(
+            model,
+            X_train_fold,
+            X_test_fold,
+            y_train_fold,
+            y_test_fold,
+            num_epochs,
+            display_steps=False,
+            run=run,
+            optimization_scope=optimization_scope,
+            optimize_feature_indexes=optimize_feature_indexes,
+        )
+        return predictions, mse, r2
+
+    model = model_class(model_seed + run)
+    predictions, mse, r2, _model = fit_sklearn_model(
+        model, X_train_fold, X_test_fold, y_train_fold, y_test_fold
+    )
+    return predictions, mse, r2
+
+
+def cross_validate_model(
+    model_class,
+    num_epochs,
+    hidden_sizes,
+    features=None,
+    folds=MODEL_EVALUATION_CV_FOLDS,
+    optimization_scope="weights",
+    optimize_feature_indexes=None,
+):
+    """Run leakage-safe K-fold CV and report R²/RMSE mean and std."""
+    X_train, X_test, y_train, y_test = read_prep_data(features)
+    full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
+    full_y = pd.concat([y_train, y_test], axis=0).reset_index(drop=True)
+    if len(full_X) < 2:
+        return None
+
+    n_splits = min(int(folds), len(full_X))
+    if n_splits < 2:
+        return None
+
+    kfold = KFold(n_splits=n_splits, shuffle=True, random_state=data_seed)
+    r2_scores = []
+    rmse_scores = []
+    for fold_index, (train_idx, val_idx) in enumerate(kfold.split(full_X), start=1):
+        X_train_fold = full_X.iloc[train_idx]
+        X_val_fold = full_X.iloc[val_idx]
+        y_train_fold = full_y.iloc[train_idx]
+        y_val_fold = full_y.iloc[val_idx]
+        try:
+            _predictions, mse, r2 = fit_model_on_split(
+                model_class,
+                X_train_fold,
+                X_val_fold,
+                y_train_fold,
+                y_val_fold,
+                num_epochs,
+                hidden_sizes,
+                run=fold_index,
+                optimization_scope=optimization_scope,
+                optimize_feature_indexes=optimize_feature_indexes,
+            )
+        except (TypeError, ValueError, RuntimeError) as err:
+            print(f"CV fold {fold_index} failed: {err}")
+            continue
+
+        if r2 is None or mse is None:
+            continue
+        r2_scores.append(float(r2) * 100.0)
+        rmse_scores.append(float(np.sqrt(mse)))
+
+    if not r2_scores:
+        return None
+
+    return {
+        "folds": len(r2_scores),
+        "mean_r2": float(np.mean(r2_scores)),
+        "std_r2": float(np.std(r2_scores)),
+        "mean_rmse": float(np.mean(rmse_scores)),
+        "std_rmse": float(np.std(rmse_scores)),
+        "r2_scores": r2_scores,
+        "rmse_scores": rmse_scores,
+    }
+
 def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
     """Fit a scikit-learn regressor with train-only feature scaling."""
     X_train_values = as_feature_matrix(X_train, "X_train")
@@ -1540,14 +1703,20 @@ def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
     X_test_scaled = scaler_x.transform(X_test_values)
 
     is_multi_output = y_train_values.shape[1] > 1
-    fit_estimator = model
     y_train_fit = y_train_values if is_multi_output else y_train_values.ravel()
 
+    if isinstance(model, RandomizedSearchCV):
+        search_cv_folds = min(int(model.cv), X_train_scaled.shape[0])
+        if search_cv_folds < 2:
+            print("Not enough training rows for ExtraTrees RandomizedSearchCV; fitting base estimator.")
+            model = model.estimator
+        else:
+            model.cv = search_cv_folds
+
+    fit_estimator = model
     if is_multi_output:
         model_name = getattr(model, "__class__", type(model)).__name__
-        supports_multioutput = False
-        if hasattr(model, "_get_tags"):
-            supports_multioutput = bool(model._get_tags().get("multioutput", False))
+        supports_multioutput = sklearn_model_supports_multioutput(model)
         if not supports_multioutput:
             print(
                 f"{model_name} does not natively support multi-output regression. "
@@ -2336,6 +2505,16 @@ if answer != "0":
                 if mean_r2 is None:
                     continue
 
+                cv_metrics = cross_validate_model(
+                    model_class,
+                    num_epochs,
+                    hidden_sizes,
+                    features=active_features,
+                    folds=MODEL_EVALUATION_CV_FOLDS,
+                    optimization_scope=optimization_scope if is_nn else "weights",
+                    optimize_feature_indexes=optimize_feature_indexes if is_nn else None,
+                )
+
                 if max_r2 > best_r2:
                     best_r2 = max_r2
                     model_best_predictions[model_name] = model_best_preds
@@ -2354,12 +2533,18 @@ if answer != "0":
 
                 total_nodes = sum(hidden_sizes) if hidden_sizes else 0
 
+                mean_rmse = float(np.sqrt(mean_mse)) if mean_mse is not None else np.nan
                 result = {
                         "model":model_name,
                         "R2": round(mean_r2,1),
                         "MSE": round(mean_mse,2),
                         "R2 std": round(std_r2, 1),
                         "R2 List": [round(x, 1) for x in r2_list],
+                        "Mean R²": round(cv_metrics["mean_r2"], 3) if cv_metrics else np.nan,
+                        "Std R²": round(cv_metrics["std_r2"], 3) if cv_metrics else np.nan,
+                        "Mean RMSE": round(cv_metrics["mean_rmse"], 3) if cv_metrics else round(mean_rmse, 3),
+                        "Std RMSE": round(cv_metrics["std_rmse"], 3) if cv_metrics else np.nan,
+                        "CV folds": cv_metrics["folds"] if cv_metrics else 0,
                         "hidden sizes": hidden_sizes if hidden_sizes else "N/A",
                         "total hs": total_nodes,
                         "epochs": num_epochs if is_nn else "N/A",
@@ -2368,7 +2553,11 @@ if answer != "0":
 
     # Create a table for results. Some model/config combinations can fail and return no
     # valid R2 values, so guard against missing/empty result sets.
-    expected_result_cols = ["model", "R2", "MSE", "R2 std", "R2 List", "hidden sizes", "total hs", "epochs"]
+    expected_result_cols = [
+        "model", "R2", "MSE", "R2 std", "R2 List",
+        "Mean R²", "Std R²", "Mean RMSE", "Std RMSE", "CV folds",
+        "hidden sizes", "total hs", "epochs"
+    ]
     results_table = pd.DataFrame(data=results)
     if results_table.empty:
         results_table = pd.DataFrame(columns=expected_result_cols)
