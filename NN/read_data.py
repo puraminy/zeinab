@@ -1,6 +1,8 @@
 import os
 import json
 import re
+import importlib.util
+from pathlib import Path
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from refinery_variables import (
@@ -30,6 +32,70 @@ def resolve_relative_path(path, base_dir=MODULE_DIR):
     if os.path.exists(module_candidate):
         return module_candidate
     return cwd_candidate
+
+
+def _load_converter_module(script_name="convert2.py"):
+    """Load a sugar Excel converter module without requiring package imports."""
+    converter_path = Path(MODULE_DIR) / "convert" / script_name
+    if not converter_path.is_file():
+        raise FileNotFoundError(f"Sugar converter script was not found: {converter_path}")
+
+    spec = importlib.util.spec_from_file_location("sugar_report_converter", converter_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load sugar converter script: {converter_path}")
+
+    converter = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(converter)
+    return converter
+
+
+def ensure_dataset_csv_exists(dataset_path, source_excel_path=None):
+    """Return an existing raw CSV path, rebuilding the default sugar CSV when possible.
+
+    The project does not track generated CSV files, so a fresh checkout may have
+    ``convert/gozaresh.xlsx`` but not ``convert/sugar_all.csv``.  When the
+    default sugar dataset is requested and missing, rebuild it from the Excel
+    report using the maintained converter before the prep-data rebuild reads it.
+    """
+    resolved_dataset_path = resolve_relative_path(dataset_path)
+    if os.path.isfile(resolved_dataset_path):
+        return resolved_dataset_path
+
+    requested_name = os.path.basename(os.fspath(dataset_path))
+    if requested_name != "sugar_all.csv":
+        raise FileNotFoundError(f"Dataset file '{resolved_dataset_path}' not found.")
+
+    using_default_excel_source = source_excel_path is None
+    if source_excel_path is None:
+        source_excel_path = os.path.join("convert", "gozaresh.xlsx")
+    resolved_excel_path = resolve_relative_path(source_excel_path)
+    if using_default_excel_source:
+        resolved_dataset_path = os.path.join(os.path.dirname(resolved_excel_path), requested_name)
+    if not os.path.isfile(resolved_excel_path):
+        raise FileNotFoundError(
+            f"Dataset file '{resolved_dataset_path}' not found, and source Excel "
+            f"file '{resolved_excel_path}' was not found to rebuild it."
+        )
+
+    print(
+        "[path-debug] Dataset CSV is missing; rebuilding default sugar dataset "
+        f"from Excel report: {resolved_excel_path}"
+    )
+
+    try:
+        converter = _load_converter_module("convert2.py")
+        data = converter.extract_excel_to_dataframe(Path(resolved_excel_path))
+    except ImportError as err:
+        raise ImportError(
+            "Dataset CSV is missing and could not be rebuilt because an Excel "
+            "dependency is unavailable. Install project requirements, including "
+            "openpyxl, or create convert/sugar_all.csv manually."
+        ) from err
+
+    os.makedirs(os.path.dirname(resolved_dataset_path), exist_ok=True)
+    data.to_csv(resolved_dataset_path, index=False)
+    print(f"[path-debug] Rebuilt dataset CSV: {resolved_dataset_path}")
+    return resolved_dataset_path
 
 
 def print_path_debug(label, path, resolved_path=None):
@@ -536,8 +602,7 @@ def prepare_data_from_file(
 ):
     """Prepare prep_data files directly from a raw CSV dataset."""
     dataset_path = print_path_debug("prepare_data_from_file dataset", dataset_path)
-    if not os.path.isfile(dataset_path):
-        raise FileNotFoundError(f"Dataset file '{dataset_path}' not found.")
+    dataset_path = ensure_dataset_csv_exists(dataset_path)
 
     print(f"[path-debug] Reading raw dataset CSV: {dataset_path}")
     data = pd.read_csv(dataset_path)
@@ -626,8 +691,7 @@ def sync_prep_data_with_dataset(
 ):
     """Rebuild prep_data if files are missing or schema differs from dataset."""
     dataset_path = print_path_debug("sync_prep_data_with_dataset dataset", dataset_path)
-    if not os.path.isfile(dataset_path):
-        raise FileNotFoundError(f"Dataset file '{dataset_path}' not found.")
+    dataset_path = ensure_dataset_csv_exists(dataset_path)
 
     print(f"[path-debug] Reading raw dataset CSV for prep_data sync: {dataset_path}")
     data = pd.read_csv(dataset_path)

@@ -1,20 +1,37 @@
 {
-  "dataset_path": "convert/sugar_all.csv",
+  "dataset_path": "C:\\Users\\tadbirsabz\\Desktop\\zeinab\\NN\\convert\\sugar_all.csv",
   "output_features": [
     "white_total_points"
   ],
   "input_features": [
-    "sheet_name",
-    "shift_name",
     "raw_sugar_color",
     "raw_syrup_brix",
     "raw_syrup_color",
     "lime_alkalinity",
     "co2_percent",
     "carbonated_alkalinity",
-    "carbonated_pH"
+    "carbonated_pH",
+    "filtercake_moisture",
+    "filtercake_sugar",
+    "sweetwater_brix",
+    "sulphited_pH",
+    "sulphited_brix",
+    "sulphited_color",
+    "standard_liquor_pH",
+    "standard_liquor_brix",
+    "standard_liquor_color"
   ],
-  "optional_future_quality_inputs": [],
+  "optional_future_quality_inputs": [
+    "filtercake_moisture",
+    "filtercake_sugar",
+    "sweetwater_brix",
+    "sulphited_pH",
+    "sulphited_brix",
+    "sulphited_color",
+    "standard_liquor_pH",
+    "standard_liquor_brix",
+    "standard_liquor_color"
+  ],
   "sequential_features": [],
   "sequential_groups": [],
   "add_differences": false,

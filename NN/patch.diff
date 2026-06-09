@@ -1,11 +1,13 @@
 diff --git a/NN/read_data.py b/NN/read_data.py
-index eb95c4948f9ef824dfe83595c6bfd8868ba62f1a..a43b1346f1bce5c04faead0630bcb1e4867df82a 100644
+index a43b1346f1bce5c04faead0630bcb1e4867df82a..2848215c4ffa19afc03d13e5a08d9e0a1b6ecc26 100644
 --- a/NN/read_data.py
 +++ b/NN/read_data.py
-@@ -1,40 +1,77 @@
+@@ -1,59 +1,125 @@
  import os
  import json
  import re
++import importlib.util
++from pathlib import Path
  import pandas as pd
  from sklearn.model_selection import train_test_split
  from refinery_variables import (
@@ -18,43 +20,107 @@ index eb95c4948f9ef824dfe83595c6bfd8868ba62f1a..a43b1346f1bce5c04faead0630bcb1e4
  ANSI_YELLOW = "\033[93m"
  ANSI_RESET = "\033[0m"
  
-+MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+ MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+ 
+ 
+ def resolve_relative_path(path, base_dir=MODULE_DIR):
+     """Resolve relative data paths from CWD first, then the NN module directory."""
+     path_text = os.fspath(path)
+     if os.path.isabs(path_text):
+         return os.path.abspath(path_text)
+ 
+     cwd_candidate = os.path.abspath(path_text)
+     module_candidate = os.path.abspath(os.path.join(base_dir, path_text))
+ 
+     if os.path.exists(cwd_candidate):
+         return cwd_candidate
+     if os.path.exists(module_candidate):
+         return module_candidate
+     return cwd_candidate
+ 
+ 
++def _load_converter_module(script_name="convert2.py"):
++    """Load a sugar Excel converter module without requiring package imports."""
++    converter_path = Path(MODULE_DIR) / "convert" / script_name
++    if not converter_path.is_file():
++        raise FileNotFoundError(f"Sugar converter script was not found: {converter_path}")
++
++    spec = importlib.util.spec_from_file_location("sugar_report_converter", converter_path)
++    if spec is None or spec.loader is None:
++        raise ImportError(f"Could not load sugar converter script: {converter_path}")
++
++    converter = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(converter)
++    return converter
 +
 +
-+def resolve_relative_path(path, base_dir=MODULE_DIR):
-+    """Resolve relative data paths from CWD first, then the NN module directory."""
-+    path_text = os.fspath(path)
-+    if os.path.isabs(path_text):
-+        return os.path.abspath(path_text)
++def ensure_dataset_csv_exists(dataset_path, source_excel_path=None):
++    """Return an existing raw CSV path, rebuilding the default sugar CSV when possible.
 +
-+    cwd_candidate = os.path.abspath(path_text)
-+    module_candidate = os.path.abspath(os.path.join(base_dir, path_text))
++    The project does not track generated CSV files, so a fresh checkout may have
++    ``convert/gozaresh.xlsx`` but not ``convert/sugar_all.csv``.  When the
++    default sugar dataset is requested and missing, rebuild it from the Excel
++    report using the maintained converter before the prep-data rebuild reads it.
++    """
++    resolved_dataset_path = resolve_relative_path(dataset_path)
++    if os.path.isfile(resolved_dataset_path):
++        return resolved_dataset_path
 +
-+    if os.path.exists(cwd_candidate):
-+        return cwd_candidate
-+    if os.path.exists(module_candidate):
-+        return module_candidate
-+    return cwd_candidate
++    requested_name = os.path.basename(os.fspath(dataset_path))
++    if requested_name != "sugar_all.csv":
++        raise FileNotFoundError(f"Dataset file '{resolved_dataset_path}' not found.")
 +
++    using_default_excel_source = source_excel_path is None
++    if source_excel_path is None:
++        source_excel_path = os.path.join("convert", "gozaresh.xlsx")
++    resolved_excel_path = resolve_relative_path(source_excel_path)
++    if using_default_excel_source:
++        resolved_dataset_path = os.path.join(os.path.dirname(resolved_excel_path), requested_name)
++    if not os.path.isfile(resolved_excel_path):
++        raise FileNotFoundError(
++            f"Dataset file '{resolved_dataset_path}' not found, and source Excel "
++            f"file '{resolved_excel_path}' was not found to rebuild it."
++        )
 +
-+def print_path_debug(label, path, resolved_path=None):
-+    """Print debug information for a path that may depend on the working directory."""
-+    path_text = os.fspath(path)
-+    if resolved_path is None:
-+        resolved_path = resolve_relative_path(path_text)
-+    cwd_candidate = path_text if os.path.isabs(path_text) else os.path.abspath(path_text)
-+    module_candidate = (
-+        path_text if os.path.isabs(path_text) else os.path.abspath(os.path.join(MODULE_DIR, path_text))
++    print(
++        "[path-debug] Dataset CSV is missing; rebuilding default sugar dataset "
++        f"from Excel report: {resolved_excel_path}"
 +    )
-+    print(f"[path-debug] {label}")
-+    print(f"[path-debug]   cwd: {os.getcwd()}")
-+    print(f"[path-debug]   module_dir: {MODULE_DIR}")
-+    print(f"[path-debug]   requested: {path_text}")
-+    print(f"[path-debug]   cwd candidate: {cwd_candidate} (exists={os.path.exists(cwd_candidate)})")
-+    print(f"[path-debug]   module candidate: {module_candidate} (exists={os.path.exists(module_candidate)})")
-+    print(f"[path-debug]   resolved: {resolved_path} (exists={os.path.exists(resolved_path)})")
-+    return resolved_path
 +
++    try:
++        converter = _load_converter_module("convert2.py")
++        data = converter.extract_excel_to_dataframe(Path(resolved_excel_path))
++    except ImportError as err:
++        raise ImportError(
++            "Dataset CSV is missing and could not be rebuilt because an Excel "
++            "dependency is unavailable. Install project requirements, including "
++            "openpyxl, or create convert/sugar_all.csv manually."
++        ) from err
++
++    os.makedirs(os.path.dirname(resolved_dataset_path), exist_ok=True)
++    data.to_csv(resolved_dataset_path, index=False)
++    print(f"[path-debug] Rebuilt dataset CSV: {resolved_dataset_path}")
++    return resolved_dataset_path
++
++
+ def print_path_debug(label, path, resolved_path=None):
+     """Print debug information for a path that may depend on the working directory."""
+     path_text = os.fspath(path)
+     if resolved_path is None:
+         resolved_path = resolve_relative_path(path_text)
+     cwd_candidate = path_text if os.path.isabs(path_text) else os.path.abspath(path_text)
+     module_candidate = (
+         path_text if os.path.isabs(path_text) else os.path.abspath(os.path.join(MODULE_DIR, path_text))
+     )
+     print(f"[path-debug] {label}")
+     print(f"[path-debug]   cwd: {os.getcwd()}")
+     print(f"[path-debug]   module_dir: {MODULE_DIR}")
+     print(f"[path-debug]   requested: {path_text}")
+     print(f"[path-debug]   cwd candidate: {cwd_candidate} (exists={os.path.exists(cwd_candidate)})")
+     print(f"[path-debug]   module candidate: {module_candidate} (exists={os.path.exists(module_candidate)})")
+     print(f"[path-debug]   resolved: {resolved_path} (exists={os.path.exists(resolved_path)})")
+     return resolved_path
+ 
  
  def _normalize_output_features(output_feature, all_columns):
      """Normalize output feature(s) to a validated list."""
@@ -62,161 +128,7 @@ index eb95c4948f9ef824dfe83595c6bfd8868ba62f1a..a43b1346f1bce5c04faead0630bcb1e4
          return [all_columns[-1]]
  
      if isinstance(output_feature, str):
-         output_features = [output_feature]
-     else:
-         output_features = list(output_feature)
- 
-     missing_outputs = [col for col in output_features if col not in all_columns]
-     if missing_outputs:
-         raise ValueError(
-             f"Target column(s) '{missing_outputs}' not found in dataset. "
-             f"Available columns: {list(all_columns)}"
-         )
- 
-     if len(output_features) == 0:
-         raise ValueError("At least one output feature must be selected.")
- 
-     return output_features
- 
- 
- def resolve_data_columns(data, output_feature=None, input_features=None, optional_future_quality_inputs=None):
-@@ -74,72 +111,79 @@ TEMPORAL_DERIVED_COLUMN_PATTERN = re.compile(
- )
- 
- 
- def split_base_and_derived_input_features(data_columns, input_features):
-     """Split user-provided inputs into dataset columns and temporal-derived columns."""
-     if input_features is None:
-         return None, []
- 
-     base_input_features = [col for col in input_features if col in data_columns]
-     derived_input_features = [col for col in input_features if col not in data_columns]
- 
-     invalid_derived = [
-         col for col in derived_input_features if not TEMPORAL_DERIVED_COLUMN_PATTERN.match(col)
-     ]
-     if invalid_derived:
-         raise ValueError(
-             f"Input columns not found in dataset and not recognized as temporal-derived columns: "
-             f"{invalid_derived}. Available columns: {list(data_columns)}"
-         )
- 
-     return base_input_features, derived_input_features
- 
- 
- def prep_data_file_paths(prep_folder="prep_data"):
-     """Return canonical prep_data file paths."""
-+    resolved_prep_folder = resolve_relative_path(prep_folder)
-     return {
--        "X_train": os.path.join(prep_folder, "X_train.csv"),
--        "X_test": os.path.join(prep_folder, "X_test.csv"),
--        "y_train": os.path.join(prep_folder, "y_train.csv"),
--        "y_test": os.path.join(prep_folder, "y_test.csv"),
--        "metadata": os.path.join(prep_folder, "metadata.json"),
-+        "X_train": os.path.join(resolved_prep_folder, "X_train.csv"),
-+        "X_test": os.path.join(resolved_prep_folder, "X_test.csv"),
-+        "y_train": os.path.join(resolved_prep_folder, "y_train.csv"),
-+        "y_test": os.path.join(resolved_prep_folder, "y_test.csv"),
-+        "metadata": os.path.join(resolved_prep_folder, "metadata.json"),
-     }
- 
- 
- def prep_data_exists(prep_folder="prep_data"):
-     """Check whether all required prep_data CSV files exist."""
-     paths = prep_data_file_paths(prep_folder)
-     required = [paths["X_train"], paths["X_test"], paths["y_train"], paths["y_test"]]
--    return all(os.path.isfile(path) for path in required)
-+    exists = all(os.path.isfile(path) for path in required)
-+    print(f"[path-debug] prep_data folder resolved to: {os.path.dirname(paths['X_train'])}")
-+    print(f"[path-debug] prep_data required files exist: {exists}")
-+    if not exists:
-+        missing = [path for path in required if not os.path.isfile(path)]
-+        print(f"[path-debug] prep_data missing required files: {missing}")
-+    return exists
- 
- 
- def save_prep_metadata(prep_folder="prep_data", metadata=None):
-     """Save prep-data configuration metadata as JSON."""
-     if metadata is None:
-         metadata = {}
--    os.makedirs(prep_folder, exist_ok=True)
-     metadata_path = prep_data_file_paths(prep_folder)["metadata"]
-+    os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
-     with open(metadata_path, "w", encoding="utf-8") as metadata_file:
-         json.dump(metadata, metadata_file, indent=2, ensure_ascii=False)
- 
- 
- def read_prep_metadata(prep_folder="prep_data"):
-     """Read prep-data metadata JSON if available."""
-     metadata_path = prep_data_file_paths(prep_folder)["metadata"]
-     if not os.path.isfile(metadata_path):
-         return {}
-     with open(metadata_path, "r", encoding="utf-8") as metadata_file:
-         return json.load(metadata_file)
- 
- 
- 
- 
- 
- def _append_engineered_input(resolved_inputs, column_name):
-     """Append a generated feature name once while preserving feature order."""
-     if column_name not in resolved_inputs:
-         resolved_inputs.append(column_name)
- 
- 
- def _safe_divide(numerator, denominator):
-     """Divide process signals while treating zero denominators as missing values."""
-     return numerator / denominator.mask(denominator == 0)
-@@ -421,100 +465,103 @@ def select_features(data):
-         "\nEnter output (target) feature(s), comma-separated [last column]: "
-     ).strip()
-     if not output_answer:
-         output_features = [data.columns[-1]]
-     else:
-         output_features = [col.strip() for col in output_answer.split(",") if col.strip()]
- 
-     default_inputs = [col for col in data.columns if col not in output_features]
-     print("\nDefault input features (excluding selected output(s)):")
-     print(", ".join(default_inputs))
- 
-     input_features = input(
-         "Press Enter to use the default input features, or enter comma-separated feature names: "
-     ).strip()
- 
-     if not input_features:
-         input_features = default_inputs
-     else:
-         input_features = [col.strip() for col in input_features.split(",")]
- 
-     return output_features, input_features
- 
- 
- def save_data(folder, X_train, X_test, y_train, y_test, metadata=None, after_prepare=False):
-     """Save train/test splits to prep_data files."""
-+    folder = resolve_relative_path(folder)
-     os.makedirs(folder, exist_ok=True)
-     print(f"\nSaving processed data to '{folder}'...")
-     X_train.to_csv(os.path.join(folder, "X_train.csv"), index=False)
-     X_test.to_csv(os.path.join(folder, "X_test.csv"), index=False)
-     y_train.to_csv(os.path.join(folder, "y_train.csv"), index=False)
-     y_test.to_csv(os.path.join(folder, "y_test.csv"), index=False)
-     
-     if after_prepare is True:
-         pd.concat([X_train.reset_index(drop=True), y_train.reset_index(drop=True)], axis=1).to_csv(
-             os.path.join(folder, "train.csv"), index=False
-         )
-         pd.concat([X_test.reset_index(drop=True), y_test.reset_index(drop=True)], axis=1).to_csv(
-             os.path.join(folder, "test.csv"), index=False
-         )
- 
-     pd.concat([X_train.reset_index(drop=True), y_train.reset_index(drop=True)], axis=1).to_csv(
-         os.path.join(folder, "Xy_train.csv"), index=False
-     )
-     pd.concat([X_test.reset_index(drop=True), y_test.reset_index(drop=True)], axis=1).to_csv(
-         os.path.join(folder, "Xy_test.csv"), index=False
-     )
-     if metadata is not None:
-         save_prep_metadata(folder, metadata)
+@@ -514,52 +580,51 @@ def save_data(folder, X_train, X_test, y_train, y_test, metadata=None, after_pre
      print("Data saved successfully!")
  
  
@@ -241,11 +153,12 @@ index eb95c4948f9ef824dfe83595c6bfd8868ba62f1a..a43b1346f1bce5c04faead0630bcb1e4
      optional_future_quality_inputs=None,
  ):
      """Prepare prep_data files directly from a raw CSV dataset."""
-+    dataset_path = print_path_debug("prepare_data_from_file dataset", dataset_path)
-     if not os.path.isfile(dataset_path):
-         raise FileNotFoundError(f"Dataset file '{dataset_path}' not found.")
+     dataset_path = print_path_debug("prepare_data_from_file dataset", dataset_path)
+-    if not os.path.isfile(dataset_path):
+-        raise FileNotFoundError(f"Dataset file '{dataset_path}' not found.")
++    dataset_path = ensure_dataset_csv_exists(dataset_path)
  
-+    print(f"[path-debug] Reading raw dataset CSV: {dataset_path}")
+     print(f"[path-debug] Reading raw dataset CSV: {dataset_path}")
      data = pd.read_csv(dataset_path)
      base_input_features, requested_derived_features = split_base_and_derived_input_features(
          data.columns, input_features
@@ -269,10 +182,7 @@ index eb95c4948f9ef824dfe83595c6bfd8868ba62f1a..a43b1346f1bce5c04faead0630bcb1e4
          create_rnn_windows=create_rnn_windows,
          rnn_window_size=rnn_window_size,
          add_rolling_dynamics=add_rolling_dynamics,
-         rolling_window=rolling_window,
-     )
-@@ -556,53 +603,55 @@ def prepare_data_from_file(
-         "refinery_variable_groups": refinery_variable_group_metadata(),
+@@ -604,52 +669,51 @@ def prepare_data_from_file(
      }
      save_data(prep_folder, X_train, X_test, y_train, y_test, metadata=metadata, after_prepare = True)
      return X_train, X_test, y_train, y_test
@@ -297,11 +207,12 @@ index eb95c4948f9ef824dfe83595c6bfd8868ba62f1a..a43b1346f1bce5c04faead0630bcb1e4
      optional_future_quality_inputs=None,
  ):
      """Rebuild prep_data if files are missing or schema differs from dataset."""
-+    dataset_path = print_path_debug("sync_prep_data_with_dataset dataset", dataset_path)
-     if not os.path.isfile(dataset_path):
-         raise FileNotFoundError(f"Dataset file '{dataset_path}' not found.")
+     dataset_path = print_path_debug("sync_prep_data_with_dataset dataset", dataset_path)
+-    if not os.path.isfile(dataset_path):
+-        raise FileNotFoundError(f"Dataset file '{dataset_path}' not found.")
++    dataset_path = ensure_dataset_csv_exists(dataset_path)
  
-+    print(f"[path-debug] Reading raw dataset CSV for prep_data sync: {dataset_path}")
+     print(f"[path-debug] Reading raw dataset CSV for prep_data sync: {dataset_path}")
      data = pd.read_csv(dataset_path)
      base_input_features, requested_derived_features = split_base_and_derived_input_features(
          data.columns, input_features
@@ -325,75 +236,3 @@ index eb95c4948f9ef824dfe83595c6bfd8868ba62f1a..a43b1346f1bce5c04faead0630bcb1e4
          create_rnn_windows=create_rnn_windows,
          rnn_window_size=rnn_window_size,
          add_rolling_dynamics=add_rolling_dynamics,
-         rolling_window=rolling_window,
-     )
-@@ -643,64 +692,69 @@ def sync_prep_data_with_dataset(
-         print("prep_data is missing or outdated. Rebuilding from dataset...")
-         prepare_data_from_file(
-             dataset_path=dataset_path,
-             output_feature=output_features,
-             input_features=input_features,
-             prep_folder=prep_folder,
-             sequential_features=sequential_features,
-             sequential_groups=sequential_groups,
-             add_differences=add_differences,
-             difference_order=difference_order,
-             add_ratio_features=add_ratio_features,
-             add_acceleration_features=add_acceleration_features,
-             add_normalized_change_features=add_normalized_change_features,
-             create_rnn_windows=create_rnn_windows,
-             rnn_window_size=rnn_window_size,
-             add_rolling_dynamics=add_rolling_dynamics,
-             rolling_window=rolling_window,
-             optional_future_quality_inputs=optional_future_quality_inputs,
-         )
-     else:
-         print("prep_data matches dataset columns. Reusing existing files.")
- 
- 
- def read_prep_data(inputs=None, prep_folder="prep_data", optional_future_quality_inputs=None):
-     """Read preprocessed train/test files, optionally filtering input columns."""
-+    prep_folder = print_path_debug("read_prep_data prep_folder", prep_folder)
-     print(f"Reading data from '{prep_folder}'...")
- 
-     X_train_path = os.path.join(prep_folder, "X_train.csv")
-     X_test_path = os.path.join(prep_folder, "X_test.csv")
-     y_train_path = os.path.join(prep_folder, "y_train.csv")
-     y_test_path = os.path.join(prep_folder, "y_test.csv")
- 
-     for file_path in [X_train_path, X_test_path, y_train_path, y_test_path]:
-         if not os.path.isfile(file_path):
-             raise FileNotFoundError(f"Required file '{file_path}' not found in '{prep_folder}'.")
- 
-+    print(f"[path-debug] Reading prep_data CSV: {X_train_path}")
-     X_train_full = pd.read_csv(X_train_path)
-+    print(f"[path-debug] Reading prep_data CSV: {X_test_path}")
-     X_test_full = pd.read_csv(X_test_path)
-+    print(f"[path-debug] Reading prep_data CSV: {y_train_path}")
-     y_train = pd.read_csv(y_train_path)
-+    print(f"[path-debug] Reading prep_data CSV: {y_test_path}")
-     y_test = pd.read_csv(y_test_path)
- 
-     if list(X_train_full.columns) != list(X_test_full.columns):
-         train_only = [col for col in X_train_full.columns if col not in X_test_full.columns]
-         test_only = [col for col in X_test_full.columns if col not in X_train_full.columns]
-         raise ValueError(
-             "prep_data schema mismatch between X_train and X_test. "
-             f"Columns only in X_train: {train_only}. "
-             f"Columns only in X_test: {test_only}. "
-             "Rebuild prep_data to keep train/test schemas aligned."
-         )
- 
-     if inputs is not None:
-         print(f"Filtering inputs: {inputs}")
-         if optional_future_quality_inputs is None:
-             optional_future_quality_inputs = list(inputs)
-         validate_model_inputs(
-             inputs,
-             output_features=y_train.columns.tolist(),
-             optional_future_quality_inputs=optional_future_quality_inputs,
-         )
-         missing_inputs = [col for col in inputs if col not in X_train_full.columns]
-         if missing_inputs:
-             raise KeyError(
-                 f"Requested input columns are missing from prep_data: {missing_inputs}. "

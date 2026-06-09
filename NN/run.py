@@ -32,6 +32,7 @@ from read_data import (
     read_prep_metadata,
     save_data,
     print_path_debug,
+    ensure_dataset_csv_exists,
 )
 from refinery_variables import (
     CONTROL_VARIABLES,
@@ -891,6 +892,7 @@ def prepare_or_reuse_data(dataset_path="convert/sugar_all.csv", prep_folder="pre
             else:
                 print("prep_data/train.csv or prep_data/test.csv not found. Preparing data again from the raw dataset...")
 
+    dataset_path = ensure_dataset_csv_exists(dataset_path)
     print(f"[path-debug] prep_data did not prevent raw CSV flow; reading dataset now: {dataset_path}")
     data = pd.read_csv(dataset_path)
     print_selection_guide()
