@@ -412,18 +412,18 @@ max_gradient_norm = 0.5
 max_input_delta = 1.5
 # Conservative training guards for stable convergence on small industrial data.
 #hidden_size1 = 10
-hidden_size1 = 8
-hidden_size2 = 4
+hidden_size1 = 32
+hidden_size2 = 16
 
 # the number of neurons in hidden layers
 
 # https://alexlenail.me/NN-SVG/
 # use the site above to draw the following network
 #
-hidden_sizes = [8, 4]
+hidden_sizes = [32, 16]
 # nn.ReLU(), nn.Tanh(), nn.Identity()
 
-list_hidden_sizes = [[4], [6], [8], [8, 4]]
+list_hidden_sizes = [[16], [32], [64], [16, 8], [32, 16], [48, 24], [64, 32], [64, 32, 16]]
 normalization_type = "standard_scaler"
 
 EXTRA_TREES_RANDOM_SEARCH_ITERATIONS = 40
@@ -1133,11 +1133,21 @@ def print_ann_training_robustness_notes():
     print(
         f"- validation_fraction={validation_fraction}, patience={early_stopping_patience}: "
         "early stopping monitors held-out training data and restores the best weights, "
-        "which limits memorization on the ~174-row dataset."
+        "which limits memorization on the 755-sample dataset."
     )
     print(
         f"- ann_weight_decay={ann_weight_decay}: L2 regularization discourages oversized "
         "weights and improves generalization without adding model complexity."
+    )
+    print(
+        "- BatchNorm1d after each hidden Linear/RBF basis layer stabilizes hidden "
+        "activation scale; Dropout(p=0.10) reduces co-adaptation and small-sample "
+        "memorization while preserving the existing model constructor API."
+    )
+    print(
+        "- Xavier uniform initialization is applied to Linear layers so initial "
+        "signal variance is balanced across input/output fan sizes before AdamW "
+        "and the learning-rate scheduler begin updates."
     )
     print(
         f"- max_gradient_norm={max_gradient_norm}, max_input_delta={max_input_delta}: "
@@ -1145,8 +1155,10 @@ def print_ann_training_robustness_notes():
         "input drift."
     )
     print(
-        f"- hidden size candidates={list_hidden_sizes}: small candidate networks keep "
-        "capacity proportional to a small industrial dataset."
+        f"- hidden size candidates={list_hidden_sizes}: for 755 samples, the current "
+        "best [32, 16] is kept. One-hidden-layer candidates [16], [32], and "
+        "[64] support the shallow models/RBFN; [16, 8], [48, 24], [64, 32], "
+        "and [64, 32, 16] test moderate under/over-fitting around the current best."
     )
 
 def infer_selected_features_from_table(table, fallback_features):
@@ -1262,15 +1274,20 @@ def safe_r2_score(y_true, y_pred):
 
 
 def initialize_linear_weights(module):
-    """Initialize Linear layers with activation-aware fan-in scaling."""
+    """Initialize ANN layers with Xavier scaling and stable normalization defaults."""
     if isinstance(module, nn.Linear):
-        nn.init.kaiming_uniform_(module.weight, nonlinearity="relu")
+        nn.init.xavier_uniform_(module.weight)
         if module.bias is not None:
             nn.init.zeros_(module.bias)
+    elif isinstance(module, nn.BatchNorm1d):
+        nn.init.ones_(module.weight)
+        nn.init.zeros_(module.bias)
 
 
 def make_torch_model(model_class, input_size, hidden_sizes, output_size):
     """Instantiate a torch model while preserving older constructors."""
+    if model_class.__name__ == "GRNN":
+        return model_class(input_size, output_size=output_size)
     try:
         return model_class(input_size, hidden_sizes, output_size=output_size)
     except TypeError:

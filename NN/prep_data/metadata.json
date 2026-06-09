@@ -16,7 +16,19 @@
     "sulphited_color",
     "standard_liquor_pH",
     "standard_liquor_brix",
-    "standard_liquor_color"
+    "standard_liquor_color",
+    "raw_sugar_color__ratio_1",
+    "raw_syrup_color__ratio_1",
+    "sulphited_color__ratio_1",
+    "standard_liquor_color__ratio_1",
+    "raw_syrup_brix__ratio_1",
+    "sulphited_brix__ratio_1",
+    "standard_liquor_brix__ratio_1",
+    "raw_syrup_color__over_raw_sugar_color__ratio_1",
+    "sulphited_color__over_raw_syrup_color__ratio_1",
+    "standard_liquor_color__over_sulphited_color__ratio_1",
+    "sulphited_brix__over_raw_syrup_brix__ratio_1",
+    "standard_liquor_brix__over_sulphited_brix__ratio_1"
   ],
   "optional_future_quality_inputs": [
     "raw_sugar_color",
@@ -40,10 +52,7 @@
     "standard_liquor_color",
     "raw_syrup_brix",
     "sulphited_brix",
-    "standard_liquor_brix",
-    "carbonated_pH",
-    "sulphited_pH",
-    "standard_liquor_pH"
+    "standard_liquor_brix"
   ],
   "sequential_groups": [
     [
@@ -58,14 +67,14 @@
       "standard_liquor_brix"
     ],
     [
-      "carbonated_pH",
-      "sulphited_pH",
-      "standard_liquor_pH"
+      "raw_syrup_color",
+      "sulphited_color",
+      "standard_liquor_color"
     ]
   ],
   "add_differences": false,
   "difference_order": 1,
-  "add_ratio_features": false,
+  "add_ratio_features": true,
   "add_acceleration_features": false,
   "add_normalized_change_features": false,
   "create_rnn_windows": false,

@@ -1,21 +1,218 @@
-diff --git a/NN/requirements.txt b/NN/requirements.txt
-index 83df545726f1211af5acd46ce9914bba1d2bee81..487d07ee0b944c9deb4c55ad9fcbe71017453c00 100644
---- a/NN/requirements.txt
-+++ b/NN/requirements.txt
-@@ -1,14 +1,16 @@
- # Third-party Python packages required by the project.
- # Install with: pip install -r requirement.txt
+diff --git a/NN/run.py b/NN/run.py
+index 5482f265339a9aa18f11681a7545913264fa4da2..b6491a949d82d8ff622a495b92f1041647fb0f2b 100644
+--- a/NN/run.py
++++ b/NN/run.py
+@@ -390,62 +390,62 @@ data_seed = 123 # it is used for random_state of splitting data into source and
+ # changing it creates different source and train sets.
+ # Since the number of data is low changing it can largely affect the results
+ model_seed = 123 # it is used for random_state of models
+ def set_model_seed(model_seed):
+     torch.manual_seed(model_seed)
+     np.random.seed(model_seed)
  
- lightgbm
- matplotlib
- numpy
- openpyxl
- pandas
- scikit-learn
- seaborn
- shap
- tabulate
- torch
- xgboost
-+
-+catboost
+ learning_rate = 0.0005
+ # Industrially conservative ANN weight learning rate. 0.05 was too aggressive
+ # for a small, standardized tabular dataset and can overshoot narrow minima.
+ input_learning_rate = 0.00005
+ # Input optimization is more sensitive than weight optimization because it moves
+ # the normalized training data directly, so keep it an order of magnitude lower.
+ ann_weight_decay = 1e-4
+ # L2 regularization reduces small-sample overfitting without increasing model size.
+ early_stopping_patience = 20
+ early_stopping_min_delta = 1e-4
+ validation_fraction = 0.2
+ lr_plateau_patience = 8
+ lr_plateau_factor = 0.5
+ min_learning_rate = 1e-5
+ max_gradient_norm = 0.5
+ max_input_delta = 1.5
+ # Conservative training guards for stable convergence on small industrial data.
+ #hidden_size1 = 10
+-hidden_size1 = 8
+-hidden_size2 = 4
++hidden_size1 = 32
++hidden_size2 = 16
+ 
+ # the number of neurons in hidden layers
+ 
+ # https://alexlenail.me/NN-SVG/
+ # use the site above to draw the following network
+ #
+-hidden_sizes = [8, 4]
++hidden_sizes = [32, 16]
+ # nn.ReLU(), nn.Tanh(), nn.Identity()
+ 
+-list_hidden_sizes = [[4], [6], [8], [8, 4]]
++list_hidden_sizes = [[16], [32], [64], [16, 8], [32, 16], [48, 24], [64, 32], [64, 32, 16]]
+ normalization_type = "standard_scaler"
+ 
+ EXTRA_TREES_RANDOM_SEARCH_ITERATIONS = 40
+ EXTRA_TREES_RANDOM_SEARCH_CV_FOLDS = 5
+ MODEL_EVALUATION_CV_FOLDS = 5
+ 
+ 
+ def make_extra_trees_random_search(seed):
+     """Build a tuned ExtraTrees regressor while preserving the model menu name."""
+     base_model = ExtraTreesRegressor(random_state=seed, n_jobs=-1)
+     param_distributions = {
+         "n_estimators": [300, 500, 800, 1000],
+         "max_depth": [None, 4, 6, 8, 10, 12, 16],
+         "min_samples_split": [2, 3, 4, 5, 8, 10],
+         "min_samples_leaf": [1, 2, 3, 4, 6],
+         "max_features": ["sqrt", "log2", 0.5, 0.7, 0.9, 1.0],
+         "bootstrap": [False, True],
+     }
+     return RandomizedSearchCV(
+         estimator=base_model,
+         param_distributions=param_distributions,
+         n_iter=EXTRA_TREES_RANDOM_SEARCH_ITERATIONS,
+         scoring=make_scorer(r2_score, multioutput="uniform_average"),
+         cv=EXTRA_TREES_RANDOM_SEARCH_CV_FOLDS,
+         random_state=seed,
+@@ -1111,64 +1111,76 @@ def parse_epochs_input(answer, default_epochs):
+         if token.isdigit() and int(token) > 0:
+             parsed_epochs.append(int(token))
+ 
+     if not parsed_epochs and not use_cv_early_stop:
+         parsed_epochs = list(default_epochs)
+     return sorted(set(parsed_epochs)), use_cv_early_stop
+ 
+ 
+ 
+ def print_ann_training_robustness_notes():
+     """Explain the safeguards used for neural-network training."""
+     print("\nANN industrial robustness safeguards:")
+     print(
+         f"- learning_rate={learning_rate}: conservative AdamW step size reduces "
+         "overshoot and run-to-run volatility on standardized tabular data; "
+         f"ReduceLROnPlateau halves it after {lr_plateau_patience} flat checks "
+         f"down to {min_learning_rate}."
+     )
+     print(
+         f"- input_learning_rate={input_learning_rate}: input optimization moves "
+         "data directly, so a smaller step prevents unrealistic optimized inputs."
+     )
+     print(
+         f"- validation_fraction={validation_fraction}, patience={early_stopping_patience}: "
+         "early stopping monitors held-out training data and restores the best weights, "
+-        "which limits memorization on the ~174-row dataset."
++        "which limits memorization on the 755-sample dataset."
+     )
+     print(
+         f"- ann_weight_decay={ann_weight_decay}: L2 regularization discourages oversized "
+         "weights and improves generalization without adding model complexity."
+     )
++    print(
++        "- BatchNorm1d after each hidden Linear/RBF basis layer stabilizes hidden "
++        "activation scale; Dropout(p=0.10) reduces co-adaptation and small-sample "
++        "memorization while preserving the existing model constructor API."
++    )
++    print(
++        "- Xavier uniform initialization is applied to Linear layers so initial "
++        "signal variance is balanced across input/output fan sizes before AdamW "
++        "and the learning-rate scheduler begin updates."
++    )
+     print(
+         f"- max_gradient_norm={max_gradient_norm}, max_input_delta={max_input_delta}: "
+         "gradient and input-update bounds prevent unstable convergence and non-physical "
+         "input drift."
+     )
+     print(
+-        f"- hidden size candidates={list_hidden_sizes}: small candidate networks keep "
+-        "capacity proportional to a small industrial dataset."
++        f"- hidden size candidates={list_hidden_sizes}: for 755 samples, the current "
++        "best [32, 16] is kept. One-hidden-layer candidates [16], [32], and "
++        "[64] support the shallow models/RBFN; [16, 8], [48, 24], [64, 32], "
++        "and [64, 32, 16] test moderate under/over-fitting around the current best."
+     )
+ 
+ def infer_selected_features_from_table(table, fallback_features):
+     """Infer selected features from the best-R2 row in a feature-selection table."""
+     if table is None or table.empty:
+         return list(fallback_features)
+ 
+     if "R2" not in table.columns or "features" not in table.columns:
+         return list(fallback_features)
+ 
+     ranked = table.dropna(subset=["R2"])
+     if ranked.empty:
+         return list(fallback_features)
+ 
+     best_row = ranked.loc[ranked["R2"].astype(float).idxmax()]
+     features_text = str(best_row["features"]).strip()
+     if not features_text:
+         return list(fallback_features)
+ 
+     selected = [f.strip() for f in features_text.split(",") if f.strip()]
+     return selected if selected else list(fallback_features)
+ 
+ 
+ def compute_regression_report_metrics(y_true, y_pred):
+     """
+@@ -1240,59 +1252,64 @@ def as_2d_float_array(data, name):
+ 
+ def as_feature_matrix(data, name):
+     """Convert tabular feature data to a finite 2D float matrix."""
+     arr = as_2d_float_array(data, name)
+     if arr.shape[1] == 0:
+         raise ValueError(f"{name} must contain at least one feature column.")
+     return arr
+ 
+ 
+ def safe_r2_score(y_true, y_pred):
+     """Compute finite multi-output R², returning None when undefined."""
+     y_true_arr = as_2d_float_array(y_true, "y_true")
+     y_pred_arr = as_2d_float_array(y_pred, "y_pred")
+     if y_true_arr.shape != y_pred_arr.shape:
+         raise ValueError(
+             f"y_true and y_pred must have matching shapes; got "
+             f"{y_true_arr.shape} and {y_pred_arr.shape}."
+         )
+     if y_true_arr.shape[0] < 2:
+         return None
+     score = r2_score(y_true_arr, y_pred_arr, multioutput="uniform_average")
+     return float(score) if np.isfinite(score) else None
+ 
+ 
+ def initialize_linear_weights(module):
+-    """Initialize Linear layers with activation-aware fan-in scaling."""
++    """Initialize ANN layers with Xavier scaling and stable normalization defaults."""
+     if isinstance(module, nn.Linear):
+-        nn.init.kaiming_uniform_(module.weight, nonlinearity="relu")
++        nn.init.xavier_uniform_(module.weight)
+         if module.bias is not None:
+             nn.init.zeros_(module.bias)
++    elif isinstance(module, nn.BatchNorm1d):
++        nn.init.ones_(module.weight)
++        nn.init.zeros_(module.bias)
+ 
+ 
+ def make_torch_model(model_class, input_size, hidden_sizes, output_size):
+     """Instantiate a torch model while preserving older constructors."""
++    if model_class.__name__ == "GRNN":
++        return model_class(input_size, output_size=output_size)
+     try:
+         return model_class(input_size, hidden_sizes, output_size=output_size)
+     except TypeError:
+         return model_class(input_size, hidden_sizes)
+ 
+ 
+ def validate_hidden_size_compatibility(model, hidden_sizes):
+     """Check whether the requested hidden-size layout matches a model class."""
+     hidden_layers = getattr(model, "hidden_layers", None)
+     return hidden_layers is None or len(hidden_sizes) == len(hidden_layers)
+ 
+ 
+ def load_model_state_dict(model, checkpoint_path):
+     """Safely restore model weights from a checkpoint path when compatible."""
+     if not checkpoint_path:
+         return False
+     if not os.path.isfile(checkpoint_path):
+         print(f"Checkpoint not found: {checkpoint_path}. Training from initialized weights.")
+         return False
+     try:
+         try:
+             state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+         except TypeError:
+             state_dict = torch.load(checkpoint_path, map_location="cpu")
+         model.load_state_dict(state_dict)

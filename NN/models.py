@@ -1,44 +1,91 @@
 import torch
 import torch.nn as nn
 
+DEFAULT_DROPOUT_PROBABILITY = 0.10
+
+
+def initialize_neural_network_weights(module):
+    """Apply Xavier initialization to trainable layers used by the NN models."""
+    if isinstance(module, nn.Linear):
+        nn.init.xavier_uniform_(module.weight)
+        if module.bias is not None:
+            nn.init.zeros_(module.bias)
+    elif isinstance(module, nn.BatchNorm1d):
+        nn.init.ones_(module.weight)
+        nn.init.zeros_(module.bias)
+
+
+def _resolve_dropout_probability(dropout_p):
+    if dropout_p is None:
+        return DEFAULT_DROPOUT_PROBABILITY
+    return float(dropout_p)
+
+
+def _apply_hidden_regularization(x, batch_norm_layer, activation_layer, dropout_layer):
+    """Use a stable Linear -> BatchNorm -> Activation -> Dropout order."""
+    if batch_norm_layer is not None:
+        x = batch_norm_layer(x)
+    if activation_layer is not None:
+        x = activation_layer(x)
+    if dropout_layer is not None:
+        x = dropout_layer(x)
+    return x
+
+
 ##################### New Models
 class RBFN(nn.Module):
-    def __init__(self, input_size, hidden_sizes, output_size=1):
+    def __init__(self, input_size, hidden_sizes, output_size=1, dropout_p=None):
         super(RBFN, self).__init__()
         hidden_size = hidden_sizes[0]
         self.hidden = nn.Linear(input_size, hidden_size)
+        self.hidden_batch_norm = nn.BatchNorm1d(hidden_size)
+        self.hidden_dropout = nn.Dropout(_resolve_dropout_probability(dropout_p))
         self.output = nn.Linear(hidden_size, output_size)
         self.hidden_size = hidden_size
 
         self.hidden_layers = nn.ModuleList()
         self.hidden_layers.append(self.hidden)
         # self.hidden_layers.append(self.output)
+        self.batch_norm_layers = nn.ModuleList([self.hidden_batch_norm])
+        self.dropout_layers = nn.ModuleList([self.hidden_dropout])
+        self.apply(initialize_neural_network_weights)
 
     def forward(self, x):
         # Compute the distances from input to centers
         distances = torch.cdist(x, self.hidden.weight, p=2)
-        # Apply Gaussian function
+        # Apply Gaussian function, then stabilize/regularize the hidden basis.
         basis_functions = torch.exp(-distances**2)
+        basis_functions = _apply_hidden_regularization(
+            basis_functions, self.hidden_batch_norm, None, self.hidden_dropout
+        )
         output = self.output(basis_functions)
         return output
 
 class GRNN(nn.Module):
-    def __init__(self, input_size, sigma=1.0, output_size=1):
+    def __init__(self, input_size, sigma=1.0, output_size=1, dropout_p=None):
         super(GRNN, self).__init__()
         self.pattern_layer = nn.Linear(input_size, input_size, bias=False)
+        self.basis_batch_norm = nn.BatchNorm1d(input_size)
+        self.basis_dropout = nn.Dropout(_resolve_dropout_probability(dropout_p))
         self.output_layer = nn.Linear(1, output_size)
         self.sigma = sigma
 
         self.hidden_layers = nn.ModuleList()
         self.hidden_layers.append(self.pattern_layer)
+        self.batch_norm_layers = nn.ModuleList([self.basis_batch_norm])
+        self.dropout_layers = nn.ModuleList([self.basis_dropout])
+        self.apply(initialize_neural_network_weights)
 
     def forward(self, x):
         # Compute the distances from input to pattern layer
         distances = torch.cdist(x, self.pattern_layer.weight.t())
-        # Apply Gaussian function
+        # Apply Gaussian function and regularize the basis functions.
         basis_functions = torch.exp(-distances**2 / (2 * self.sigma**2))
+        basis_functions = _apply_hidden_regularization(
+            basis_functions, self.basis_batch_norm, None, self.basis_dropout
+        )
         # Summation layer
-        summation_layer = basis_functions.sum(dim=1, keepdim=True)
+        summation_layer = basis_functions.sum(dim=1, keepdim=True).clamp_min(1e-8)
         # Output layer
         weighted = (basis_functions @ self.pattern_layer.weight).sum(dim=1, keepdim=True) / summation_layer
         output = self.output_layer(weighted)
@@ -72,7 +119,7 @@ class GRNN(nn.Module):
 #
 class Linear1HiddenLayer(nn.Module):
     activation1 = None
-    def __init__(self, input_size, hidden_sizes, output_size=1):
+    def __init__(self, input_size, hidden_sizes, output_size=1, dropout_p=None):
         super().__init__()
         #                          O1
         #   O1                     O2                  
@@ -85,24 +132,30 @@ class Linear1HiddenLayer(nn.Module):
         #   5 neuron             10 neurons        1 neuron
         #
         self.input_to_hidden1 = nn.Linear(input_size, hidden_sizes[0])
+        self.hidden1_batch_norm = nn.BatchNorm1d(hidden_sizes[0])
+        self.hidden1_dropout = nn.Dropout(_resolve_dropout_probability(dropout_p))
         self.hidden1_to_output = nn.Linear(hidden_sizes[0], output_size)
 
         self.hidden_layers = nn.ModuleList()
         self.hidden_layers.append(self.input_to_hidden1)
         # self.hidden_layers.append(self.hidden1_to_output)
+        self.batch_norm_layers = nn.ModuleList([self.hidden1_batch_norm])
+        self.dropout_layers = nn.ModuleList([self.hidden1_dropout])
+        self.apply(initialize_neural_network_weights)
 
     def forward(self, x):
         # order of computation
         x = self.input_to_hidden1(x)
-        if self.activation1 is not None:
-            x = self.activation1(x)
+        x = _apply_hidden_regularization(
+            x, self.hidden1_batch_norm, self.activation1, self.hidden1_dropout
+        )
         x = self.hidden1_to_output(x)
         return x
 
 class Linear2HiddenLayer(nn.Module):
     activation1 = None
     activation2 = None
-    def __init__(self, input_size, hidden_sizes, output_size =1):
+    def __init__(self, input_size, hidden_sizes, output_size=1, dropout_p=None):
         super().__init__()
         #     
         #   O1                     O1                O1
@@ -114,41 +167,58 @@ class Linear2HiddenLayer(nn.Module):
         #  input(5 features)     hidden1           hidden2        output 
         #                       10 neurons         5 neurons
         self.input_to_hidden1 = nn.Linear(input_size, hidden_sizes[0])
+        self.hidden1_batch_norm = nn.BatchNorm1d(hidden_sizes[0])
+        self.hidden1_dropout = nn.Dropout(_resolve_dropout_probability(dropout_p))
         self.hidden1_to_hidden2 = nn.Linear(hidden_sizes[0], hidden_sizes[-1])
+        self.hidden2_batch_norm = nn.BatchNorm1d(hidden_sizes[-1])
+        self.hidden2_dropout = nn.Dropout(_resolve_dropout_probability(dropout_p))
         self.hidden2_to_output = nn.Linear(hidden_sizes[-1], output_size)
 
         self.hidden_layers = nn.ModuleList()
         self.hidden_layers.append(self.input_to_hidden1)
         self.hidden_layers.append(self.hidden1_to_hidden2)
         # self.hidden_layers.append(self.hidden2_to_output)
+        self.batch_norm_layers = nn.ModuleList([self.hidden1_batch_norm, self.hidden2_batch_norm])
+        self.dropout_layers = nn.ModuleList([self.hidden1_dropout, self.hidden2_dropout])
+        self.apply(initialize_neural_network_weights)
 
     def forward(self, x):
         # order of computation
         x = self.input_to_hidden1(x)
-        if self.activation1 is not None:
-            x = self.activation1(x)
+        x = _apply_hidden_regularization(
+            x, self.hidden1_batch_norm, self.activation1, self.hidden1_dropout
+        )
         x = self.hidden1_to_hidden2(x)
-        if self.activation2 is not None:
-            x = self.activation2(x)
+        x = _apply_hidden_regularization(
+            x, self.hidden2_batch_norm, self.activation2, self.hidden2_dropout
+        )
         x = self.hidden2_to_output(x)
         return x
 
 class FFNN(nn.Module):
     activations = [nn.ReLU(), nn.ReLU(), nn.ReLU()]  # Specify activations for hidden layers
-    def __init__(self, input_size, hidden_sizes, output_size=1):
+    def __init__(self, input_size, hidden_sizes, output_size=1, dropout_p=None):
         super().__init__()
         self.hidden_layers = nn.ModuleList()
+        self.batch_norm_layers = nn.ModuleList()
+        self.dropout_layers = nn.ModuleList()
+        dropout_probability = _resolve_dropout_probability(dropout_p)
         # self.activations = activations if activations is not None else []
 
         # Input to first hidden layer
         self.hidden_layers.append(nn.Linear(input_size, hidden_sizes[0]))
+        self.batch_norm_layers.append(nn.BatchNorm1d(hidden_sizes[0]))
+        self.dropout_layers.append(nn.Dropout(dropout_probability))
 
         # Intermediate hidden layers
         for i in range(len(hidden_sizes) - 1):
             self.hidden_layers.append(nn.Linear(hidden_sizes[i], hidden_sizes[i + 1]))
+            self.batch_norm_layers.append(nn.BatchNorm1d(hidden_sizes[i + 1]))
+            self.dropout_layers.append(nn.Dropout(dropout_probability))
 
         # Last hidden layer to output
         self.output_layer = nn.Linear(hidden_sizes[-1], output_size)
+        self.apply(initialize_neural_network_weights)
 
     def forward(self, x):
         for i, layer in enumerate(self.hidden_layers):
@@ -156,8 +226,9 @@ class FFNN(nn.Module):
             act = self.activations[-1]
             if i < len(self.activations) and self.activations[i] is not None:
                act = self.activations[i]
-            if act is not None:
-               x = act(x)
+            x = _apply_hidden_regularization(
+                x, self.batch_norm_layers[i], act, self.dropout_layers[i]
+            )
         x = self.output_layer(x)
         return x
 
