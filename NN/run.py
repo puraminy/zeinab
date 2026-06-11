@@ -20,6 +20,8 @@ import pandas as pd
 import numpy as np
 import re
 from sklearn.metrics import make_scorer, r2_score
+from sklearn.inspection import permutation_importance
+from sklearn.feature_selection import mutual_info_regression
 from tabulate import tabulate
 import os
 from latex import *
@@ -74,6 +76,17 @@ SAVED_RUNS_DIR = "saved_runs"
 CHECKPOINTS_DIR = "checkpoints"
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 LEAKAGE_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "leakage_report.xlsx")
+FEATURE_IMPORTANCE_REPORTS_DIR = os.path.join(MODULE_DIR, "reports")
+
+
+FEATURE_IMPORTANCE_TARGETS = (
+    "white_total_points",
+    "white_solution_color",
+    "white_apparent_color",
+    "white_ash",
+    "white_moisture",
+    "white_invert",
+)
 
 
 FUTURE_QUALITY_INPUT_CANDIDATES = [
@@ -173,6 +186,285 @@ def remove_leakage_inputs_for_training(input_features, output_features=None, con
 
     save_leakage_report(removed_columns, output_features=output_features, context=context)
     return cleaned_inputs, removed_columns
+
+
+
+def _safe_excel_sheet_name(name):
+    """Return an Excel-compatible sheet name."""
+    cleaned = re.sub(r"[\\/*?:\[\]]+", "_", str(name)).strip() or "Sheet"
+    return cleaned[:31]
+
+
+def _safe_report_filename_part(name):
+    """Return a filesystem-safe filename part for a target variable."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(name)).strip("_") or "target"
+
+
+def _coerce_feature_importance_source(raw_df, target):
+    """Prepare a mixed-type dataframe for sklearn feature-importance estimators."""
+    if target not in raw_df.columns:
+        return None, None, None
+
+    working_df = raw_df.copy().replace([np.inf, -np.inf], np.nan)
+    y = pd.to_numeric(working_df[target], errors="coerce")
+    feature_columns = [
+        column for column in working_df.columns
+        if column != target and not leakage_pattern_matches(column)
+    ]
+    if not feature_columns:
+        return None, None, None
+
+    X_raw = working_df[feature_columns].copy()
+    valid_rows = y.notna()
+    X_raw = X_raw.loc[valid_rows]
+    y = y.loc[valid_rows]
+    if len(y) < 3:
+        return None, None, None
+
+    encoded_parts = []
+    encoded_to_original = {}
+    for column in feature_columns:
+        series = X_raw[column]
+        non_null = series.notna().sum()
+        if non_null == 0:
+            continue
+
+        numeric_series = pd.to_numeric(series, errors="coerce")
+        numeric_ratio = numeric_series.notna().sum() / max(non_null, 1)
+        if pd.api.types.is_numeric_dtype(series) or numeric_ratio >= 0.8:
+            fill_value = numeric_series.median()
+            if pd.isna(fill_value):
+                continue
+            prepared = numeric_series.fillna(fill_value).astype(float)
+            encoded_parts.append(prepared.to_frame(column))
+            encoded_to_original[column] = column
+        else:
+            categorical = series.astype("object").where(series.notna(), "__missing__").astype(str)
+            dummies = pd.get_dummies(
+                categorical,
+                prefix=column,
+                prefix_sep="__category__",
+                dummy_na=False,
+                dtype=float,
+            )
+            if dummies.empty:
+                continue
+            encoded_parts.append(dummies)
+            for encoded_column in dummies.columns:
+                encoded_to_original[encoded_column] = column
+
+    if not encoded_parts:
+        return None, None, None
+
+    X_encoded = pd.concat(encoded_parts, axis=1)
+    constant_columns = [column for column in X_encoded.columns if X_encoded[column].nunique(dropna=False) <= 1]
+    if constant_columns:
+        X_encoded = X_encoded.drop(columns=constant_columns)
+        for column in constant_columns:
+            encoded_to_original.pop(column, None)
+    if X_encoded.empty:
+        return None, None, None
+
+    return X_encoded, y.astype(float), encoded_to_original
+
+
+def _aggregate_encoded_importance(encoded_values, encoded_columns, encoded_to_original):
+    """Aggregate one-hot encoded importances back to source variable names."""
+    totals = {}
+    for encoded_column, value in zip(encoded_columns, encoded_values):
+        original_column = encoded_to_original.get(encoded_column, encoded_column)
+        totals[original_column] = totals.get(original_column, 0.0) + float(value)
+    return pd.DataFrame(
+        [{"Variable": variable, "Importance": importance} for variable, importance in totals.items()]
+    ).sort_values(by="Importance", ascending=False, kind="mergesort").reset_index(drop=True)
+
+
+def _rank_importance_table(table, importance_column="Importance"):
+    """Add a dense rank to a variable-importance table."""
+    ranked = table.copy()
+    ranked["Rank"] = ranked[importance_column].rank(method="dense", ascending=False).astype(int)
+    return ranked[["Rank", "Variable", importance_column]]
+
+
+def _build_feature_importance_tables(dataframe, target, seed=None):
+    """Calculate tree, permutation, and mutual-information importance tables."""
+    if seed is None:
+        seed = model_seed
+    X_encoded, y, encoded_to_original = _coerce_feature_importance_source(dataframe, target)
+    if X_encoded is None:
+        return None
+
+    if len(y) >= 8:
+        X_train_fi, X_perm, y_train_fi, y_perm = train_test_split(
+            X_encoded,
+            y,
+            test_size=0.25,
+            random_state=seed,
+        )
+    else:
+        X_train_fi, X_perm, y_train_fi, y_perm = X_encoded, X_encoded, y, y
+
+    rf_model = RandomForestRegressor(
+        n_estimators=500,
+        random_state=seed,
+        n_jobs=-1,
+    )
+    rf_model.fit(X_train_fi, y_train_fi)
+
+    et_model = ExtraTreesRegressor(
+        n_estimators=500,
+        random_state=seed,
+        n_jobs=-1,
+    )
+    et_model.fit(X_train_fi, y_train_fi)
+
+    rf_table = _rank_importance_table(
+        _aggregate_encoded_importance(rf_model.feature_importances_, X_encoded.columns, encoded_to_original)
+    )
+    et_table = _rank_importance_table(
+        _aggregate_encoded_importance(et_model.feature_importances_, X_encoded.columns, encoded_to_original)
+    )
+
+    permutation = permutation_importance(
+        rf_model,
+        X_perm,
+        y_perm,
+        n_repeats=10,
+        random_state=seed,
+        n_jobs=-1,
+        scoring="r2",
+    )
+    permutation_table = _aggregate_encoded_importance(
+        permutation.importances_mean,
+        X_encoded.columns,
+        encoded_to_original,
+    )
+    permutation_std_table = _aggregate_encoded_importance(
+        permutation.importances_std,
+        X_encoded.columns,
+        encoded_to_original,
+    ).rename(columns={"Importance": "Permutation Std"})
+    permutation_table = permutation_table.merge(permutation_std_table, on="Variable", how="left")
+    permutation_table = _rank_importance_table(permutation_table)
+    permutation_table = permutation_table.merge(
+        permutation_std_table,
+        on="Variable",
+        how="left",
+    )[["Rank", "Variable", "Importance", "Permutation Std"]]
+
+    mutual_information = mutual_info_regression(X_encoded, y, random_state=seed)
+    mi_table = _rank_importance_table(
+        _aggregate_encoded_importance(mutual_information, X_encoded.columns, encoded_to_original)
+    )
+
+    return {
+        "Random Forest Importance": rf_table,
+        "Extra Trees Importance": et_table,
+        "Permutation Importance": permutation_table,
+        "Mutual Information": mi_table,
+        "metadata": pd.DataFrame([
+            {
+                "target": target,
+                "rows_used": int(len(y)),
+                "source_variables_ranked": int(len(set(encoded_to_original.values()))),
+                "encoded_feature_count": int(X_encoded.shape[1]),
+                "created_at_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+            }
+        ]),
+    }
+
+
+def _combine_feature_importance_ranks(tables):
+    """Create one combined table with scores/ranks from all requested methods."""
+    method_names = [
+        "Random Forest Importance",
+        "Extra Trees Importance",
+        "Permutation Importance",
+        "Mutual Information",
+    ]
+    combined = None
+    for method_name in method_names:
+        method_table = tables[method_name][["Variable", "Importance", "Rank"]].rename(
+            columns={
+                "Importance": f"{method_name} Score",
+                "Rank": f"{method_name} Rank",
+            }
+        )
+        combined = method_table if combined is None else combined.merge(method_table, on="Variable", how="outer")
+
+    rank_columns = [f"{method_name} Rank" for method_name in method_names]
+    combined["Average Rank"] = combined[rank_columns].mean(axis=1)
+    combined = combined.sort_values(by=["Average Rank", "Variable"], ascending=[True, True]).reset_index(drop=True)
+    combined.insert(0, "Overall Rank", np.arange(1, len(combined) + 1))
+    return combined
+
+
+def _load_feature_importance_source_dataframe(dataset_path, X_train, X_test, y_train, y_test):
+    """Prefer the full raw sugar dataset for fixed-target reports, then fall back to prep_data."""
+    candidate_paths = [
+        os.path.join("convert", "sugar_all.csv"),
+        dataset_path,
+    ]
+    for candidate_path in candidate_paths:
+        try:
+            resolved_path = ensure_dataset_csv_exists(candidate_path)
+            if os.path.isfile(resolved_path):
+                print(f"Feature-importance source dataset: {resolved_path}")
+                return pd.read_csv(resolved_path)
+        except (FileNotFoundError, ImportError, ValueError, OSError) as err:
+            print(f"Feature-importance source skipped ({candidate_path}): {err}")
+
+    print("Feature-importance source fallback: combined prep_data train/test matrices.")
+    train_df = pd.concat([X_train.reset_index(drop=True), y_train.reset_index(drop=True)], axis=1)
+    test_df = pd.concat([X_test.reset_index(drop=True), y_test.reset_index(drop=True)], axis=1)
+    return pd.concat([train_df, test_df], axis=0, ignore_index=True)
+
+
+def generate_feature_importance_reports(dataframe, targets=FEATURE_IMPORTANCE_TARGETS, reports_dir=FEATURE_IMPORTANCE_REPORTS_DIR):
+    """Generate one ranked Excel feature-importance workbook per requested target."""
+    os.makedirs(reports_dir, exist_ok=True)
+    generated_reports = []
+    print("\n================= Feature Importance Reports =================")
+    for target in targets:
+        if target not in dataframe.columns:
+            print(f"Skipping {target}: target column was not found in the feature-importance dataset.")
+            continue
+
+        print(f"Calculating feature importance for target: {target}")
+        tables = _build_feature_importance_tables(dataframe, target)
+        if tables is None:
+            print(f"Skipping {target}: not enough valid numeric target rows/features for importance analysis.")
+            continue
+
+        combined = _combine_feature_importance_ranks(tables)
+        top_20 = combined.head(20)
+        report_path = os.path.join(
+            reports_dir,
+            f"feature_importance_{_safe_report_filename_part(target)}.xlsx",
+        )
+        with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
+            combined.to_excel(writer, sheet_name="All Methods", index=False)
+            top_20.to_excel(writer, sheet_name="Top 20", index=False)
+            for sheet_name in [
+                "Random Forest Importance",
+                "Extra Trees Importance",
+                "Permutation Importance",
+                "Mutual Information",
+            ]:
+                tables[sheet_name].to_excel(
+                    writer,
+                    sheet_name=_safe_excel_sheet_name(sheet_name),
+                    index=False,
+                )
+            tables["metadata"].to_excel(writer, sheet_name="Metadata", index=False)
+
+        generated_reports.append(report_path)
+        print(f"Saved feature-importance report: {report_path}")
+        print(f"Top 20 variables for {target} (ranked by average rank across methods):")
+        display_columns = ["Overall Rank", "Variable", "Average Rank"]
+        print(tabulate(top_20[display_columns], headers="keys", tablefmt="github", showindex=False))
+    print("==============================================================\n")
+    return generated_reports
 
 
 def print_refinery_variable_groups():
@@ -2553,6 +2845,14 @@ output = outputs
 data = X_train
 print_numbered_feature_list("Selected Input Features", inputs, ANSI_GREEN)
 print_numbered_feature_list("Selected Output Features", outputs, ANSI_BLUE)
+feature_importance_source_df = _load_feature_importance_source_dataframe(
+    dataset_path,
+    X_train,
+    X_test,
+    y_train,
+    y_test,
+)
+generate_feature_importance_reports(feature_importance_source_df)
 active_features = list(inputs)
 if selected_saved_run:
     print("Loaded saved run metadata; reusing prepared inputs/outputs.")

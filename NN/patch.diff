@@ -1,17 +1,97 @@
-diff --git a/NN/refinery_variables.py b/NN/refinery_variables.py
-index 356f869e9593defccef7c9c7ac2700ae60af4d1e..a7c5b7127340172e49544feaa110c487fc20ce33 100644
---- a/NN/refinery_variables.py
-+++ b/NN/refinery_variables.py
-@@ -28,130 +28,192 @@ CONTROL_VARIABLES = (
-     "carbonated_alkalinity",
-     "carbonated_pH",
+diff --git a/NN/run.py b/NN/run.py
+index 8400a16da1cbd5ecfbd575fa6ba73cbe8905d4b7..dfa1892d507c6cc915f62a5855aacde8635beee4 100644
+--- a/NN/run.py
++++ b/NN/run.py
+@@ -1,47 +1,49 @@
+ from matplotlib import pyplot as plt
+ import torch
+ import torch.nn as nn
+ import torch.optim as optim
+ from sklearn.preprocessing import StandardScaler
+ from sklearn.model_selection import KFold, RandomizedSearchCV, train_test_split
+ from sklearn.ensemble import (
+     RandomForestRegressor,
+     ExtraTreesRegressor,
+     GradientBoostingRegressor,
+     AdaBoostRegressor,
+     HistGradientBoostingRegressor,
  )
+ from sklearn.neighbors import KNeighborsRegressor
+ from sklearn.svm import SVR
+ from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
+ from sklearn.tree import DecisionTreeRegressor
+ from sklearn.multioutput import MultiOutputRegressor
+ import pandas as pd
+ import numpy as np
+ import re
+ from sklearn.metrics import make_scorer, r2_score
++from sklearn.inspection import permutation_importance
++from sklearn.feature_selection import mutual_info_regression
+ from tabulate import tabulate
+ import os
+ from latex import *
+ from plot import *
+ from models import *
+ from read_data import (
+     read_prep_data,
+     sync_prep_data_with_dataset,
+     prep_data_exists,
+     read_prep_metadata,
+     save_data,
+     print_path_debug,
+     ensure_dataset_csv_exists,
+ )
+ from refinery_variables import (
+     CONTROL_VARIABLES,
+     EARLY_VARIABLES,
+     TARGET_VARIABLES,
+     filter_allowed_model_inputs,
+     find_leakage_columns,
+     leakage_pattern_matches,
+     refinery_variable_group_metadata,
+     remove_name_based_leakage_inputs,
+     validate_model_inputs,
+ )
+@@ -52,50 +54,61 @@ import json
+ import copy
+ from datetime import datetime
+ 
+ try:
+     from xgboost import XGBRegressor
+ except ImportError:
+     XGBRegressor = None
+ 
+ try:
+     from lightgbm import LGBMRegressor
+ except ImportError:
+     LGBMRegressor = None
+ 
+ try:
+     from catboost import CatBoostRegressor
+ except ImportError:
+     CatBoostRegressor = None
+ 
+ ANSI_RESET = "\033[0m"
+ ANSI_GREEN = "\033[92m"
+ ANSI_BLUE = "\033[94m"
+ SAVED_RUNS_DIR = "saved_runs"
+ CHECKPOINTS_DIR = "checkpoints"
+ MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+ LEAKAGE_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "leakage_report.xlsx")
++FEATURE_IMPORTANCE_REPORTS_DIR = os.path.join(MODULE_DIR, "reports")
++
++
++FEATURE_IMPORTANCE_TARGETS = (
++    "white_total_points",
++    "white_solution_color",
++    "white_apparent_color",
++    "white_ash",
++    "white_moisture",
++    "white_invert",
++)
  
  
- # 3) Future/downstream quality outputs.  These columns must not be used as
- # model inputs, even when the user selects "all" or uses automatic feature
- # selection, because they are measured after the early/control decision point.
- TARGET_VARIABLES = (
+ FUTURE_QUALITY_INPUT_CANDIDATES = [
      "filtercake_moisture",
      "filtercake_sugar",
      "sweetwater_brix",
@@ -21,183 +101,405 @@ index 356f869e9593defccef7c9c7ac2700ae60af4d1e..a7c5b7127340172e49544feaa110c487
      "standard_liquor_pH",
      "standard_liquor_brix",
      "standard_liquor_color",
-     "white_total_points",
+ ]
+ 
+ 
+ def color_text(text, color):
+     return f"{color}{text}{ANSI_RESET}"
+ 
+ 
+ def print_divider(char="=", width=68):
+     print(char * width)
+ 
+ 
+ def print_numbered_feature_list(title, features, color):
+     print_divider("=")
+@@ -153,50 +166,329 @@ def save_leakage_report(removed_columns, output_features=None, context="pre_trai
+ 
+ 
+ def remove_leakage_inputs_for_training(input_features, output_features=None, context="pre_training"):
+     """Print, report, and remove automatic name-based leakage columns from X."""
+     cleaned_inputs, removed_columns = remove_name_based_leakage_inputs(
+         list(input_features),
+         output_features=output_features,
+     )
+     if removed_columns:
+         print("Target leakage columns detected in X candidates:")
+         for column in removed_columns:
+             patterns = ", ".join(leakage_pattern_matches(column))
+             print(f" - {column} (matched: {patterns})")
+         print("Removed leakage columns from X: " + ", ".join(removed_columns))
+     else:
+         print("No automatic name-based target leakage columns detected in X candidates.")
+ 
+     kept_targets = [column for column in (output_features or []) if leakage_pattern_matches(column)]
+     if kept_targets:
+         print("Final target column(s) kept in y (not removed): " + ", ".join(kept_targets))
+ 
+     save_leakage_report(removed_columns, output_features=output_features, context=context)
+     return cleaned_inputs, removed_columns
+ 
+ 
++
++def _safe_excel_sheet_name(name):
++    """Return an Excel-compatible sheet name."""
++    cleaned = re.sub(r"[\\/*?:\[\]]+", "_", str(name)).strip() or "Sheet"
++    return cleaned[:31]
++
++
++def _safe_report_filename_part(name):
++    """Return a filesystem-safe filename part for a target variable."""
++    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(name)).strip("_") or "target"
++
++
++def _coerce_feature_importance_source(raw_df, target):
++    """Prepare a mixed-type dataframe for sklearn feature-importance estimators."""
++    if target not in raw_df.columns:
++        return None, None, None
++
++    working_df = raw_df.copy().replace([np.inf, -np.inf], np.nan)
++    y = pd.to_numeric(working_df[target], errors="coerce")
++    feature_columns = [
++        column for column in working_df.columns
++        if column != target and not leakage_pattern_matches(column)
++    ]
++    if not feature_columns:
++        return None, None, None
++
++    X_raw = working_df[feature_columns].copy()
++    valid_rows = y.notna()
++    X_raw = X_raw.loc[valid_rows]
++    y = y.loc[valid_rows]
++    if len(y) < 3:
++        return None, None, None
++
++    encoded_parts = []
++    encoded_to_original = {}
++    for column in feature_columns:
++        series = X_raw[column]
++        non_null = series.notna().sum()
++        if non_null == 0:
++            continue
++
++        numeric_series = pd.to_numeric(series, errors="coerce")
++        numeric_ratio = numeric_series.notna().sum() / max(non_null, 1)
++        if pd.api.types.is_numeric_dtype(series) or numeric_ratio >= 0.8:
++            fill_value = numeric_series.median()
++            if pd.isna(fill_value):
++                continue
++            prepared = numeric_series.fillna(fill_value).astype(float)
++            encoded_parts.append(prepared.to_frame(column))
++            encoded_to_original[column] = column
++        else:
++            categorical = series.astype("object").where(series.notna(), "__missing__").astype(str)
++            dummies = pd.get_dummies(
++                categorical,
++                prefix=column,
++                prefix_sep="__category__",
++                dummy_na=False,
++                dtype=float,
++            )
++            if dummies.empty:
++                continue
++            encoded_parts.append(dummies)
++            for encoded_column in dummies.columns:
++                encoded_to_original[encoded_column] = column
++
++    if not encoded_parts:
++        return None, None, None
++
++    X_encoded = pd.concat(encoded_parts, axis=1)
++    constant_columns = [column for column in X_encoded.columns if X_encoded[column].nunique(dropna=False) <= 1]
++    if constant_columns:
++        X_encoded = X_encoded.drop(columns=constant_columns)
++        for column in constant_columns:
++            encoded_to_original.pop(column, None)
++    if X_encoded.empty:
++        return None, None, None
++
++    return X_encoded, y.astype(float), encoded_to_original
++
++
++def _aggregate_encoded_importance(encoded_values, encoded_columns, encoded_to_original):
++    """Aggregate one-hot encoded importances back to source variable names."""
++    totals = {}
++    for encoded_column, value in zip(encoded_columns, encoded_values):
++        original_column = encoded_to_original.get(encoded_column, encoded_column)
++        totals[original_column] = totals.get(original_column, 0.0) + float(value)
++    return pd.DataFrame(
++        [{"Variable": variable, "Importance": importance} for variable, importance in totals.items()]
++    ).sort_values(by="Importance", ascending=False, kind="mergesort").reset_index(drop=True)
++
++
++def _rank_importance_table(table, importance_column="Importance"):
++    """Add a dense rank to a variable-importance table."""
++    ranked = table.copy()
++    ranked["Rank"] = ranked[importance_column].rank(method="dense", ascending=False).astype(int)
++    return ranked[["Rank", "Variable", importance_column]]
++
++
++def _build_feature_importance_tables(dataframe, target, seed=None):
++    """Calculate tree, permutation, and mutual-information importance tables."""
++    if seed is None:
++        seed = model_seed
++    X_encoded, y, encoded_to_original = _coerce_feature_importance_source(dataframe, target)
++    if X_encoded is None:
++        return None
++
++    if len(y) >= 8:
++        X_train_fi, X_perm, y_train_fi, y_perm = train_test_split(
++            X_encoded,
++            y,
++            test_size=0.25,
++            random_state=seed,
++        )
++    else:
++        X_train_fi, X_perm, y_train_fi, y_perm = X_encoded, X_encoded, y, y
++
++    rf_model = RandomForestRegressor(
++        n_estimators=500,
++        random_state=seed,
++        n_jobs=-1,
++    )
++    rf_model.fit(X_train_fi, y_train_fi)
++
++    et_model = ExtraTreesRegressor(
++        n_estimators=500,
++        random_state=seed,
++        n_jobs=-1,
++    )
++    et_model.fit(X_train_fi, y_train_fi)
++
++    rf_table = _rank_importance_table(
++        _aggregate_encoded_importance(rf_model.feature_importances_, X_encoded.columns, encoded_to_original)
++    )
++    et_table = _rank_importance_table(
++        _aggregate_encoded_importance(et_model.feature_importances_, X_encoded.columns, encoded_to_original)
++    )
++
++    permutation = permutation_importance(
++        rf_model,
++        X_perm,
++        y_perm,
++        n_repeats=10,
++        random_state=seed,
++        n_jobs=-1,
++        scoring="r2",
++    )
++    permutation_table = _aggregate_encoded_importance(
++        permutation.importances_mean,
++        X_encoded.columns,
++        encoded_to_original,
++    )
++    permutation_std_table = _aggregate_encoded_importance(
++        permutation.importances_std,
++        X_encoded.columns,
++        encoded_to_original,
++    ).rename(columns={"Importance": "Permutation Std"})
++    permutation_table = permutation_table.merge(permutation_std_table, on="Variable", how="left")
++    permutation_table = _rank_importance_table(permutation_table)
++    permutation_table = permutation_table.merge(
++        permutation_std_table,
++        on="Variable",
++        how="left",
++    )[["Rank", "Variable", "Importance", "Permutation Std"]]
++
++    mutual_information = mutual_info_regression(X_encoded, y, random_state=seed)
++    mi_table = _rank_importance_table(
++        _aggregate_encoded_importance(mutual_information, X_encoded.columns, encoded_to_original)
++    )
++
++    return {
++        "Random Forest Importance": rf_table,
++        "Extra Trees Importance": et_table,
++        "Permutation Importance": permutation_table,
++        "Mutual Information": mi_table,
++        "metadata": pd.DataFrame([
++            {
++                "target": target,
++                "rows_used": int(len(y)),
++                "source_variables_ranked": int(len(set(encoded_to_original.values()))),
++                "encoded_feature_count": int(X_encoded.shape[1]),
++                "created_at_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
++            }
++        ]),
++    }
++
++
++def _combine_feature_importance_ranks(tables):
++    """Create one combined table with scores/ranks from all requested methods."""
++    method_names = [
++        "Random Forest Importance",
++        "Extra Trees Importance",
++        "Permutation Importance",
++        "Mutual Information",
++    ]
++    combined = None
++    for method_name in method_names:
++        method_table = tables[method_name][["Variable", "Importance", "Rank"]].rename(
++            columns={
++                "Importance": f"{method_name} Score",
++                "Rank": f"{method_name} Rank",
++            }
++        )
++        combined = method_table if combined is None else combined.merge(method_table, on="Variable", how="outer")
++
++    rank_columns = [f"{method_name} Rank" for method_name in method_names]
++    combined["Average Rank"] = combined[rank_columns].mean(axis=1)
++    combined = combined.sort_values(by=["Average Rank", "Variable"], ascending=[True, True]).reset_index(drop=True)
++    combined.insert(0, "Overall Rank", np.arange(1, len(combined) + 1))
++    return combined
++
++
++def _load_feature_importance_source_dataframe(dataset_path, X_train, X_test, y_train, y_test):
++    """Prefer the full raw sugar dataset for fixed-target reports, then fall back to prep_data."""
++    candidate_paths = [
++        os.path.join("convert", "sugar_all.csv"),
++        dataset_path,
++    ]
++    for candidate_path in candidate_paths:
++        try:
++            resolved_path = ensure_dataset_csv_exists(candidate_path)
++            if os.path.isfile(resolved_path):
++                print(f"Feature-importance source dataset: {resolved_path}")
++                return pd.read_csv(resolved_path)
++        except (FileNotFoundError, ImportError, ValueError, OSError) as err:
++            print(f"Feature-importance source skipped ({candidate_path}): {err}")
++
++    print("Feature-importance source fallback: combined prep_data train/test matrices.")
++    train_df = pd.concat([X_train.reset_index(drop=True), y_train.reset_index(drop=True)], axis=1)
++    test_df = pd.concat([X_test.reset_index(drop=True), y_test.reset_index(drop=True)], axis=1)
++    return pd.concat([train_df, test_df], axis=0, ignore_index=True)
++
++
++def generate_feature_importance_reports(dataframe, targets=FEATURE_IMPORTANCE_TARGETS, reports_dir=FEATURE_IMPORTANCE_REPORTS_DIR):
++    """Generate one ranked Excel feature-importance workbook per requested target."""
++    os.makedirs(reports_dir, exist_ok=True)
++    generated_reports = []
++    print("\n================= Feature Importance Reports =================")
++    for target in targets:
++        if target not in dataframe.columns:
++            print(f"Skipping {target}: target column was not found in the feature-importance dataset.")
++            continue
++
++        print(f"Calculating feature importance for target: {target}")
++        tables = _build_feature_importance_tables(dataframe, target)
++        if tables is None:
++            print(f"Skipping {target}: not enough valid numeric target rows/features for importance analysis.")
++            continue
++
++        combined = _combine_feature_importance_ranks(tables)
++        top_20 = combined.head(20)
++        report_path = os.path.join(
++            reports_dir,
++            f"feature_importance_{_safe_report_filename_part(target)}.xlsx",
++        )
++        with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
++            combined.to_excel(writer, sheet_name="All Methods", index=False)
++            top_20.to_excel(writer, sheet_name="Top 20", index=False)
++            for sheet_name in [
++                "Random Forest Importance",
++                "Extra Trees Importance",
++                "Permutation Importance",
++                "Mutual Information",
++            ]:
++                tables[sheet_name].to_excel(
++                    writer,
++                    sheet_name=_safe_excel_sheet_name(sheet_name),
++                    index=False,
++                )
++            tables["metadata"].to_excel(writer, sheet_name="Metadata", index=False)
++
++        generated_reports.append(report_path)
++        print(f"Saved feature-importance report: {report_path}")
++        print(f"Top 20 variables for {target} (ranked by average rank across methods):")
++        display_columns = ["Overall Rank", "Variable", "Average Rank"]
++        print(tabulate(top_20[display_columns], headers="keys", tablefmt="github", showindex=False))
++    print("==============================================================\n")
++    return generated_reports
++
++
+ def print_refinery_variable_groups():
+     """Explain the refinery feature groups and the interactive override."""
+     print_divider("=")
+     print("Industrial refinery variable logic")
+     print_divider("-")
+     print("EARLY_VARIABLES (available early): " + ", ".join(EARLY_VARIABLES))
+     print("CONTROL_VARIABLES (operator-adjustable): " + ", ".join(CONTROL_VARIABLES))
+     print("TARGET_VARIABLES (future quality outputs): " + ", ".join(TARGET_VARIABLES))
+     print("Default safe inputs are EARLY_VARIABLES + CONTROL_VARIABLES.")
+     print("Interactive mode now lets you choose any non-output column from sugar_all.csv as an input.")
+     print("Safety rule: a column selected as an output target is always blocked from X.")
+     print_divider("=")
+ 
+ 
+ def _format_industrial_value(value):
+     """Format values for compact refinery-control demo tables."""
+     if isinstance(value, (int, float, np.integer, np.floating)):
+         return f"{float(value):,.3f}"
+     try:
+         return f"{float(value):,.3f}"
+     except (TypeError, ValueError):
+         return str(value)
+ 
+ 
+ def _risk_badge(risk_level):
+@@ -2531,50 +2823,58 @@ run_optional_future_quality_inputs = optional_input_overrides_for_selection(
+ )
+ X_train, X_test, y_train, y_test = read_prep_data(
+     inputs=run_inputs,
+     prep_folder="prep_data",
+     optional_future_quality_inputs=run_optional_future_quality_inputs,
  )
  
+ # After loading, get the column names from X_train
+ inputs = X_train.columns.tolist()
+ if saved_outputs:
+     missing_saved_outputs = [col for col in saved_outputs if col not in y_train.columns.tolist()]
+     if missing_saved_outputs:
+         print(
+             "Saved run output columns are missing from prep_data: "
+             f"{missing_saved_outputs}. Please rebuild prep_data or choose a different saved run."
+         )
+         exit()
+     y_train = y_train[saved_outputs]
+     y_test = y_test[saved_outputs]
+ outputs = y_train.columns.tolist()
+ output = outputs
  
- _ALLOWED_INPUTS = set(EARLY_VARIABLES) | set(CONTROL_VARIABLES)
- _TARGETS = set(TARGET_VARIABLES)
- _DERIVED_SEPARATOR = "__"
-+LEAKAGE_NAME_PATTERNS = (
-+    "average_to_date",
-+    "average_two_shifts",
-+    "moving_average",
-+    "future",
-+    "target",
+ data = X_train
+ print_numbered_feature_list("Selected Input Features", inputs, ANSI_GREEN)
+ print_numbered_feature_list("Selected Output Features", outputs, ANSI_BLUE)
++feature_importance_source_df = _load_feature_importance_source_dataframe(
++    dataset_path,
++    X_train,
++    X_test,
++    y_train,
++    y_test,
 +)
-+
-+
-+def leakage_pattern_matches(column_name):
-+    """Return leakage marker substrings found in a column name."""
-+    lower_name = str(column_name).lower()
-+    return [pattern for pattern in LEAKAGE_NAME_PATTERNS if pattern in lower_name]
-+
-+
-+def is_name_based_leakage_column(column_name):
-+    """Return True when a column name contains an automatic leakage marker."""
-+    return bool(leakage_pattern_matches(column_name))
-+
-+
-+def find_name_based_leakage_columns(columns, output_features=None, include_outputs=False):
-+    """Find columns whose names contain configured leakage marker substrings.
-+
-+    Selected output targets can be kept out of removal lists by leaving
-+    ``include_outputs`` as False, which preserves final targets while still
-+    detecting leakage candidates in X.
-+    """
-+    output_features = set(output_features or [])
-+    leakage_columns = []
-+    for column in columns:
-+        if not include_outputs and column in output_features:
-+            continue
-+        if is_name_based_leakage_column(column):
-+            leakage_columns.append(column)
-+    return leakage_columns
-+
-+
-+def remove_name_based_leakage_inputs(input_features, output_features=None):
-+    """Remove automatic name-based leakage columns from an X feature list."""
-+    _ = set(output_features or [])  # Final targets are preserved by callers in y, not in X.
-+    cleaned_inputs = []
-+    removed_inputs = []
-+    for column in input_features:
-+        if is_name_based_leakage_column(column):
-+            removed_inputs.append(column)
-+        else:
-+            cleaned_inputs.append(column)
-+    return cleaned_inputs, removed_inputs
- 
- 
- def _canonical_name(name):
-     """Normalize names so pH/PH and punctuation changes do not hide leakage."""
-     return re.sub(r"[^a-z0-9]+", "", str(name).lower())
- 
- 
- _ALLOWED_CANONICAL = {_canonical_name(name) for name in _ALLOWED_INPUTS}
- _TARGET_CANONICAL = {_canonical_name(name) for name in _TARGETS}
- 
- 
- def base_variable_name(column_name):
-     """Return the source variable for engineered columns such as x__diff_1."""
-     return str(column_name).split(_DERIVED_SEPARATOR, 1)[0]
- 
- 
- def is_target_variable(column_name, output_features=None):
-     """Return True when a column is a selected or known future quality output."""
-     output_features = set(output_features or [])
-     base_name = base_variable_name(column_name)
-     canonical_base = _canonical_name(base_name)
-     canonical_column = _canonical_name(column_name)
-     return (
-         column_name in output_features
-         or base_name in output_features
-         or canonical_base in _TARGET_CANONICAL
-         or canonical_column in _TARGET_CANONICAL
++generate_feature_importance_reports(feature_importance_source_df)
+ active_features = list(inputs)
+ if selected_saved_run:
+     print("Loaded saved run metadata; reusing prepared inputs/outputs.")
+     loaded_hidden_size_groups = normalize_hidden_size_groups(
+         selected_saved_run.get("hidden_size_groups"),
+         list_hidden_sizes,
      )
- 
- 
- def _optional_future_quality_input_set(optional_future_quality_inputs=None):
-     """Normalize opt-in future-quality variables that may be used as inputs."""
-     return {_canonical_name(name) for name in (optional_future_quality_inputs or [])}
- 
- 
- def is_allowed_model_input(column_name, output_features=None, optional_future_quality_inputs=None):
-     """Return True for standard inputs plus explicitly opted-in future-quality inputs."""
-     output_features = set(output_features or [])
-     base_name = base_variable_name(column_name)
-     if column_name in output_features or base_name in output_features:
-         return False
- 
-+    if is_name_based_leakage_column(column_name):
-+        return False
-+
-     optional_quality_inputs = _optional_future_quality_input_set(optional_future_quality_inputs)
-     if _canonical_name(base_name) in optional_quality_inputs:
-         return True
- 
-     if is_target_variable(column_name, output_features=output_features):
-         return False
-     return _canonical_name(base_name) in _ALLOWED_CANONICAL
- 
- 
- def filter_allowed_model_inputs(columns, output_features=None, optional_future_quality_inputs=None):
-     """Keep allowed input columns, preserving the incoming order."""
-     return [
-         column for column in columns
-         if is_allowed_model_input(
-             column,
-             output_features=output_features,
-             optional_future_quality_inputs=optional_future_quality_inputs,
-         )
+     loaded_epoch_candidates = [
+         int(e)
+         for e in selected_saved_run.get("epoch_candidates", [])
+         if str(e).isdigit() and int(e) > 0
      ]
- 
- 
- def find_leakage_columns(input_features, output_features=None, optional_future_quality_inputs=None):
-     """Identify selected inputs that would leak future quality information."""
--    return [
--        column for column in input_features
-+    leakage_columns = []
-+    for column in input_features:
-+        if column in leakage_columns:
-+            continue
-+        if is_name_based_leakage_column(column):
-+            leakage_columns.append(column)
-+            continue
-         if not is_allowed_model_input(
-             column,
-             output_features=output_features,
-             optional_future_quality_inputs=optional_future_quality_inputs,
--        )
--    ]
-+        ):
-+            leakage_columns.append(column)
-+    return leakage_columns
- 
- 
- def validate_model_inputs(input_features, output_features=None, optional_future_quality_inputs=None):
-     """Raise a clear error if an input list contains leaked/disallowed variables."""
-     leakage_columns = find_leakage_columns(
-         input_features,
-         output_features=output_features,
-         optional_future_quality_inputs=optional_future_quality_inputs,
-     )
-     if leakage_columns:
-         allowed = list(EARLY_VARIABLES) + list(CONTROL_VARIABLES)
-         targets = list(TARGET_VARIABLES)
-         raise ValueError(
-             "Target-leakage prevention blocked disallowed model inputs: "
-             f"{leakage_columns}. Allowed inputs are EARLY_VARIABLES + "
-             f"CONTROL_VARIABLES only: {allowed}. Future quality variables are "
-             "TARGET_VARIABLES and must be predicted, not used as inputs unless "
-             "explicitly selected in run.py's Future Quality Variables prompt "
--            f"and not also selected as output targets: {targets}."
-+            f"and not also selected as output targets: {targets}. Columns containing "
-+            f"automatic leakage markers are always blocked from X: {list(LEAKAGE_NAME_PATTERNS)}."
-         )
-     return list(input_features)
- 
- 
- def refinery_variable_group_metadata():
-     """Return serializable metadata explaining the refinery variable groups."""
-     return {
-         "EARLY_VARIABLES": list(EARLY_VARIABLES),
-         "CONTROL_VARIABLES": list(CONTROL_VARIABLES),
-         "TARGET_VARIABLES": list(TARGET_VARIABLES),
-         "input_rule": "Model inputs = EARLY_VARIABLES + CONTROL_VARIABLES only.",
--        "leakage_rule": "TARGET_VARIABLES and selected outputs are never allowed as inputs.",
-+        "leakage_rule": (
-+            "TARGET_VARIABLES, selected outputs, and columns containing "
-+            "average_to_date/average_two_shifts/moving_average/future/target "
-+            "are never allowed as inputs."
-+        ),
-     }
+     loaded_repeat_count = selected_saved_run.get("repeat_count")
+     if isinstance(loaded_repeat_count, str) and loaded_repeat_count.isdigit():
+         loaded_repeat_count = int(loaded_repeat_count)
+     if not isinstance(loaded_repeat_count, int) or loaded_repeat_count < 1:
+         loaded_repeat_count = None
+ else:
+     loaded_hidden_size_groups = [list(group) for group in list_hidden_sizes]
+     loaded_epoch_candidates = []
+     loaded_repeat_count = None
+     ans = input("Confirm these numbered inputs/outputs from prep_data folder [y]: ").strip().lower()
+     if ans not in ("", "y", "yes"):
+         print("Please re-run and choose your preferred input/output features.")
+         exit()
