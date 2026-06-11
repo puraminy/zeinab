@@ -18,8 +18,8 @@ ANSI_RESET = "\033[0m"
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def _coerce_numeric_value(value):
-    """Convert numeric-looking refinery values, including ranges like 10-12, to floats."""
+def _normalize_numeric_text(value):
+    """Return cleaned numeric text while preserving invalid values for NaN coercion."""
     if pd.isna(value):
         return pd.NA
     if isinstance(value, (int, float)):
@@ -33,59 +33,72 @@ def _coerce_numeric_value(value):
         text.replace("−", "-")
         .replace("–", "-")
         .replace("—", "-")
+        .replace("٫", ".")
         .replace(",", "")
+        .strip()
     )
-    direct_value = pd.to_numeric(normalized, errors="coerce")
-    if pd.notna(direct_value):
-        return float(direct_value)
+
+    bracket_match = re.fullmatch(r"\[\s*(.*?)\s*\]", normalized)
+    if bracket_match:
+        normalized = bracket_match.group(1).strip()
 
     range_match = re.fullmatch(
-        r"\s*([+-]?\d+(?:\.\d+)?)\s*-\s*([+-]?\d+(?:\.\d+)?)\s*",
+        r"\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*-\s*"
+        r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*",
         normalized,
     )
     if range_match:
         low, high = map(float, range_match.groups())
         return (low + high) / 2.0
 
-    return pd.NA
+    return normalized
 
 
-def _coerce_numeric_table(df, name):
-    """Return a numeric copy of a prep-data table and report non-numeric cleanups."""
-    numeric_df = pd.DataFrame(index=df.index)
+def safe_numeric_conversion(df):
+    """Safely convert a dataframe to numeric values without changing column names."""
+    numeric_df = pd.DataFrame(index=df.index, columns=df.columns)
     converted_columns = []
-    unresolved_columns = []
+    failed_columns = []
 
     for column in df.columns:
         original = df[column]
-        converted = original.map(_coerce_numeric_value)
-        converted = pd.to_numeric(converted, errors="coerce")
+        normalized = original.map(_normalize_numeric_text)
+        converted = pd.to_numeric(normalized, errors="coerce")
         numeric_df[column] = converted
 
         original_non_null = original.notna()
-        unresolved_count = int(converted[original_non_null].isna().sum())
-        if unresolved_count:
-            unresolved_columns.append(f"{column}: {unresolved_count}")
-        if not pd.api.types.is_numeric_dtype(original) or unresolved_count:
+        failed_mask = original_non_null & converted.isna()
+        failed_count = int(failed_mask.sum())
+        if failed_count:
+            examples = original[failed_mask].astype(str).str.strip().drop_duplicates().head(3).tolist()
+            failed_columns.append(f"{column}: {failed_count} ({examples})")
+
+        if not pd.api.types.is_numeric_dtype(original) or failed_count:
             changed_mask = original_non_null & (
                 original.astype(str).str.strip() != converted.astype(str).str.strip()
             )
-            changed_count = int(changed_mask.sum())
-            if changed_count or not pd.api.types.is_numeric_dtype(original):
+            if int(changed_mask.sum()) or not pd.api.types.is_numeric_dtype(original):
                 converted_columns.append(column)
 
     if converted_columns:
         print(
-            f"Converted {name} columns to numeric values "
-            f"(ranges such as 10-12 become their midpoint): "
+            "Converted columns to numeric values "
+            "(scientific notation, whitespace, commas, bracketed values, and ranges handled): "
             + ", ".join(converted_columns)
         )
-    if unresolved_columns:
+    if failed_columns:
         print(
-            f"{ANSI_YELLOW}WARNING: {name} has non-numeric values converted to NaN: "
-            + "; ".join(unresolved_columns)
+            f"{ANSI_YELLOW}WARNING: failed numeric conversions converted to NaN: "
+            + "; ".join(failed_columns)
             + f"{ANSI_RESET}"
         )
+
+    return numeric_df
+
+
+def _coerce_numeric_table(df, name):
+    """Return a numeric copy of a prep-data table and report non-numeric cleanups."""
+    numeric_df = safe_numeric_conversion(df)
     return numeric_df
 
 
