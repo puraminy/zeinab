@@ -139,6 +139,43 @@ FUTURE_QUALITY_INPUT_CANDIDATES = [
 ]
 
 
+
+
+def coerce_refinery_numeric_series(series):
+    """Convert numeric-like refinery strings, including ranges such as 10-12, to floats."""
+    def _convert(value):
+        if pd.isna(value):
+            return np.nan
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            return float(value)
+        text = str(value).strip()
+        if not text:
+            return np.nan
+        normalized = (
+            text.replace("−", "-")
+            .replace("–", "-")
+            .replace("—", "-")
+            .replace(",", "")
+        )
+        direct_value = pd.to_numeric(normalized, errors="coerce")
+        if pd.notna(direct_value):
+            return float(direct_value)
+        range_match = re.fullmatch(
+            r"\s*([+-]?\d+(?:\.\d+)?)\s*-\s*([+-]?\d+(?:\.\d+)?)\s*",
+            normalized,
+        )
+        if range_match:
+            low, high = map(float, range_match.groups())
+            return (low + high) / 2.0
+        return np.nan
+
+    return series.map(_convert).astype(float)
+
+
+def coerce_refinery_numeric_frame(dataframe):
+    """Convert every column in a dataframe with the refinery numeric parser."""
+    return dataframe.apply(coerce_refinery_numeric_series, axis=0)
+
 def color_text(text, color):
     return f"{color}{text}{ANSI_RESET}"
 
@@ -243,7 +280,7 @@ def _coerce_feature_importance_source(raw_df, target):
         return None, None, None
 
     working_df = raw_df.copy().replace([np.inf, -np.inf], np.nan)
-    y = pd.to_numeric(working_df[target], errors="coerce")
+    y = coerce_refinery_numeric_series(working_df[target])
     feature_columns = [
         column for column in working_df.columns
         if column != target and not leakage_pattern_matches(column)
@@ -266,7 +303,7 @@ def _coerce_feature_importance_source(raw_df, target):
         if non_null == 0:
             continue
 
-        numeric_series = pd.to_numeric(series, errors="coerce")
+        numeric_series = coerce_refinery_numeric_series(series)
         numeric_ratio = numeric_series.notna().sum() / max(non_null, 1)
         if pd.api.types.is_numeric_dtype(series) or numeric_ratio >= 0.8:
             fill_value = numeric_series.median()
@@ -437,10 +474,11 @@ def _combine_feature_importance_ranks(tables):
 
 
 def _load_feature_importance_source_dataframe(dataset_path, X_train, X_test, y_train, y_test):
-    """Prefer the full raw sugar dataset for fixed-target reports, then fall back to prep_data."""
+    """Prefer stclean.csv for fixed-target reports, then fall back to prep_data."""
     candidate_paths = [
-        os.path.join("convert", "sugar_all.csv"),
         dataset_path,
+        os.path.join("convert", "stclean.csv"),
+        os.path.join("convert", "sugar_all.csv"),
     ]
     for candidate_path in candidate_paths:
         try:
@@ -524,7 +562,7 @@ def _prepare_prescriptive_optimization_data(dataframe, control_variables, object
     if missing_columns:
         return None, missing_columns
 
-    numeric_df = dataframe[requested_columns].apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
+    numeric_df = coerce_refinery_numeric_frame(dataframe[requested_columns]).replace([np.inf, -np.inf], np.nan)
     complete_df = numeric_df.dropna(axis=0, how="any").reset_index(drop=True)
     if complete_df.empty:
         return None, []
@@ -799,7 +837,7 @@ def print_refinery_variable_groups():
     print("CONTROL_VARIABLES (operator-adjustable): " + ", ".join(CONTROL_VARIABLES))
     print("TARGET_VARIABLES (future quality outputs): " + ", ".join(TARGET_VARIABLES))
     print("Default safe inputs are EARLY_VARIABLES + CONTROL_VARIABLES.")
-    print("Interactive mode now lets you choose any non-output column from sugar_all.csv as an input.")
+    print("Interactive mode now lets you choose any non-output column from the active raw dataset CSV as an input.")
     print("Safety rule: a column selected as an output target is always blocked from X.")
     print_divider("=")
 
@@ -1429,7 +1467,7 @@ def parse_multi_select(answer, options, allow_all=True, one_based=False):
 
 
 def selectable_output_features_from_csv(data):
-    """Return output choices from every column in sugar_all.csv, targets first."""
+    """Return output choices from every active raw dataset column, targets first."""
     columns = list(data.columns)
     target_first = [column for column in columns if column in TARGET_VARIABLES]
     remaining = [column for column in columns if column not in target_first]
@@ -1446,7 +1484,7 @@ def optional_input_overrides_for_selection(selected_input_features, selected_out
     """Whitelist explicitly selected non-output inputs for this interactive run.
 
     read_data.py still prevents selected outputs from being used as inputs.  This
-    opt-in list lets run.py honor the user's sugar_all.csv input choices instead
+    opt-in list lets run.py honor the user's raw dataset input choices instead
     of silently reducing the selection to refinery default groups.
     """
     selected_outputs = set(selected_output_features or [])
@@ -1813,7 +1851,7 @@ def prepare_or_reuse_data(dataset_path="convert/stclean.csv", prep_folder="prep_
     print_selection_guide()
 
     output_options = selectable_output_features_from_csv(data)
-    print("\nOutput feature candidates from sugar_all.csv (TARGET_VARIABLES shown first):")
+    print("\nOutput feature candidates from the active raw dataset CSV (TARGET_VARIABLES shown first):")
     print("\n".join([str(i) + ")" + name for i, name in enumerate(output_options, start=1)]))
     answer = input(
         "Select one or several output features (indexes/ranges/names) [first target candidate]:"
@@ -1832,7 +1870,7 @@ def prepare_or_reuse_data(dataset_path="convert/stclean.csv", prep_folder="prep_
     if not available_input_features:
         print("No input columns are available after excluding selected output feature(s).")
         exit()
-    print("\nAvailable model inputs from sugar_all.csv (selected outputs excluded):")
+    print("\nAvailable model inputs from the active raw dataset CSV (selected outputs excluded):")
     print("\n".join([str(i) + ")" + name for i, name in enumerate(available_input_features, start=1)]))
 
     answer = input(
@@ -2710,6 +2748,8 @@ def _fit_comparison_model(model_name, model_factory, X_train_fold, X_val_fold, y
             run=fold_seed,
             optimization_scope="weights",
         )
+        if predictions is None:
+            raise ValueError("ANN training did not produce validation predictions.")
         return predictions
 
     model = model_factory(fold_seed)
@@ -2877,8 +2917,12 @@ def generate_model_comparison_report(X_train, X_test, y_train, y_test, report_pa
                 print(f"{model_name} fold {fold_index} skipped: {err}")
                 continue
 
-            predictions_2d = as_2d_float_array(predictions, f"{model_name} predictions")
-            y_val_values = as_2d_float_array(y_val_fold, "y_val_fold")
+            try:
+                predictions_2d = as_2d_float_array(predictions, f"{model_name} predictions")
+                y_val_values = as_2d_float_array(y_val_fold, "y_val_fold")
+            except ValueError as err:
+                print(f"{model_name} fold {fold_index} skipped: {err}")
+                continue
             for target_index, target_name in enumerate(target_names):
                 metrics = _target_regression_metrics(
                     y_val_values[:, target_index],

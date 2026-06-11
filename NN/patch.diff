@@ -1,88 +1,177 @@
-diff --git a/NN/README.md b/NN/README.md
-index c6514dec1d9ff0846acb2380d4915e7896bbb2e6..e16234c85e517800dab5349183533ee7aa5aca5a 100644
---- a/NN/README.md
-+++ b/NN/README.md
-@@ -98,73 +98,78 @@ The refinery workflow can now convert safe early/control inputs into sequence-aw
-    - Ordered process groups also describe stage-to-stage movement between related process measurements, for example a downstream control value relative to an upstream value.
+diff --git a/NN/read_data.py b/NN/read_data.py
+index 2848215c4ffa19afc03d13e5a08d9e0a1b6ecc26..de40e4f08b616f3733313d0c77393a0552d14037 100644
+--- a/NN/read_data.py
++++ b/NN/read_data.py
+@@ -1,45 +1,116 @@
+ import os
+ import json
+ import re
+ import importlib.util
+ from pathlib import Path
+ import pandas as pd
+ from sklearn.model_selection import train_test_split
+ from refinery_variables import (
+     filter_allowed_model_inputs,
+     refinery_variable_group_metadata,
+     validate_model_inputs,
+ )
  
- 3. **Rolling process dynamics features**
-    - Rolling mean, standard deviation, min, max, range, and slope features summarize short-window process stability and drift.
-    - These features help the model detect noisy operation, persistent trends, and abrupt transitions rather than treating every row as an independent static sample.
+ ANSI_RED = "\033[91m"
+ ANSI_YELLOW = "\033[93m"
+ ANSI_RESET = "\033[0m"
  
- ### Why this improves refinery prediction
+ MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
  
- Refinery quality is not only controlled by the current value of pH, brix, alkalinity, CO2, or color.  It is also affected by recent operating history, delayed residence-time effects, stage-to-stage movement, and whether the process is stable or drifting.  Lag-window, sequence, and rolling dynamics features therefore give ordinary feed-forward and tree models some of the context normally captured by sequence models, while preserving the existing leakage-prevention rule that targets and downstream quality outputs must not be used as inputs.
  
- ## Prescriptive industrial AI recommendation engine
++def _coerce_numeric_value(value):
++    """Convert numeric-looking refinery values, including ranges like 10-12, to floats."""
++    if pd.isna(value):
++        return pd.NA
++    if isinstance(value, (int, float)):
++        return value
++
++    text = str(value).strip()
++    if not text:
++        return pd.NA
++
++    normalized = (
++        text.replace("−", "-")
++        .replace("–", "-")
++        .replace("—", "-")
++        .replace(",", "")
++    )
++    direct_value = pd.to_numeric(normalized, errors="coerce")
++    if pd.notna(direct_value):
++        return float(direct_value)
++
++    range_match = re.fullmatch(
++        r"\s*([+-]?\d+(?:\.\d+)?)\s*-\s*([+-]?\d+(?:\.\d+)?)\s*",
++        normalized,
++    )
++    if range_match:
++        low, high = map(float, range_match.groups())
++        return (low + high) / 2.0
++
++    return pd.NA
++
++
++def _coerce_numeric_table(df, name):
++    """Return a numeric copy of a prep-data table and report non-numeric cleanups."""
++    numeric_df = pd.DataFrame(index=df.index)
++    converted_columns = []
++    unresolved_columns = []
++
++    for column in df.columns:
++        original = df[column]
++        converted = original.map(_coerce_numeric_value)
++        converted = pd.to_numeric(converted, errors="coerce")
++        numeric_df[column] = converted
++
++        original_non_null = original.notna()
++        unresolved_count = int(converted[original_non_null].isna().sum())
++        if unresolved_count:
++            unresolved_columns.append(f"{column}: {unresolved_count}")
++        if not pd.api.types.is_numeric_dtype(original) or unresolved_count:
++            changed_mask = original_non_null & (
++                original.astype(str).str.strip() != converted.astype(str).str.strip()
++            )
++            changed_count = int(changed_mask.sum())
++            if changed_count or not pd.api.types.is_numeric_dtype(original):
++                converted_columns.append(column)
++
++    if converted_columns:
++        print(
++            f"Converted {name} columns to numeric values "
++            f"(ranges such as 10-12 become their midpoint): "
++            + ", ".join(converted_columns)
++        )
++    if unresolved_columns:
++        print(
++            f"{ANSI_YELLOW}WARNING: {name} has non-numeric values converted to NaN: "
++            + "; ".join(unresolved_columns)
++            + f"{ANSI_RESET}"
++        )
++    return numeric_df
++
++
+ def resolve_relative_path(path, base_dir=MODULE_DIR):
+     """Resolve relative data paths from CWD first, then the NN module directory."""
+     path_text = os.fspath(path)
+     if os.path.isabs(path_text):
+         return os.path.abspath(path_text)
  
- The project now includes a prescriptive recommendation layer in `recommendation_engine.py`.  The predictive model still learns future sugar-quality behavior, but the new `recommend_operating_conditions()` function uses that trained model to search actionable refinery set-points and recommend the best feasible controls.
+     cwd_candidate = os.path.abspath(path_text)
+     module_candidate = os.path.abspath(os.path.join(base_dir, path_text))
  
- ### Inputs
+     if os.path.exists(cwd_candidate):
+         return cwd_candidate
+     if os.path.exists(module_candidate):
+         return module_candidate
+     return cwd_candidate
  
- `recommend_operating_conditions()` receives:
  
- * the current refinery conditions for the same input columns used during training;
- * a trained model, either a scikit-learn-style model with `predict()` or a PyTorch model with the input/target scalers attached by `run.py`;
- * the trained input and output feature names;
- * optional historical input/target data to estimate realistic operating windows and quality-risk thresholds.
+ def _load_converter_module(script_name="convert2.py"):
+     """Load a sugar Excel converter module without requiring package imports."""
+     converter_path = Path(MODULE_DIR) / "convert" / script_name
+     if not converter_path.is_file():
+         raise FileNotFoundError(f"Sugar converter script was not found: {converter_path}")
  
- ### Controllable variables searched
+     spec = importlib.util.spec_from_file_location("sugar_report_converter", converter_path)
+     if spec is None or spec.loader is None:
+         raise ImportError(f"Could not load sugar converter script: {converter_path}")
+@@ -839,50 +910,55 @@ def read_prep_data(inputs=None, prep_folder="prep_data", optional_future_quality
+             optional_future_quality_inputs=optional_future_quality_inputs,
+         )
+         if not safe_inputs:
+             raise ValueError(
+                 "prep_data does not contain any refinery-safe model inputs. "
+                 "Rebuild prep_data with EARLY_VARIABLES + CONTROL_VARIABLES."
+             )
+         X_train = X_train_full[safe_inputs]
+         X_test = X_test_full[safe_inputs]
  
--By default the engine searches the requested industrial control levers:
-+By default the engine searches the requested industrial operator control levers:
+     def _nan_report(df, name):
+         nan_counts = df.isna().sum()
+         nan_counts = nan_counts[nan_counts > 0]
+         if nan_counts.empty:
+             print(f"{name}: no NaN values detected.")
+             return
  
-+* `lime_milk_baume`
-+* `lime_alkalinity`
- * `co2_percent`
- * `carbonated_pH`
--* `lime_alkalinity`
-+* `sulphited_pH`
-+* `sulphited_brix`
-+* `standard_liquor_pH`
-+* `standard_liquor_brix`
+         total_nans = int(nan_counts.sum())
+         print(
+             f"{ANSI_RED}WARNING: {name} contains NaN values "
+             f"(total: {total_nans}).{ANSI_RESET}"
+         )
+         for col, cnt in nan_counts.items():
+             print(f"{ANSI_RED}  - {col}: {int(cnt)} NaN{ANSI_RESET}")
  
- The wider refinery control list still includes `carbonated_alkalinity`, but that variable is only optimized when explicitly requested.
++    X_train = _coerce_numeric_table(X_train, "X_train")
++    X_test = _coerce_numeric_table(X_test, "X_test")
++    y_train = _coerce_numeric_table(y_train, "y_train")
++    y_test = _coerce_numeric_table(y_test, "y_test")
++
+     _nan_report(X_train, "X_train")
+     _nan_report(X_test, "X_test")
+     _nan_report(y_train, "y_train")
+     _nan_report(y_test, "y_test")
  
- ### Industrial constraints
+     # Fill missing values in inputs so sklearn regressors that do not support NaN can train.
+     input_fill_values = X_train.median(numeric_only=True)
+     X_train = X_train.fillna(input_fill_values)
+     X_test = X_test.fillna(input_fill_values)
+     remaining_train_nan = int(X_train.isna().sum().sum())
+     remaining_test_nan = int(X_test.isna().sum().sum())
+     if remaining_train_nan or remaining_test_nan:
+         print(
+             f"{ANSI_YELLOW}Some input NaNs remained after median-fill. "
+             "Applying forward/backward fill as fallback for compatibility."
+             f"{ANSI_RESET}"
+         )
+         X_train = X_train.ffill().bfill()
+         X_test = X_test.ffill().bfill()
  
- The search never changes raw/early process conditions.  It only changes approved control variables from `CONTROL_VARIABLES`, and it rejects any target/downstream quality leakage in the model inputs.  Each control is searched inside a realistic engineering envelope.  If historical data is supplied, the engine tightens the envelope to the observed 5th-to-95th percentile range so recommendations stay near proven plant operation.
- 
- ### Objective logic
- 
- For every candidate set-point combination, the engine:
- 
- 1. keeps all current non-controllable conditions fixed;
--2. substitutes one candidate combination for CO2, pH, and lime alkalinity;
-+2. substitutes one candidate combination for the available requested operator set-points;
- 3. calls the trained model to predict future sugar quality/color;
- 4. scores the candidate by minimizing predicted future color/quality output;
- 5. classifies predicted sugar quality as `LOW`, `MEDIUM`, or `HIGH` industrial risk using historical quality thresholds (`LOW` at or below P50, `MEDIUM` between P50 and P80, and `HIGH` above P80 when history is available);
- 6. adds explicit MEDIUM/HIGH risk penalties so recommendations favor safer predicted sugar quality, not only a lower raw objective score;
- 7. adds a small movement and range-edge penalty so the recommendation avoids unnecessary set-point jumps and unrealistic boundary operation;
- 8. returns the feasible candidate with the lowest objective score.
- 
--The recommendation result now includes `risk_prediction`, `current_risk_prediction`, per-target risk drivers, and clear `operator_warnings`.  When `run.py` trains and saves a PyTorch checkpoint, it prints the recommended risk level and operator warnings, then writes the full recommendation to `tables/recommended-operating-conditions.json`.
-+The recommendation result now includes `risk_prediction`, `current_risk_prediction`, per-target risk drivers, and clear `operator_warnings`.  When `run.py` trains and saves a PyTorch checkpoint, it prints the recommended risk level and operator warnings, writes the full recommendation to `tables/recommended-operating-conditions.json`, and creates the operator-facing workbook at `reports/operator_report.xlsx`.
- 
- ### Industrial operator demo output
- 
- After the best PyTorch model is saved, `run.py` now prints a professional operator-demo section for plant demonstrations.  The report follows the live refinery workflow:
- 
- 1. the shift operator enters the current refinery conditions;
- 2. the AI predicts future sugar quality at the current conditions;
--3. the AI recommends optimal controllable variables such as CO2 percentage, carbonated pH, and lime alkalinity;
-+3. the AI recommends optimal controllable variables such as lime milk baumé, lime alkalinity, CO2 percentage, carbonated pH, sulphited pH/brix, and standard-liquor pH/brix;
- 4. the AI prints the expected future quality after applying the recommended set-points;
- 5. the AI prints the industrial risk level, risk drivers, and operator advisory messages.
- 
- The demo is formatted as readable shift-log tables so that engineers and operators can compare current values, recommended set-points, expected quality improvement, safe search ranges, and the final `LOW`, `MEDIUM`, or `HIGH` risk level during an industrial presentation.
- 
- ## Sequence-model migration note
- 
- Before replacing the feedforward ANN with LSTM or GRU, see
- [`sequence_model_evaluation.md`](sequence_model_evaluation.md). The current
- recommendation is to keep the feedforward/tabular approach as the production
- candidate, add leakage-safe temporal features where justified, and test a small
- GRU/LSTM only as a controlled benchmark after grouped time-series validation is
- available.
- 
+     print("Data loaded successfully!")
+     print(f"X_train shape: {X_train.shape}")
+     print(f"X_test shape: {X_test.shape}")
+     print(f"y_train shape: {y_train.shape}")
+     print(f"y_test shape: {y_test.shape}")

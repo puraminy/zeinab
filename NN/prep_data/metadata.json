@@ -1,5 +1,5 @@
 {
-  "dataset_path": "C:\\Users\\tadbirsabz\\Desktop\\zeinab\\NN\\convert\\sugar_all.csv",
+  "dataset_path": "C:\\Users\\tadbirsabz\\Desktop\\zeinab\\NN\\convert\\stclean.csv",
   "output_features": [
     "white_total_points"
   ],
@@ -7,74 +7,77 @@
     "raw_sugar_color",
     "raw_syrup_brix",
     "raw_syrup_color",
+    "lime_milk_baume",
     "lime_alkalinity",
     "co2_percent",
     "carbonated_alkalinity",
     "carbonated_pH",
+    "filtercake_moisture",
+    "filtercake_sugar",
+    "sweetwater_brix",
     "sulphited_pH",
     "sulphited_brix",
     "sulphited_color",
     "standard_liquor_pH",
     "standard_liquor_brix",
     "standard_liquor_color",
-    "raw_sugar_color__ratio_1",
-    "raw_syrup_color__ratio_1",
-    "sulphited_color__ratio_1",
-    "standard_liquor_color__ratio_1",
-    "raw_syrup_brix__ratio_1",
-    "sulphited_brix__ratio_1",
-    "standard_liquor_brix__ratio_1",
-    "raw_syrup_color__over_raw_sugar_color__ratio_1",
-    "sulphited_color__over_raw_syrup_color__ratio_1",
-    "standard_liquor_color__over_sulphited_color__ratio_1",
-    "sulphited_brix__over_raw_syrup_brix__ratio_1",
-    "standard_liquor_brix__over_sulphited_brix__ratio_1"
+    "boiling_r1_pol",
+    "boiling_r1_q",
+    "boiling_r2_pol",
+    "boiling_r2_q",
+    "boiling_r3_pol",
+    "boiling_r3_q",
+    "wastewater_r1_pol",
+    "wastewater_r1_q",
+    "wastewater_r2_pol",
+    "wastewater_r2_q",
+    "wastewater_r3_pol",
+    "wastewater_r3_q",
+    "boiler_pH",
+    "boiler_alkalinity",
+    "boiler_hardness",
+    "boiler_tds"
   ],
   "optional_future_quality_inputs": [
     "raw_sugar_color",
     "raw_syrup_brix",
     "raw_syrup_color",
+    "lime_milk_baume",
     "lime_alkalinity",
     "co2_percent",
     "carbonated_alkalinity",
     "carbonated_pH",
+    "filtercake_moisture",
+    "filtercake_sugar",
+    "sweetwater_brix",
     "sulphited_pH",
     "sulphited_brix",
     "sulphited_color",
     "standard_liquor_pH",
     "standard_liquor_brix",
-    "standard_liquor_color"
-  ],
-  "sequential_features": [
-    "raw_sugar_color",
-    "raw_syrup_color",
-    "sulphited_color",
     "standard_liquor_color",
-    "raw_syrup_brix",
-    "sulphited_brix",
-    "standard_liquor_brix"
+    "boiling_r1_pol",
+    "boiling_r1_q",
+    "boiling_r2_pol",
+    "boiling_r2_q",
+    "boiling_r3_pol",
+    "boiling_r3_q",
+    "wastewater_r1_pol",
+    "wastewater_r1_q",
+    "wastewater_r2_pol",
+    "wastewater_r2_q",
+    "wastewater_r3_pol",
+    "wastewater_r3_q",
+    "boiler_pH",
+    "boiler_alkalinity",
+    "boiler_hardness",
+    "boiler_tds"
   ],
-  "sequential_groups": [
-    [
-      "raw_sugar_color",
-      "raw_syrup_color",
-      "sulphited_color",
-      "standard_liquor_color"
-    ],
-    [
-      "raw_syrup_brix",
-      "sulphited_brix",
-      "standard_liquor_brix"
-    ],
-    [
-      "raw_syrup_color",
-      "sulphited_color",
-      "standard_liquor_color"
-    ]
-  ],
+  "sequential_features": [],
+  "sequential_groups": [],
   "add_differences": false,
   "difference_order": 1,
-  "add_ratio_features": true,
+  "add_ratio_features": false,
   "add_acceleration_features": false,
   "add_normalized_change_features": false,
   "create_rnn_windows": false,
@@ -92,10 +95,15 @@
       "raw_syrup_color"
     ],
     "CONTROL_VARIABLES": [
+      "lime_milk_baume",
       "lime_alkalinity",
       "co2_percent",
       "carbonated_alkalinity",
-      "carbonated_pH"
+      "carbonated_pH",
+      "sulphited_pH",
+      "sulphited_brix",
+      "standard_liquor_pH",
+      "standard_liquor_brix"
     ],
     "TARGET_VARIABLES": [
       "filtercake_moisture",
@@ -110,6 +118,6 @@
       "white_total_points"
     ],
     "input_rule": "Model inputs = EARLY_VARIABLES + CONTROL_VARIABLES only.",
-    "leakage_rule": "TARGET_VARIABLES and selected outputs are never allowed as inputs."
+    "leakage_rule": "TARGET_VARIABLES, selected outputs, and columns containing average_to_date/average_two_shifts/moving_average/future/target are never allowed as inputs."
   }
 }
