@@ -53,6 +53,9 @@ import models
 import json
 import copy
 from datetime import datetime
+from collections import OrderedDict
+
+from openpyxl.styles import Font, PatternFill
 
 try:
     from xgboost import XGBRegressor
@@ -77,6 +80,7 @@ CHECKPOINTS_DIR = "checkpoints"
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 LEAKAGE_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "leakage_report.xlsx")
 FEATURE_IMPORTANCE_REPORTS_DIR = os.path.join(MODULE_DIR, "reports")
+MODEL_COMPARISON_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_comparison.xlsx")
 
 
 FEATURE_IMPORTANCE_TARGETS = (
@@ -2137,8 +2141,317 @@ def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
     return predictions_2d, mse, r2, fit_estimator
 
 
+MODEL_COMPARISON_MODELS = (
+    "RandomForest",
+    "ExtraTrees",
+    "XGBoost",
+    "LightGBM",
+    "CatBoost",
+    "GradientBoosting",
+    "ANN",
+)
+MODEL_COMPARISON_CV_FOLDS = 5
+MODEL_COMPARISON_ANN_EPOCHS = 100
+MODEL_COMPARISON_ANN_HIDDEN_SIZES = [32, 16]
+
+
 def is_torch_model(model_class):
     return isinstance(model_class, type) and issubclass(model_class, nn.Module)
+
+
+def _safe_mape_percent(y_true, y_pred, epsilon=1e-8):
+    """Return MAPE (%) while ignoring zero/near-zero actual values."""
+    y_true_arr = np.asarray(y_true, dtype=float)
+    y_pred_arr = np.asarray(y_pred, dtype=float)
+    denominator_mask = np.abs(y_true_arr) > epsilon
+    if not denominator_mask.any():
+        return np.nan
+    return float(
+        np.mean(
+            np.abs((y_true_arr[denominator_mask] - y_pred_arr[denominator_mask]) / y_true_arr[denominator_mask])
+        ) * 100.0
+    )
+
+
+def _target_regression_metrics(y_true, y_pred):
+    """Compute R2, RMSE, MAE, and MAPE for a single target vector."""
+    y_true_arr = np.asarray(y_true, dtype=float).reshape(-1)
+    y_pred_arr = np.asarray(y_pred, dtype=float).reshape(-1)
+    if y_true_arr.shape != y_pred_arr.shape:
+        raise ValueError(f"Metric input shapes do not match: {y_true_arr.shape} and {y_pred_arr.shape}.")
+
+    r2 = np.nan
+    if y_true_arr.size >= 2:
+        candidate_r2 = r2_score(y_true_arr, y_pred_arr)
+        r2 = float(candidate_r2) if np.isfinite(candidate_r2) else np.nan
+
+    errors = y_pred_arr - y_true_arr
+    return {
+        "R2": r2,
+        "RMSE": float(np.sqrt(np.mean(errors ** 2))),
+        "MAE": float(np.mean(np.abs(errors))),
+        "MAPE": _safe_mape_percent(y_true_arr, y_pred_arr),
+    }
+
+
+def _build_model_comparison_factories(seed):
+    """Build the exact model set requested for the cross-validation comparison."""
+    factories = OrderedDict()
+    factories["RandomForest"] = lambda fold_seed: RandomForestRegressor(
+        n_estimators=300,
+        random_state=fold_seed,
+        n_jobs=-1,
+    )
+    factories["ExtraTrees"] = lambda fold_seed: ExtraTreesRegressor(
+        n_estimators=300,
+        random_state=fold_seed,
+        n_jobs=-1,
+    )
+
+    if XGBRegressor is not None:
+        factories["XGBoost"] = lambda fold_seed: XGBRegressor(
+            n_estimators=300,
+            random_state=fold_seed,
+            objective="reg:squarederror",
+            n_jobs=-1,
+        )
+    if LGBMRegressor is not None:
+        factories["LightGBM"] = lambda fold_seed: LGBMRegressor(
+            n_estimators=300,
+            random_state=fold_seed,
+            verbose=-1,
+        )
+    if CatBoostRegressor is not None:
+        factories["CatBoost"] = lambda fold_seed: CatBoostRegressor(
+            iterations=1200,
+            learning_rate=0.03,
+            depth=6,
+            l2_leaf_reg=5.0,
+            loss_function="RMSE",
+            random_seed=fold_seed,
+            verbose=False,
+            allow_writing_files=False,
+        )
+
+    factories["GradientBoosting"] = lambda fold_seed: GradientBoostingRegressor(random_state=fold_seed)
+
+    missing_models = [model_name for model_name in MODEL_COMPARISON_MODELS if model_name not in factories and model_name != "ANN"]
+    if missing_models:
+        print("Model comparison optional dependencies missing; skipped: " + ", ".join(missing_models))
+
+    return factories
+
+
+def _fit_comparison_model(model_name, model_factory, X_train_fold, X_val_fold, y_train_fold, y_val_fold, fold_seed):
+    """Fit one comparison model and return validation predictions."""
+    if model_name == "ANN":
+        ann_model_class = globals().get("ReluFFNN") or globals().get("FFNN")
+        if ann_model_class is None:
+            raise ValueError("No ANN model class was found in models.py.")
+        predictions, _mse, _r2 = fit_model_on_split(
+            ann_model_class,
+            X_train_fold,
+            X_val_fold,
+            y_train_fold,
+            y_val_fold,
+            MODEL_COMPARISON_ANN_EPOCHS,
+            MODEL_COMPARISON_ANN_HIDDEN_SIZES,
+            run=fold_seed,
+            optimization_scope="weights",
+        )
+        return predictions
+
+    model = model_factory(fold_seed)
+    predictions, _mse, _r2, _fit_estimator = fit_sklearn_model(
+        model,
+        X_train_fold,
+        X_val_fold,
+        y_train_fold,
+        y_val_fold,
+    )
+    return predictions
+
+
+def _summarize_model_target_folds(fold_metric_rows):
+    """Average fold metrics for each target/model pair and sort by highest R2 per target."""
+    fold_df = pd.DataFrame(fold_metric_rows)
+    if fold_df.empty:
+        return pd.DataFrame(), fold_df
+
+    summary = (
+        fold_df.groupby(["Target", "Model"], as_index=False)
+        .agg(
+            R2=("R2", "mean"),
+            RMSE=("RMSE", "mean"),
+            MAE=("MAE", "mean"),
+            MAPE=("MAPE", "mean"),
+            R2_std=("R2", "std"),
+            RMSE_std=("RMSE", "std"),
+            MAE_std=("MAE", "std"),
+            MAPE_std=("MAPE", "std"),
+            CV_folds=("Fold", "nunique"),
+        )
+        .sort_values(["Target", "R2"], ascending=[True, False], na_position="last")
+        .reset_index(drop=True)
+    )
+    summary.insert(0, "Rank", summary.groupby("Target").cumcount() + 1)
+    summary["Best for target"] = summary["Rank"].eq(1)
+    ordered_columns = [
+        "Target",
+        "Rank",
+        "Best for target",
+        "Model",
+        "R2",
+        "RMSE",
+        "MAE",
+        "MAPE",
+        "R2_std",
+        "RMSE_std",
+        "MAE_std",
+        "MAPE_std",
+        "CV_folds",
+    ]
+    return summary[ordered_columns], fold_df
+
+
+def _write_model_comparison_workbook(summary_df, fold_df, report_path):
+    """Write the model-comparison Excel workbook and highlight each target winner."""
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+
+    best_df = pd.DataFrame()
+    overall_df = pd.DataFrame()
+    if not summary_df.empty:
+        best_df = summary_df[summary_df["Best for target"]].copy()
+        overall_df = (
+            summary_df.groupby("Model", as_index=False)
+            .agg(
+                R2=("R2", "mean"),
+                RMSE=("RMSE", "mean"),
+                MAE=("MAE", "mean"),
+                MAPE=("MAPE", "mean"),
+                Targets=("Target", "nunique"),
+            )
+            .sort_values("R2", ascending=False, na_position="last")
+            .reset_index(drop=True)
+        )
+        overall_df.insert(0, "Overall Rank", np.arange(1, len(overall_df) + 1))
+
+    metadata_df = pd.DataFrame(
+        [
+            {
+                "created_at_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "cv_folds_requested": MODEL_COMPARISON_CV_FOLDS,
+                "sort_rule": "Within each target, models are sorted by highest mean CV R2.",
+                "best_model_rule": "Best for target = rank 1 by mean CV R2.",
+                "ann_model": (globals().get("ReluFFNN") or globals().get("FFNN") or object).__name__,
+                "ann_epochs": MODEL_COMPARISON_ANN_EPOCHS,
+                "ann_hidden_sizes": str(MODEL_COMPARISON_ANN_HIDDEN_SIZES),
+            }
+        ]
+    )
+
+    with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
+        summary_df.to_excel(writer, sheet_name="Model Comparison", index=False)
+        best_df.to_excel(writer, sheet_name="Best by Target", index=False)
+        overall_df.to_excel(writer, sheet_name="Overall Average", index=False)
+        fold_df.to_excel(writer, sheet_name="Fold Metrics", index=False)
+        metadata_df.to_excel(writer, sheet_name="Metadata", index=False)
+
+        workbook = writer.book
+        best_fill = PatternFill(fill_type="solid", fgColor="C6EFCE")
+        best_font = Font(bold=True, color="006100")
+        header_fill = PatternFill(fill_type="solid", fgColor="D9EAF7")
+        for worksheet in workbook.worksheets:
+            worksheet.freeze_panes = "A2"
+            worksheet.auto_filter.ref = worksheet.dimensions
+            for cell in worksheet[1]:
+                cell.font = Font(bold=True)
+                cell.fill = header_fill
+            for column_cells in worksheet.columns:
+                max_length = max(len(str(cell.value)) if cell.value is not None else 0 for cell in column_cells)
+                worksheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 12), 45)
+
+        comparison_sheet = workbook["Model Comparison"]
+        header_lookup = {cell.value: cell.column for cell in comparison_sheet[1]}
+        best_column = header_lookup.get("Best for target")
+        if best_column is not None:
+            for row in range(2, comparison_sheet.max_row + 1):
+                if comparison_sheet.cell(row=row, column=best_column).value is True:
+                    for column in range(1, comparison_sheet.max_column + 1):
+                        comparison_sheet.cell(row=row, column=column).fill = best_fill
+                        comparison_sheet.cell(row=row, column=column).font = best_font
+
+    print(f"Saved model comparison report: {report_path}")
+
+
+def generate_model_comparison_report(X_train, X_test, y_train, y_test, report_path=MODEL_COMPARISON_REPORT_PATH):
+    """Compare requested regressors with 5-fold CV and save reports/model_comparison.xlsx."""
+    full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
+    full_y = pd.concat([y_train, y_test], axis=0).reset_index(drop=True)
+    if len(full_X) < 2:
+        print("Model comparison skipped: at least two rows are required for cross-validation.")
+        return None
+
+    n_splits = min(MODEL_COMPARISON_CV_FOLDS, len(full_X))
+    if n_splits < MODEL_COMPARISON_CV_FOLDS:
+        print(f"Model comparison warning: using {n_splits} folds because only {len(full_X)} rows are available.")
+    kfold = KFold(n_splits=n_splits, shuffle=True, random_state=data_seed)
+    comparison_factories = _build_model_comparison_factories(model_seed)
+    comparison_factories["ANN"] = None
+
+    fold_metric_rows = []
+    target_names = list(full_y.columns)
+    print("\n================= Model Comparison (5-fold CV) =================")
+    for model_name in MODEL_COMPARISON_MODELS:
+        if model_name not in comparison_factories:
+            continue
+        print(f"Evaluating {model_name}...")
+        for fold_index, (train_idx, val_idx) in enumerate(kfold.split(full_X), start=1):
+            X_train_fold = full_X.iloc[train_idx]
+            X_val_fold = full_X.iloc[val_idx]
+            y_train_fold = full_y.iloc[train_idx]
+            y_val_fold = full_y.iloc[val_idx]
+            fold_seed = model_seed + fold_index
+            try:
+                predictions = _fit_comparison_model(
+                    model_name,
+                    comparison_factories[model_name],
+                    X_train_fold,
+                    X_val_fold,
+                    y_train_fold,
+                    y_val_fold,
+                    fold_seed,
+                )
+            except (TypeError, ValueError, RuntimeError) as err:
+                print(f"{model_name} fold {fold_index} skipped: {err}")
+                continue
+
+            predictions_2d = as_2d_float_array(predictions, f"{model_name} predictions")
+            y_val_values = as_2d_float_array(y_val_fold, "y_val_fold")
+            for target_index, target_name in enumerate(target_names):
+                metrics = _target_regression_metrics(
+                    y_val_values[:, target_index],
+                    predictions_2d[:, target_index],
+                )
+                fold_metric_rows.append(
+                    {
+                        "Target": target_name,
+                        "Model": model_name,
+                        "Fold": fold_index,
+                        **metrics,
+                    }
+                )
+
+    summary_df, fold_df = _summarize_model_target_folds(fold_metric_rows)
+    if summary_df.empty:
+        print("Model comparison skipped: no model produced valid fold metrics.")
+        return None
+
+    _write_model_comparison_workbook(summary_df, fold_df, report_path)
+    print(tabulate(summary_df[["Target", "Rank", "Model", "R2", "RMSE", "MAE", "MAPE"]], headers="keys", tablefmt="github", showindex=False))
+    print("===============================================================\n")
+    return report_path
+
 
 
 def select_epochs_with_cv_early_stopping(
@@ -3159,6 +3472,7 @@ feature_importance_source_df = _load_feature_importance_source_dataframe(
     y_test,
 )
 generate_feature_importance_reports(feature_importance_source_df)
+generate_model_comparison_report(X_train, X_test, y_train, y_test)
 active_features = list(inputs)
 if selected_saved_run:
     print("Loaded saved run metadata; reusing prepared inputs/outputs.")

@@ -1,413 +1,499 @@
 diff --git a/NN/run.py b/NN/run.py
-index dfa1892d507c6cc915f62a5855aacde8635beee4..6003a9002a2be35945d15c5dd72ee05018f77ecc 100644
+index 6003a9002a2be35945d15c5dd72ee05018f77ecc..bbb2b250324df590a07ac9a4a3c8e9b123284543 100644
 --- a/NN/run.py
 +++ b/NN/run.py
-@@ -2435,50 +2435,356 @@ def _save_shap_plots(shap_module, shap_values, explain_points, feature_names, mo
-             shap_module.summary_plot(plot_values, explain_points, feature_names=feature_names, show=False)
-             plt.tight_layout()
-             plt.savefig(legacy_summary_path, dpi=200, bbox_inches="tight")
-             plt.close()
-             print(f"SHAP summary plot saved at {legacy_summary_path}")
-         except Exception:
-             plt.close()
+@@ -31,74 +31,78 @@ from read_data import (
+     read_prep_data,
+     sync_prep_data_with_dataset,
+     prep_data_exists,
+     read_prep_metadata,
+     save_data,
+     print_path_debug,
+     ensure_dataset_csv_exists,
+ )
+ from refinery_variables import (
+     CONTROL_VARIABLES,
+     EARLY_VARIABLES,
+     TARGET_VARIABLES,
+     filter_allowed_model_inputs,
+     find_leakage_columns,
+     leakage_pattern_matches,
+     refinery_variable_group_metadata,
+     remove_name_based_leakage_inputs,
+     validate_model_inputs,
+ )
+ from recommendation_engine import RecommendationError, recommend_operating_conditions
+ import inspect
+ import models
+ import json
+ import copy
+ from datetime import datetime
++from collections import OrderedDict
++
++from openpyxl.styles import Font, PatternFill
+ 
+ try:
+     from xgboost import XGBRegressor
+ except ImportError:
+     XGBRegressor = None
+ 
+ try:
+     from lightgbm import LGBMRegressor
+ except ImportError:
+     LGBMRegressor = None
+ 
+ try:
+     from catboost import CatBoostRegressor
+ except ImportError:
+     CatBoostRegressor = None
+ 
+ ANSI_RESET = "\033[0m"
+ ANSI_GREEN = "\033[92m"
+ ANSI_BLUE = "\033[94m"
+ SAVED_RUNS_DIR = "saved_runs"
+ CHECKPOINTS_DIR = "checkpoints"
+ MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+ LEAKAGE_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "leakage_report.xlsx")
+ FEATURE_IMPORTANCE_REPORTS_DIR = os.path.join(MODULE_DIR, "reports")
++MODEL_COMPARISON_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_comparison.xlsx")
  
  
- def _save_shap_tables(shap_table, model_slug):
-     """Save ranked SHAP tables and the top-20 feature subset."""
-     os.makedirs("tables", exist_ok=True)
-     ranked_path = os.path.join("tables", f"shap_ranked_importance_{model_slug}.csv")
-     top20_path = os.path.join("tables", f"shap_top20_features_{model_slug}.csv")
-     legacy_ranked_path = os.path.join("tables", "shap_ranked_importance.csv")
-     legacy_top20_path = os.path.join("tables", "shap_top20_features.csv")
- 
-     shap_table.to_csv(ranked_path, index=False)
-     shap_table.head(20).to_csv(top20_path, index=False)
-     shap_table.to_csv(legacy_ranked_path, index=False)
-     shap_table.head(20).to_csv(legacy_top20_path, index=False)
-     print(f"SHAP ranked importance table saved at {ranked_path}")
-     print(f"SHAP top 20 features saved at {top20_path}")
+ FEATURE_IMPORTANCE_TARGETS = (
+     "white_total_points",
+     "white_solution_color",
+     "white_apparent_color",
+     "white_ash",
+     "white_moisture",
+     "white_invert",
+ )
  
  
-+SHAP_RESULTS_DIR = os.path.join("results", "shap")
-+SHAP_MAX_EXPLAIN_SAMPLES = 200
+ FUTURE_QUALITY_INPUT_CANDIDATES = [
+     "filtercake_moisture",
+     "filtercake_sugar",
+     "sweetwater_brix",
+     "sulphited_pH",
+     "sulphited_brix",
+     "sulphited_color",
+     "standard_liquor_pH",
+     "standard_liquor_brix",
+     "standard_liquor_color",
+ ]
+ 
+ 
+@@ -2115,54 +2119,363 @@ def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
+     if is_multi_output:
+         model_name = getattr(model, "__class__", type(model)).__name__
+         supports_multioutput = sklearn_model_supports_multioutput(model)
+         if not supports_multioutput:
+             print(
+                 f"{model_name} does not natively support multi-output regression. "
+                 "Wrapping it with MultiOutputRegressor."
+             )
+             fit_estimator = MultiOutputRegressor(model)
+ 
+     fit_estimator.fit(X_train_scaled, y_train_fit)
+     predictions = fit_estimator.predict(X_test_scaled)
+     predictions_2d = as_2d_float_array(predictions, "predictions")
+ 
+     if predictions_2d.shape != y_test_values.shape:
+         raise ValueError(
+             f"Prediction shape {predictions_2d.shape} does not match target shape {y_test_values.shape}."
+         )
+ 
+     fit_estimator.feature_scaler_ = scaler_x
+     mse = float(np.mean((predictions_2d - y_test_values) ** 2))
+     r2 = safe_r2_score(y_test_values, predictions_2d)
+     return predictions_2d, mse, r2, fit_estimator
+ 
+ 
++MODEL_COMPARISON_MODELS = (
++    "RandomForest",
++    "ExtraTrees",
++    "XGBoost",
++    "LightGBM",
++    "CatBoost",
++    "GradientBoosting",
++    "ANN",
++)
++MODEL_COMPARISON_CV_FOLDS = 5
++MODEL_COMPARISON_ANN_EPOCHS = 100
++MODEL_COMPARISON_ANN_HIDDEN_SIZES = [32, 16]
 +
 +
-+def _target_shap_tree_model_factories(seed):
-+    """Return target-level tree-model candidates for automatic SHAP analysis."""
-+    factories = [
-+        (
-+            "RandomForestRegressor",
-+            lambda: RandomForestRegressor(
-+                n_estimators=500,
-+                random_state=seed,
-+                n_jobs=-1,
-+            ),
-+        ),
-+        (
-+            "ExtraTreesRegressor",
-+            lambda: ExtraTreesRegressor(
-+                n_estimators=500,
-+                random_state=seed,
-+                n_jobs=-1,
-+            ),
-+        ),
-+        (
-+            "GradientBoostingRegressor",
-+            lambda: GradientBoostingRegressor(random_state=seed),
-+        ),
-+        (
-+            "AdaBoostRegressor",
-+            lambda: AdaBoostRegressor(random_state=seed),
-+        ),
-+        (
-+            "DecisionTreeRegressor",
-+            lambda: DecisionTreeRegressor(random_state=seed),
-+        ),
-+    ]
+ def is_torch_model(model_class):
+     return isinstance(model_class, type) and issubclass(model_class, nn.Module)
+ 
+ 
++def _safe_mape_percent(y_true, y_pred, epsilon=1e-8):
++    """Return MAPE (%) while ignoring zero/near-zero actual values."""
++    y_true_arr = np.asarray(y_true, dtype=float)
++    y_pred_arr = np.asarray(y_pred, dtype=float)
++    denominator_mask = np.abs(y_true_arr) > epsilon
++    if not denominator_mask.any():
++        return np.nan
++    return float(
++        np.mean(
++            np.abs((y_true_arr[denominator_mask] - y_pred_arr[denominator_mask]) / y_true_arr[denominator_mask])
++        ) * 100.0
++    )
++
++
++def _target_regression_metrics(y_true, y_pred):
++    """Compute R2, RMSE, MAE, and MAPE for a single target vector."""
++    y_true_arr = np.asarray(y_true, dtype=float).reshape(-1)
++    y_pred_arr = np.asarray(y_pred, dtype=float).reshape(-1)
++    if y_true_arr.shape != y_pred_arr.shape:
++        raise ValueError(f"Metric input shapes do not match: {y_true_arr.shape} and {y_pred_arr.shape}.")
++
++    r2 = np.nan
++    if y_true_arr.size >= 2:
++        candidate_r2 = r2_score(y_true_arr, y_pred_arr)
++        r2 = float(candidate_r2) if np.isfinite(candidate_r2) else np.nan
++
++    errors = y_pred_arr - y_true_arr
++    return {
++        "R2": r2,
++        "RMSE": float(np.sqrt(np.mean(errors ** 2))),
++        "MAE": float(np.mean(np.abs(errors))),
++        "MAPE": _safe_mape_percent(y_true_arr, y_pred_arr),
++    }
++
++
++def _build_model_comparison_factories(seed):
++    """Build the exact model set requested for the cross-validation comparison."""
++    factories = OrderedDict()
++    factories["RandomForest"] = lambda fold_seed: RandomForestRegressor(
++        n_estimators=300,
++        random_state=fold_seed,
++        n_jobs=-1,
++    )
++    factories["ExtraTrees"] = lambda fold_seed: ExtraTreesRegressor(
++        n_estimators=300,
++        random_state=fold_seed,
++        n_jobs=-1,
++    )
 +
 +    if XGBRegressor is not None:
-+        factories.append(
-+            (
-+                "XGBoostRegressor",
-+                lambda: XGBRegressor(
-+                    n_estimators=500,
-+                    random_state=seed,
-+                    objective="reg:squarederror",
-+                ),
-+            )
++        factories["XGBoost"] = lambda fold_seed: XGBRegressor(
++            n_estimators=300,
++            random_state=fold_seed,
++            objective="reg:squarederror",
++            n_jobs=-1,
 +        )
 +    if LGBMRegressor is not None:
-+        factories.append(
-+            (
-+                "LightGBMRegressor",
-+                lambda: LGBMRegressor(
-+                    n_estimators=500,
-+                    random_state=seed,
-+                    verbose=-1,
-+                ),
-+            )
++        factories["LightGBM"] = lambda fold_seed: LGBMRegressor(
++            n_estimators=300,
++            random_state=fold_seed,
++            verbose=-1,
 +        )
 +    if CatBoostRegressor is not None:
-+        factories.append(("CatBoostRegressor", lambda: make_catboost_regressor(seed)))
++        factories["CatBoost"] = lambda fold_seed: CatBoostRegressor(
++            iterations=1200,
++            learning_rate=0.03,
++            depth=6,
++            l2_leaf_reg=5.0,
++            loss_function="RMSE",
++            random_seed=fold_seed,
++            verbose=False,
++            allow_writing_files=False,
++        )
++
++    factories["GradientBoosting"] = lambda fold_seed: GradientBoostingRegressor(random_state=fold_seed)
++
++    missing_models = [model_name for model_name in MODEL_COMPARISON_MODELS if model_name not in factories and model_name != "ANN"]
++    if missing_models:
++        print("Model comparison optional dependencies missing; skipped: " + ", ".join(missing_models))
 +
 +    return factories
 +
 +
-+def _prepare_target_shap_data(X_train, X_test, y_train, y_test, target):
-+    """Return finite numeric train/test matrices for one target."""
-+    X_train_target = X_train.copy().replace([np.inf, -np.inf], np.nan)
-+    X_test_target = X_test.copy().replace([np.inf, -np.inf], np.nan)
-+    y_train_target = pd.to_numeric(y_train[target], errors="coerce")
-+    y_test_target = pd.to_numeric(y_test[target], errors="coerce")
-+
-+    numeric_train_parts = []
-+    numeric_test_parts = []
-+    kept_features = []
-+    for feature in X_train_target.columns:
-+        train_series = pd.to_numeric(X_train_target[feature], errors="coerce")
-+        test_series = pd.to_numeric(X_test_target[feature], errors="coerce")
-+        fill_value = train_series.median()
-+        if pd.isna(fill_value):
-+            continue
-+        numeric_train_parts.append(train_series.fillna(fill_value).astype(float).to_frame(feature))
-+        numeric_test_parts.append(test_series.fillna(fill_value).astype(float).to_frame(feature))
-+        kept_features.append(feature)
-+
-+    if not numeric_train_parts or y_train_target.notna().sum() < 2:
-+        return None
-+
-+    X_train_numeric = pd.concat(numeric_train_parts, axis=1)
-+    X_test_numeric = pd.concat(numeric_test_parts, axis=1)
-+    train_mask = y_train_target.notna()
-+    test_mask = y_test_target.notna()
-+
-+    X_train_numeric = X_train_numeric.loc[train_mask]
-+    y_train_target = y_train_target.loc[train_mask].astype(float)
-+    X_test_numeric = X_test_numeric.loc[test_mask]
-+    y_test_target = y_test_target.loc[test_mask].astype(float)
-+
-+    constant_features = [feature for feature in kept_features if X_train_numeric[feature].nunique(dropna=False) <= 1]
-+    if constant_features:
-+        X_train_numeric = X_train_numeric.drop(columns=constant_features)
-+        X_test_numeric = X_test_numeric.drop(columns=constant_features)
-+
-+    if X_train_numeric.empty or X_test_numeric.empty or y_test_target.empty:
-+        return None
-+
-+    return X_train_numeric, X_test_numeric, y_train_target, y_test_target
-+
-+
-+def _fit_best_tree_model_for_target(X_train, X_test, y_train, y_test, target, seed=None):
-+    """Train tree candidates for one target and return the best fitted model by test R²."""
-+    if seed is None:
-+        seed = model_seed
-+
-+    prepared = _prepare_target_shap_data(X_train, X_test, y_train, y_test, target)
-+    if prepared is None:
-+        print(f"Skipping SHAP for {target}: not enough finite numeric rows/features.")
-+        return None
-+
-+    X_train_target, X_test_target, y_train_target, y_test_target = prepared
-+    best = None
-+    rows = []
-+    for model_name, factory in _target_shap_tree_model_factories(seed):
-+        try:
-+            model = factory()
-+            model.fit(X_train_target, y_train_target)
-+            predictions = model.predict(X_test_target)
-+            score = safe_r2_score(y_test_target, predictions)
-+            score_for_sort = -np.inf if score is None else score
-+            rows.append({"Model": model_name, "R2": score})
-+            if best is None or score_for_sort > best["score_for_sort"]:
-+                best = {
-+                    "model_name": model_name,
-+                    "model": model,
-+                    "score": score,
-+                    "score_for_sort": score_for_sort,
-+                    "X_train": X_train_target,
-+                    "X_test": X_test_target,
-+                    "y_train": y_train_target,
-+                    "y_test": y_test_target,
-+                }
-+        except Exception as err:
-+            print(f"SHAP tree candidate skipped for {target} ({model_name}): {err}")
-+
-+    if best is None:
-+        print(f"Skipping SHAP for {target}: no tree model could be trained.")
-+        return None
-+
-+    metrics_table = pd.DataFrame(rows).sort_values(by="R2", ascending=False, na_position="last")
-+    target_dir = os.path.join(SHAP_RESULTS_DIR, _safe_report_filename_part(target))
-+    os.makedirs(target_dir, exist_ok=True)
-+    metrics_table.to_csv(os.path.join(target_dir, "tree_model_scores.csv"), index=False)
-+    score_text = "undefined" if best["score"] is None else f"{best['score']:.4f}"
-+    print(f"Best tree model for {target}: {best['model_name']} (test R2={score_text})")
-+    return best
-+
-+
-+def _coerce_shap_values_for_single_target(shap_values, n_features):
-+    """Return a 2D SHAP matrix for a single target and feature count."""
-+    if isinstance(shap_values, list):
-+        shap_values = shap_values[0]
-+    shap_array = np.asarray(shap_values)
-+    if shap_array.ndim == 3:
-+        feature_axes = [axis for axis, size in enumerate(shap_array.shape) if size == n_features]
-+        if feature_axes:
-+            feature_axis = feature_axes[-1]
-+            shap_array = np.moveaxis(shap_array, feature_axis, 1)
-+            shap_array = shap_array[:, :, 0]
-+    if shap_array.ndim != 2:
-+        shap_array = shap_array.reshape(shap_array.shape[0], -1)
-+    return shap_array
-+
-+
-+def _save_target_shap_plots(shap_module, shap_values, explain_points, feature_names, output_dir):
-+    """Save summary, bar, and dependence SHAP plots for one target."""
-+    os.makedirs(output_dir, exist_ok=True)
-+    summary_path = os.path.join(output_dir, "shap_summary.png")
-+    bar_path = os.path.join(output_dir, "shap_bar.png")
-+    dependence_path = os.path.join(output_dir, "shap_dependence.png")
-+
-+    top_feature_index = int(np.argmax(np.abs(shap_values).mean(axis=0)))
-+    top_feature_name = feature_names[top_feature_index]
-+
-+    shap_module.summary_plot(shap_values, explain_points, feature_names=feature_names, show=False)
-+    plt.tight_layout()
-+    plt.savefig(summary_path, dpi=200, bbox_inches="tight")
-+    plt.close()
-+
-+    shap_module.summary_plot(
-+        shap_values,
-+        explain_points,
-+        feature_names=feature_names,
-+        plot_type="bar",
-+        show=False,
-+    )
-+    plt.tight_layout()
-+    plt.savefig(bar_path, dpi=200, bbox_inches="tight")
-+    plt.close()
-+
-+    shap_module.dependence_plot(
-+        top_feature_index,
-+        shap_values,
-+        explain_points,
-+        feature_names=feature_names,
-+        show=False,
-+    )
-+    plt.tight_layout()
-+    plt.savefig(dependence_path, dpi=200, bbox_inches="tight")
-+    plt.close()
-+
-+    return {
-+        "summary": summary_path,
-+        "bar": bar_path,
-+        "dependence": dependence_path,
-+        "dependence_feature": top_feature_name,
-+    }
-+
-+
-+def generate_target_shap_analysis(X_train, X_test, y_train, y_test, targets=None, results_dir=SHAP_RESULTS_DIR):
-+    """Train the best tree model per target, save SHAP plots, and print top refinery variables."""
-+    import importlib.util
-+    shap_spec = importlib.util.find_spec("shap")
-+    if shap_spec is None:
-+        print("SHAP target analysis skipped: shap is not installed. Install it with: pip install shap")
-+        return []
-+    import shap
-+
-+    targets = list(targets or y_train.columns)
-+    os.makedirs(results_dir, exist_ok=True)
-+    generated = []
-+    print("\n================= Target SHAP Analysis =================")
-+    for target in targets:
-+        if target not in y_train.columns or target not in y_test.columns:
-+            print(f"Skipping SHAP for {target}: target is not present in train/test targets.")
-+            continue
-+
-+        print(f"\nCalculating SHAP analysis for target: {target}")
-+        best = _fit_best_tree_model_for_target(X_train, X_test, y_train, y_test, target)
-+        if best is None:
-+            continue
-+
-+        X_explain = best["X_test"].head(min(SHAP_MAX_EXPLAIN_SAMPLES, len(best["X_test"])))
-+        feature_names = list(X_explain.columns)
-+        try:
-+            explainer = shap.TreeExplainer(best["model"])
-+            shap_values = explainer.shap_values(X_explain)
-+            shap_values = _coerce_shap_values_for_single_target(shap_values, len(feature_names))
-+        except Exception as err:
-+            print(f"Skipping SHAP plots for {target}: could not calculate TreeExplainer values ({err}).")
-+            continue
-+
-+        if shap_values.shape[1] != len(feature_names):
-+            print(
-+                f"Skipping SHAP plots for {target}: got {shap_values.shape[1]} SHAP features "
-+                f"for {len(feature_names)} input features."
-+            )
-+            continue
-+
-+        mean_abs_shap = np.abs(shap_values).mean(axis=0)
-+        total_importance = float(mean_abs_shap.sum())
-+        normalized = mean_abs_shap / total_importance if total_importance > 0 else np.zeros_like(mean_abs_shap)
-+        top_table = pd.DataFrame(
-+            {
-+                "Rank": np.arange(1, len(feature_names) + 1),
-+                "Variable": feature_names,
-+                "Mean(|SHAP|)": mean_abs_shap,
-+                "Normalized Importance": normalized,
-+            }
-+        ).sort_values(by="Mean(|SHAP|)", ascending=False).reset_index(drop=True)
-+        top_table["Rank"] = np.arange(1, len(top_table) + 1)
-+        top_10 = top_table.head(10)
-+
-+        target_dir = os.path.join(results_dir, _safe_report_filename_part(target))
-+        try:
-+            plot_paths = _save_target_shap_plots(shap, shap_values, X_explain, feature_names, target_dir)
-+        except Exception as err:
-+            plt.close()
-+            print(f"SHAP plot save failed for {target}: {err}")
-+            plot_paths = {}
-+
-+        top_table.to_csv(os.path.join(target_dir, "shap_ranked_variables.csv"), index=False)
-+        top_10.to_csv(os.path.join(target_dir, "top10_refinery_variables.csv"), index=False)
-+        generated.append(
-+            {
-+                "target": target,
-+                "model": best["model_name"],
-+                "r2": best["score"],
-+                "directory": target_dir,
-+                "plots": plot_paths,
-+            }
++def _fit_comparison_model(model_name, model_factory, X_train_fold, X_val_fold, y_train_fold, y_val_fold, fold_seed):
++    """Fit one comparison model and return validation predictions."""
++    if model_name == "ANN":
++        ann_model_class = globals().get("ReluFFNN") or globals().get("FFNN")
++        if ann_model_class is None:
++            raise ValueError("No ANN model class was found in models.py.")
++        predictions, _mse, _r2 = fit_model_on_split(
++            ann_model_class,
++            X_train_fold,
++            X_val_fold,
++            y_train_fold,
++            y_val_fold,
++            MODEL_COMPARISON_ANN_EPOCHS,
++            MODEL_COMPARISON_ANN_HIDDEN_SIZES,
++            run=fold_seed,
++            optimization_scope="weights",
 +        )
++        return predictions
 +
-+        print(f"Saved SHAP outputs for {target}: {target_dir}")
-+        if plot_paths:
-+            print(f" - shap_summary.png: {plot_paths['summary']}")
-+            print(f" - shap_bar.png: {plot_paths['bar']}")
-+            print(
-+                f" - shap_dependence.png: {plot_paths['dependence']} "
-+                f"(feature: {plot_paths['dependence_feature']})"
++    model = model_factory(fold_seed)
++    predictions, _mse, _r2, _fit_estimator = fit_sklearn_model(
++        model,
++        X_train_fold,
++        X_val_fold,
++        y_train_fold,
++        y_val_fold,
++    )
++    return predictions
++
++
++def _summarize_model_target_folds(fold_metric_rows):
++    """Average fold metrics for each target/model pair and sort by highest R2 per target."""
++    fold_df = pd.DataFrame(fold_metric_rows)
++    if fold_df.empty:
++        return pd.DataFrame(), fold_df
++
++    summary = (
++        fold_df.groupby(["Target", "Model"], as_index=False)
++        .agg(
++            R2=("R2", "mean"),
++            RMSE=("RMSE", "mean"),
++            MAE=("MAE", "mean"),
++            MAPE=("MAPE", "mean"),
++            R2_std=("R2", "std"),
++            RMSE_std=("RMSE", "std"),
++            MAE_std=("MAE", "std"),
++            MAPE_std=("MAPE", "std"),
++            CV_folds=("Fold", "nunique"),
++        )
++        .sort_values(["Target", "R2"], ascending=[True, False], na_position="last")
++        .reset_index(drop=True)
++    )
++    summary.insert(0, "Rank", summary.groupby("Target").cumcount() + 1)
++    summary["Best for target"] = summary["Rank"].eq(1)
++    ordered_columns = [
++        "Target",
++        "Rank",
++        "Best for target",
++        "Model",
++        "R2",
++        "RMSE",
++        "MAE",
++        "MAPE",
++        "R2_std",
++        "RMSE_std",
++        "MAE_std",
++        "MAPE_std",
++        "CV_folds",
++    ]
++    return summary[ordered_columns], fold_df
++
++
++def _write_model_comparison_workbook(summary_df, fold_df, report_path):
++    """Write the model-comparison Excel workbook and highlight each target winner."""
++    os.makedirs(os.path.dirname(report_path), exist_ok=True)
++
++    best_df = pd.DataFrame()
++    overall_df = pd.DataFrame()
++    if not summary_df.empty:
++        best_df = summary_df[summary_df["Best for target"]].copy()
++        overall_df = (
++            summary_df.groupby("Model", as_index=False)
++            .agg(
++                R2=("R2", "mean"),
++                RMSE=("RMSE", "mean"),
++                MAE=("MAE", "mean"),
++                MAPE=("MAPE", "mean"),
++                Targets=("Target", "nunique"),
 +            )
-+        print(f"Top 10 most influential refinery variables for {target}:")
-+        print(tabulate(top_10, headers="keys", tablefmt="github", showindex=False))
-+    print("========================================================\n")
-+    return generated
++            .sort_values("R2", ascending=False, na_position="last")
++            .reset_index(drop=True)
++        )
++        overall_df.insert(0, "Overall Rank", np.arange(1, len(overall_df) + 1))
++
++    metadata_df = pd.DataFrame(
++        [
++            {
++                "created_at_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
++                "cv_folds_requested": MODEL_COMPARISON_CV_FOLDS,
++                "sort_rule": "Within each target, models are sorted by highest mean CV R2.",
++                "best_model_rule": "Best for target = rank 1 by mean CV R2.",
++                "ann_model": (globals().get("ReluFFNN") or globals().get("FFNN") or object).__name__,
++                "ann_epochs": MODEL_COMPARISON_ANN_EPOCHS,
++                "ann_hidden_sizes": str(MODEL_COMPARISON_ANN_HIDDEN_SIZES),
++            }
++        ]
++    )
++
++    with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
++        summary_df.to_excel(writer, sheet_name="Model Comparison", index=False)
++        best_df.to_excel(writer, sheet_name="Best by Target", index=False)
++        overall_df.to_excel(writer, sheet_name="Overall Average", index=False)
++        fold_df.to_excel(writer, sheet_name="Fold Metrics", index=False)
++        metadata_df.to_excel(writer, sheet_name="Metadata", index=False)
++
++        workbook = writer.book
++        best_fill = PatternFill(fill_type="solid", fgColor="C6EFCE")
++        best_font = Font(bold=True, color="006100")
++        header_fill = PatternFill(fill_type="solid", fgColor="D9EAF7")
++        for worksheet in workbook.worksheets:
++            worksheet.freeze_panes = "A2"
++            worksheet.auto_filter.ref = worksheet.dimensions
++            for cell in worksheet[1]:
++                cell.font = Font(bold=True)
++                cell.fill = header_fill
++            for column_cells in worksheet.columns:
++                max_length = max(len(str(cell.value)) if cell.value is not None else 0 for cell in column_cells)
++                worksheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 12), 45)
++
++        comparison_sheet = workbook["Model Comparison"]
++        header_lookup = {cell.value: cell.column for cell in comparison_sheet[1]}
++        best_column = header_lookup.get("Best for target")
++        if best_column is not None:
++            for row in range(2, comparison_sheet.max_row + 1):
++                if comparison_sheet.cell(row=row, column=best_column).value is True:
++                    for column in range(1, comparison_sheet.max_column + 1):
++                        comparison_sheet.cell(row=row, column=column).fill = best_fill
++                        comparison_sheet.cell(row=row, column=column).font = best_font
++
++    print(f"Saved model comparison report: {report_path}")
 +
 +
- def shap_feature_importance(model_class, inputs, num_epochs, hidden_sizes, model_name=None):
-     """Compute and save SHAP feature importance for neural nets and supported tree models."""
-     import importlib.util
-     shap_spec = importlib.util.find_spec("shap")
-     if shap_spec is None:
-         print("SHAP is not installed. Install it with: pip install shap")
++def generate_model_comparison_report(X_train, X_test, y_train, y_test, report_path=MODEL_COMPARISON_REPORT_PATH):
++    """Compare requested regressors with 5-fold CV and save reports/model_comparison.xlsx."""
++    full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
++    full_y = pd.concat([y_train, y_test], axis=0).reset_index(drop=True)
++    if len(full_X) < 2:
++        print("Model comparison skipped: at least two rows are required for cross-validation.")
++        return None
++
++    n_splits = min(MODEL_COMPARISON_CV_FOLDS, len(full_X))
++    if n_splits < MODEL_COMPARISON_CV_FOLDS:
++        print(f"Model comparison warning: using {n_splits} folds because only {len(full_X)} rows are available.")
++    kfold = KFold(n_splits=n_splits, shuffle=True, random_state=data_seed)
++    comparison_factories = _build_model_comparison_factories(model_seed)
++    comparison_factories["ANN"] = None
++
++    fold_metric_rows = []
++    target_names = list(full_y.columns)
++    print("\n================= Model Comparison (5-fold CV) =================")
++    for model_name in MODEL_COMPARISON_MODELS:
++        if model_name not in comparison_factories:
++            continue
++        print(f"Evaluating {model_name}...")
++        for fold_index, (train_idx, val_idx) in enumerate(kfold.split(full_X), start=1):
++            X_train_fold = full_X.iloc[train_idx]
++            X_val_fold = full_X.iloc[val_idx]
++            y_train_fold = full_y.iloc[train_idx]
++            y_val_fold = full_y.iloc[val_idx]
++            fold_seed = model_seed + fold_index
++            try:
++                predictions = _fit_comparison_model(
++                    model_name,
++                    comparison_factories[model_name],
++                    X_train_fold,
++                    X_val_fold,
++                    y_train_fold,
++                    y_val_fold,
++                    fold_seed,
++                )
++            except (TypeError, ValueError, RuntimeError) as err:
++                print(f"{model_name} fold {fold_index} skipped: {err}")
++                continue
++
++            predictions_2d = as_2d_float_array(predictions, f"{model_name} predictions")
++            y_val_values = as_2d_float_array(y_val_fold, "y_val_fold")
++            for target_index, target_name in enumerate(target_names):
++                metrics = _target_regression_metrics(
++                    y_val_values[:, target_index],
++                    predictions_2d[:, target_index],
++                )
++                fold_metric_rows.append(
++                    {
++                        "Target": target_name,
++                        "Model": model_name,
++                        "Fold": fold_index,
++                        **metrics,
++                    }
++                )
++
++    summary_df, fold_df = _summarize_model_target_folds(fold_metric_rows)
++    if summary_df.empty:
++        print("Model comparison skipped: no model produced valid fold metrics.")
++        return None
++
++    _write_model_comparison_workbook(summary_df, fold_df, report_path)
++    print(tabulate(summary_df[["Target", "Rank", "Model", "R2", "RMSE", "MAE", "MAPE"]], headers="keys", tablefmt="github", showindex=False))
++    print("===============================================================\n")
++    return report_path
++
++
++
+ def select_epochs_with_cv_early_stopping(
+     model_class,
+     hidden_sizes,
+     features=None,
+     folds=5,
+     patience=early_stopping_patience,
+     min_delta=early_stopping_min_delta,
+ ):
+     """Recommend an epoch count using leakage-safe K-Fold early stopping."""
+     X_train, _, y_train, _ = read_prep_data(features)
+     full_X = X_train.reset_index(drop=True)
+     full_y = y_train.reset_index(drop=True)
+     if len(full_X) < 2:
          return None
-     import shap
  
-     model, X_train, X_train_explain, X_test_explain, is_nn_model = _train_model_for_shap(
-         model_class, inputs, num_epochs, hidden_sizes
-     )
-     if model is None:
+     n_splits = min(int(folds), len(full_X))
+     if n_splits < 2:
          return None
  
-     background_default = min(25, len(X_train_explain))
-     explain_default = min(20, len(X_test_explain))
-     nsamples_default = 100
+     kfold = KFold(n_splits=n_splits, shuffle=True, random_state=data_seed)
+     best_epochs = []
+     input_size = full_X.shape[1]
+     output_size = as_2d_float_array(full_y, "full_y").shape[1]
+     max_epochs = max(list_epochs) if list_epochs else 200
  
-     background_size = _parse_positive_int_with_default(
-         input(f"Background sample size [{background_default}]:").strip(),
-         background_default,
-         "background sample size",
-     )
-     explain_size = _parse_positive_int_with_default(
-@@ -3175,50 +3481,51 @@ if answer != "0":
-     # Plot the performance of models across different parameters
-     print("Generating plots ...")
-     plot_model_performance(results_table)
- 
-     best_model = models[best_model_index]
-     best_model_name = model_names[best_model_index]
-     # Show results
-     max_model_name = model_names[max_model_index]
- 
-     print("============ Results for models =========================")
-     print(results_table)
-     print("========================== Best Mean Model ===============================")
-     print("Best Mean R-Squred:", best_mean_r2)
-     print("Best model with better mean R-Squred:", best_model_name)
-     print("Best Hidden sizes:", best_hidden_sizes)
-     print("Best epochs:", best_epochs)
-     print("=========================== Max Model ================================")
-     print("Best model with better max R-Squred:", max_model_name)
-     print("Best Hidden sizes:", max_hidden_sizes)
-     print("Best epochs:", max_epochs)
-     print("Max R-Squred:", best_r2)
- 
-     results_table.to_csv("exp.csv")
- 
-     X_train, X_test, y_train, y_test = read_prep_data(active_features)
-+    generate_target_shap_analysis(X_train, X_test, y_train, y_test, targets=outputs)
- 
-     # Show and save the plot for best results
-     best_predictions = model_best_predictions.get(max_model_name)
-     if best_predictions is None:
-         print("Best model did not produce predictions. Skipping reporting/plots.")
+@@ -3137,50 +3450,51 @@ X_train, X_test, y_train, y_test = read_prep_data(
+ inputs = X_train.columns.tolist()
+ if saved_outputs:
+     missing_saved_outputs = [col for col in saved_outputs if col not in y_train.columns.tolist()]
+     if missing_saved_outputs:
+         print(
+             "Saved run output columns are missing from prep_data: "
+             f"{missing_saved_outputs}. Please rebuild prep_data or choose a different saved run."
+         )
          exit()
-     output_title = ", ".join(outputs)
-     title = "Prediction of " + output_title + " with " + max_model_name + " epochs:" + str(max_epochs)
-     file_name = f"R2-{best_r2:.2f}-" + max_model_name + "-" + "-".join(outputs) + ".png"
+     y_train = y_train[saved_outputs]
+     y_test = y_test[saved_outputs]
+ outputs = y_train.columns.tolist()
+ output = outputs
  
-     y_test_values = y_test.values if hasattr(y_test, "values") else y_test
-     best_model_metrics = compute_regression_report_metrics(y_test_values, best_predictions)
-     if best_model_metrics:
-         print("===================== Best Selected Model Report =====================")
-         print(f"Selected model name                    {max_model_name}")
-         print(f"R-Squared                              {best_r2/100:.4f}")
-         print(
-             f"Correlation coefficient                {best_model_metrics['Correlation coefficient']:.4f}"
-         )
-         print(
-             f"Mean absolute error                    {best_model_metrics['Mean absolute error']:.4f}"
-         )
-         print(
-             f"Root mean squared error                {best_model_metrics['Root mean squared error']:.4f}"
-         )
+ data = X_train
+ print_numbered_feature_list("Selected Input Features", inputs, ANSI_GREEN)
+ print_numbered_feature_list("Selected Output Features", outputs, ANSI_BLUE)
+ feature_importance_source_df = _load_feature_importance_source_dataframe(
+     dataset_path,
+     X_train,
+     X_test,
+     y_train,
+     y_test,
+ )
+ generate_feature_importance_reports(feature_importance_source_df)
++generate_model_comparison_report(X_train, X_test, y_train, y_test)
+ active_features = list(inputs)
+ if selected_saved_run:
+     print("Loaded saved run metadata; reusing prepared inputs/outputs.")
+     loaded_hidden_size_groups = normalize_hidden_size_groups(
+         selected_saved_run.get("hidden_size_groups"),
+         list_hidden_sizes,
+     )
+     loaded_epoch_candidates = [
+         int(e)
+         for e in selected_saved_run.get("epoch_candidates", [])
+         if str(e).isdigit() and int(e) > 0
+     ]
+     loaded_repeat_count = selected_saved_run.get("repeat_count")
+     if isinstance(loaded_repeat_count, str) and loaded_repeat_count.isdigit():
+         loaded_repeat_count = int(loaded_repeat_count)
+     if not isinstance(loaded_repeat_count, int) or loaded_repeat_count < 1:
+         loaded_repeat_count = None
+ else:
+     loaded_hidden_size_groups = [list(group) for group in list_hidden_sizes]
+     loaded_epoch_candidates = []
+     loaded_repeat_count = None
+     ans = input("Confirm these numbered inputs/outputs from prep_data folder [y]: ").strip().lower()
+     if ans not in ("", "y", "yes"):
+         print("Please re-run and choose your preferred input/output features.")
+         exit()
