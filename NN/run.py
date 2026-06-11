@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
+from sklearn.impute import SimpleImputer
 from sklearn.model_selection import KFold, RandomizedSearchCV, train_test_split
 from sklearn.ensemble import (
     RandomForestRegressor,
@@ -261,6 +262,92 @@ def remove_leakage_inputs_for_training(input_features, output_features=None, con
     save_leakage_report(removed_columns, output_features=output_features, context=context)
     return cleaned_inputs, removed_columns
 
+
+
+
+
+def _format_missing_percentage(value):
+    """Format a missing-value percentage consistently for console reports."""
+    return f"{value:.2f}%"
+
+
+def _print_missing_value_report(X_train, X_test, train_missing_counts, test_missing_counts):
+    """Print counts and percentages for columns that contain missing feature values."""
+    all_missing_columns = [
+        column
+        for column in X_train.columns
+        if train_missing_counts.get(column, 0) > 0 or test_missing_counts.get(column, 0) > 0
+    ]
+    if not all_missing_columns:
+        print("Missing-value report: no NaN values detected in selected input columns.")
+        return
+
+    print("\n================= Missing-Value Report =================")
+    print("Columns containing NaN values:")
+    for column in all_missing_columns:
+        train_count = int(train_missing_counts.get(column, 0))
+        test_count = int(test_missing_counts.get(column, 0))
+        train_pct = (train_count / max(len(X_train), 1)) * 100.0
+        test_pct = (test_count / max(len(X_test), 1)) * 100.0
+        print(
+            f" - {column}: "
+            f"train={train_count}/{len(X_train)} ({_format_missing_percentage(train_pct)}), "
+            f"test={test_count}/{len(X_test)} ({_format_missing_percentage(test_pct)})"
+        )
+        if train_pct > 20.0 or test_pct > 20.0:
+            print(
+                f"   WARNING: missing percentage exceeds 20% "
+                f"(train={_format_missing_percentage(train_pct)}, "
+                f"test={_format_missing_percentage(test_pct)})."
+            )
+    print("========================================================\n")
+
+
+def apply_missing_value_pipeline(X_train, X_test, missing_drop_threshold=50.0, verbose=True):
+    """Drop high-missing feature columns and median-impute remaining values.
+
+    Missingness thresholds and median imputation are fitted from training data only;
+    the learned column set and medians are then applied to test data.
+    """
+    X_train_clean = X_train.copy().replace([np.inf, -np.inf], np.nan)
+    X_test_clean = X_test.copy().replace([np.inf, -np.inf], np.nan)
+    X_train_clean = X_train_clean.apply(pd.to_numeric, errors="coerce")
+    X_test_clean = X_test_clean.apply(pd.to_numeric, errors="coerce")
+
+    train_missing_counts = X_train_clean.isna().sum()
+    test_missing_counts = X_test_clean.isna().sum()
+    if verbose:
+        _print_missing_value_report(X_train_clean, X_test_clean, train_missing_counts, test_missing_counts)
+
+    train_missing_percentages = train_missing_counts / max(len(X_train_clean), 1) * 100.0
+    columns_to_drop = train_missing_percentages[train_missing_percentages > missing_drop_threshold].index.tolist()
+    if columns_to_drop:
+        if verbose:
+            print(
+                f"Dropping {len(columns_to_drop)} input column(s) with >{missing_drop_threshold:.0f}% "
+                "missing values in training data: "
+                + ", ".join(columns_to_drop)
+            )
+        X_train_clean = X_train_clean.drop(columns=columns_to_drop)
+        X_test_clean = X_test_clean.drop(columns=columns_to_drop, errors="ignore")
+
+    if X_train_clean.empty:
+        raise ValueError("No input columns remain after dropping columns with >50% missing training values.")
+
+    imputer = SimpleImputer(strategy="median")
+    X_train_imputed = pd.DataFrame(
+        imputer.fit_transform(X_train_clean),
+        columns=X_train_clean.columns,
+        index=X_train_clean.index,
+    )
+    X_test_imputed = pd.DataFrame(
+        imputer.transform(X_test_clean.reindex(columns=X_train_clean.columns)),
+        columns=X_train_clean.columns,
+        index=X_test_clean.index,
+    )
+    X_train_imputed = X_train_imputed.astype(float)
+    X_test_imputed = X_test_imputed.astype(float)
+    return X_train_imputed, X_test_imputed, columns_to_drop
 
 
 def _safe_excel_sheet_name(name):
@@ -2492,6 +2579,11 @@ def fit_model_on_split(
     optimize_feature_indexes=None,
 ):
     """Fit either an NN or sklearn model on one explicit train/test split."""
+    X_train_fold, X_test_fold, _dropped_missing_columns = apply_missing_value_pipeline(
+        X_train_fold,
+        X_test_fold,
+        verbose=False,
+    )
     if is_torch_model(model_class):
         input_size = X_train_fold.shape[1]
         output_size = as_2d_float_array(y_train_fold, "y_train_fold").shape[1]
@@ -3842,6 +3934,11 @@ def repeat_fit_model(
     the optimized-input report from the best run.
     """
     X_train, X_test, y_train, y_test = read_prep_data(features)
+    X_train, X_test, _dropped_missing_columns = apply_missing_value_pipeline(
+        X_train,
+        X_test,
+        verbose=False,
+    )
     r2_list = []
     mse_list = []
     max_r2 = -float("inf")
@@ -3955,6 +4052,14 @@ if saved_outputs:
     y_test = y_test[saved_outputs]
 outputs = y_train.columns.tolist()
 output = outputs
+try:
+    X_train, X_test, dropped_missing_columns = apply_missing_value_pipeline(X_train, X_test)
+except ValueError as err:
+    print(f"Missing-value pipeline failed: {err}")
+    exit()
+if dropped_missing_columns:
+    inputs = X_train.columns.tolist()
+    run_inputs = inputs
 
 data = X_train
 print_numbered_feature_list("Selected Input Features", inputs, ANSI_GREEN)
