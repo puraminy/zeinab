@@ -16,6 +16,8 @@ from sklearn.svm import SVR
 from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.multioutput import MultiOutputRegressor
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
 import pandas as pd
 import numpy as np
 import re
@@ -52,6 +54,7 @@ import inspect
 import models
 import json
 import copy
+import math
 from datetime import datetime
 from collections import OrderedDict
 
@@ -81,6 +84,7 @@ MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 LEAKAGE_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "leakage_report.xlsx")
 FEATURE_IMPORTANCE_REPORTS_DIR = os.path.join(MODULE_DIR, "reports")
 MODEL_COMPARISON_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_comparison.xlsx")
+OPTIMIZATION_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "optimization_report.xlsx")
 
 
 FEATURE_IMPORTANCE_TARGETS = (
@@ -90,6 +94,27 @@ FEATURE_IMPORTANCE_TARGETS = (
     "white_ash",
     "white_moisture",
     "white_invert",
+)
+
+
+
+
+PRESCRIPTIVE_OPTIMIZATION_VARIABLES = (
+    "lime_milk_baume",
+    "lime_alkalinity",
+    "co2_percent",
+    "carbonated_pH",
+    "sulphited_pH",
+    "sulphited_brix",
+    "standard_liquor_pH",
+    "standard_liquor_brix",
+)
+
+PRESCRIPTIVE_OPTIMIZATION_OBJECTIVES = (
+    "white_total_points",
+    "white_solution_color",
+    "white_apparent_color",
+    "white_ash",
 )
 
 
@@ -469,6 +494,292 @@ def generate_feature_importance_reports(dataframe, targets=FEATURE_IMPORTANCE_TA
         print(tabulate(top_20[display_columns], headers="keys", tablefmt="github", showindex=False))
     print("==============================================================\n")
     return generated_reports
+
+
+
+def _normal_cdf(values):
+    """Vectorized standard-normal CDF without requiring scipy."""
+    arr = np.asarray(values, dtype=float)
+    return 0.5 * (1.0 + np.vectorize(math.erf)(arr / math.sqrt(2.0)))
+
+
+def _normal_pdf(values):
+    """Vectorized standard-normal PDF without requiring scipy."""
+    arr = np.asarray(values, dtype=float)
+    return np.exp(-0.5 * arr ** 2) / math.sqrt(2.0 * math.pi)
+
+
+def _prepare_prescriptive_optimization_data(dataframe, control_variables, objectives):
+    """Return numeric, complete historical rows for the requested optimization task."""
+    requested_columns = list(control_variables) + list(objectives)
+    missing_columns = [column for column in requested_columns if column not in dataframe.columns]
+    if missing_columns:
+        return None, missing_columns
+
+    numeric_df = dataframe[requested_columns].apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
+    complete_df = numeric_df.dropna(axis=0, how="any").reset_index(drop=True)
+    if complete_df.empty:
+        return None, []
+    return complete_df, []
+
+
+def _objective_normalization_parameters(objective_df):
+    """Build robust min/max parameters so differently scaled objectives can be summed."""
+    objective_min = objective_df.min(axis=0)
+    objective_max = objective_df.max(axis=0)
+    objective_range = (objective_max - objective_min).replace(0, 1.0)
+    return objective_min, objective_range
+
+
+def _scalar_quality_objective(objective_values, objective_min, objective_range):
+    """Lower is better: mean min/max-normalized white sugar quality penalties."""
+    values = pd.DataFrame(objective_values, columns=list(objective_min.index))
+    normalized = (values - objective_min) / objective_range
+    return normalized.mean(axis=1).to_numpy(dtype=float)
+
+
+def _predict_scalar_quality(candidate_values, model, objective_min, objective_range):
+    """Predict the scalar minimization objective for one or many candidate rows."""
+    candidate_array = np.asarray(candidate_values, dtype=float)
+    if candidate_array.ndim == 1:
+        candidate_array = candidate_array.reshape(1, -1)
+    predicted_objectives = model.predict(candidate_array)
+    return _scalar_quality_objective(predicted_objectives, objective_min, objective_range)
+
+
+def _clip_to_bounds(candidate, lower_bounds, upper_bounds):
+    return np.minimum(np.maximum(np.asarray(candidate, dtype=float), lower_bounds), upper_bounds)
+
+
+def _bayesian_optimize_controls(X, scalar_y, lower_bounds, upper_bounds, seed=123, iterations=3, candidates_per_iter=400):
+    """Gaussian-process Bayesian optimization with Expected Improvement acquisition."""
+    rng = np.random.default_rng(seed)
+    x_scaler = StandardScaler()
+    X_scaled = x_scaler.fit_transform(X)
+    lower_scaled = x_scaler.transform(lower_bounds.reshape(1, -1)).reshape(-1)
+    upper_scaled = x_scaler.transform(upper_bounds.reshape(1, -1)).reshape(-1)
+    scaled_low = np.minimum(lower_scaled, upper_scaled)
+    scaled_high = np.maximum(lower_scaled, upper_scaled)
+
+    kernel = ConstantKernel(1.0, (1e-3, 1e3)) * RBF(length_scale=np.ones(X.shape[1]), length_scale_bounds=(1e-2, 1e2)) + WhiteKernel(noise_level=1e-5, noise_level_bounds=(1e-8, 1e-1))
+    optimizer_X = X_scaled.copy()
+    optimizer_y = np.asarray(scalar_y, dtype=float).copy()
+    best_scaled = optimizer_X[int(np.argmin(optimizer_y))].copy()
+
+    for _ in range(int(iterations)):
+        gp = GaussianProcessRegressor(
+            kernel=kernel,
+            normalize_y=True,
+            random_state=seed,
+            optimizer=None,
+            n_restarts_optimizer=0,
+        )
+        gp.fit(optimizer_X, optimizer_y)
+        random_candidates = rng.uniform(scaled_low, scaled_high, size=(int(candidates_per_iter), X.shape[1]))
+        mean_pred, std_pred = gp.predict(random_candidates, return_std=True)
+        std_pred = np.maximum(std_pred, 1e-9)
+        improvement = float(np.min(optimizer_y)) - mean_pred
+        z_score = improvement / std_pred
+        expected_improvement = improvement * _normal_cdf(z_score) + std_pred * _normal_pdf(z_score)
+        best_candidate_index = int(np.argmax(expected_improvement))
+        chosen_scaled = random_candidates[best_candidate_index]
+        chosen_score = float(mean_pred[best_candidate_index])
+        optimizer_X = np.vstack([optimizer_X, chosen_scaled])
+        optimizer_y = np.append(optimizer_y, chosen_score)
+        if chosen_score < float(np.min(optimizer_y[:-1])):
+            best_scaled = chosen_scaled.copy()
+
+    recommended = x_scaler.inverse_transform(best_scaled.reshape(1, -1)).reshape(-1)
+    return _clip_to_bounds(recommended, lower_bounds, upper_bounds)
+
+
+def _differential_evolution_optimize_controls(
+    objective_function,
+    lower_bounds,
+    upper_bounds,
+    seed=123,
+    population_size=5,
+    generations=12,
+    mutation=0.7,
+    crossover=0.8,
+):
+    """Small self-contained Differential Evolution implementation for bounded controls."""
+    rng = np.random.default_rng(seed)
+    dimensions = len(lower_bounds)
+    population_count = max(int(population_size) * dimensions, 24)
+    population = rng.uniform(lower_bounds, upper_bounds, size=(population_count, dimensions))
+    scores = np.asarray([objective_function(member) for member in population], dtype=float)
+
+    for _ in range(int(generations)):
+        for idx in range(population_count):
+            choices = [choice for choice in range(population_count) if choice != idx]
+            a_idx, b_idx, c_idx = rng.choice(choices, size=3, replace=False)
+            mutant = population[a_idx] + float(mutation) * (population[b_idx] - population[c_idx])
+            mutant = _clip_to_bounds(mutant, lower_bounds, upper_bounds)
+            crossover_mask = rng.random(dimensions) < float(crossover)
+            if not crossover_mask.any():
+                crossover_mask[int(rng.integers(0, dimensions))] = True
+            trial = np.where(crossover_mask, mutant, population[idx])
+            trial_score = float(objective_function(trial))
+            if trial_score <= scores[idx]:
+                population[idx] = trial
+                scores[idx] = trial_score
+
+    return population[int(np.argmin(scores))]
+
+
+def _build_recommendation_row(method, variable, current_value, recommended_value, aggregate_improvement, current_scalar, recommended_scalar):
+    movement = float(recommended_value) - float(current_value)
+    return {
+        "Method": method,
+        "Variable": variable,
+        "Current Value": float(current_value),
+        "Recommended Value": float(recommended_value),
+        "Change": movement,
+        "Expected Improvement": float(aggregate_improvement),
+        "Expected Improvement %": float(aggregate_improvement / max(abs(current_scalar), 1e-9) * 100.0),
+        "Current Objective Score": float(current_scalar),
+        "Recommended Objective Score": float(recommended_scalar),
+    }
+
+
+def generate_prescriptive_optimization_report(
+    dataframe,
+    control_variables=PRESCRIPTIVE_OPTIMIZATION_VARIABLES,
+    objectives=PRESCRIPTIVE_OPTIMIZATION_OBJECTIVES,
+    report_path=OPTIMIZATION_REPORT_PATH,
+):
+    """Generate Bayesian Optimization and Differential Evolution recommendations.
+
+    The report varies only the requested controllable variables and constrains
+    every recommendation to the exact observed historical min/max envelope.
+    """
+    optimization_df, missing_columns = _prepare_prescriptive_optimization_data(dataframe, control_variables, objectives)
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+
+    if optimization_df is None or len(optimization_df) < 8:
+        reason = (
+            "Missing required columns: " + ", ".join(missing_columns)
+            if missing_columns
+            else "Not enough complete numeric historical rows for optimization."
+        )
+        with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
+            pd.DataFrame([{
+                "status": "skipped",
+                "reason": reason,
+                "required_control_variables": ", ".join(control_variables),
+                "required_objectives": ", ".join(objectives),
+                "created_at_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+            }]).to_excel(writer, sheet_name="Summary", index=False)
+        print(f"Prescriptive optimization skipped: {reason}")
+        print(f"Saved optimization report: {report_path}")
+        return report_path
+
+    X = optimization_df[list(control_variables)].to_numpy(dtype=float)
+    y_objectives = optimization_df[list(objectives)]
+    objective_min, objective_range = _objective_normalization_parameters(y_objectives)
+    scalar_y = _scalar_quality_objective(y_objectives, objective_min, objective_range)
+    lower_bounds = optimization_df[list(control_variables)].min(axis=0).to_numpy(dtype=float)
+    upper_bounds = optimization_df[list(control_variables)].max(axis=0).to_numpy(dtype=float)
+    current_row = optimization_df.iloc[-1]
+    current_controls = current_row[list(control_variables)].to_numpy(dtype=float)
+
+    surrogate = ExtraTreesRegressor(n_estimators=100, random_state=model_seed, min_samples_leaf=2, n_jobs=1)
+    surrogate.fit(X, y_objectives.to_numpy(dtype=float))
+
+    current_scalar = float(_predict_scalar_quality(current_controls, surrogate, objective_min, objective_range)[0])
+    objective_function = lambda candidate: float(
+        _predict_scalar_quality(_clip_to_bounds(candidate, lower_bounds, upper_bounds), surrogate, objective_min, objective_range)[0]
+    )
+
+    bayesian_controls = _bayesian_optimize_controls(
+        X,
+        scalar_y,
+        lower_bounds,
+        upper_bounds,
+        seed=model_seed,
+    )
+    de_controls = _differential_evolution_optimize_controls(
+        objective_function,
+        lower_bounds,
+        upper_bounds,
+        seed=model_seed,
+    )
+
+    recommendation_rows = []
+    prediction_rows = []
+    methods = OrderedDict([
+        ("Bayesian Optimization", bayesian_controls),
+        ("Differential Evolution", de_controls),
+    ])
+    for method, recommended_controls in methods.items():
+        recommended_scalar = float(objective_function(recommended_controls))
+        aggregate_improvement = current_scalar - recommended_scalar
+        predicted_current_objectives = surrogate.predict(current_controls.reshape(1, -1)).reshape(-1)
+        predicted_recommended_objectives = surrogate.predict(recommended_controls.reshape(1, -1)).reshape(-1)
+        for variable, current_value, recommended_value in zip(control_variables, current_controls, recommended_controls):
+            recommendation_rows.append(
+                _build_recommendation_row(
+                    method,
+                    variable,
+                    current_value,
+                    recommended_value,
+                    aggregate_improvement,
+                    current_scalar,
+                    recommended_scalar,
+                )
+            )
+        for objective_name, current_prediction, recommended_prediction in zip(
+            objectives,
+            predicted_current_objectives,
+            predicted_recommended_objectives,
+        ):
+            prediction_rows.append({
+                "Method": method,
+                "Objective": objective_name,
+                "Current Predicted Value": float(current_prediction),
+                "Recommended Predicted Value": float(recommended_prediction),
+                "Expected Improvement": float(current_prediction - recommended_prediction),
+                "Expected Improvement %": float((current_prediction - recommended_prediction) / max(abs(current_prediction), 1e-9) * 100.0),
+            })
+
+    limits_rows = [
+        {
+            "Variable": variable,
+            "Observed Min": float(low),
+            "Observed Max": float(high),
+            "Current Value": float(current),
+        }
+        for variable, low, high, current in zip(control_variables, lower_bounds, upper_bounds, current_controls)
+    ]
+    summary_rows = [{
+        "status": "completed",
+        "created_at_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "historical_rows_used": int(len(optimization_df)),
+        "control_variables": ", ".join(control_variables),
+        "objectives_minimized": ", ".join(objectives),
+        "constraint": "Recommended values are clipped to, and selected inside, observed historical min/max limits.",
+        "current_objective_score": current_scalar,
+    }]
+
+    with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
+        pd.DataFrame(recommendation_rows).to_excel(writer, sheet_name="Recommendations", index=False)
+        pd.DataFrame(prediction_rows).to_excel(writer, sheet_name="Objective Forecasts", index=False)
+        pd.DataFrame(limits_rows).to_excel(writer, sheet_name="Historical Limits", index=False)
+        pd.DataFrame(summary_rows).to_excel(writer, sheet_name="Summary", index=False)
+
+        workbook = writer.book
+        header_fill = PatternFill("solid", fgColor="D9EAD3")
+        for worksheet in workbook.worksheets:
+            for cell in worksheet[1]:
+                cell.font = Font(bold=True)
+                cell.fill = header_fill
+            for column_cells in worksheet.columns:
+                max_length = max(len(str(cell.value)) if cell.value is not None else 0 for cell in column_cells)
+                worksheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 12), 42)
+
+    print(f"Saved optimization report: {report_path}")
+    return report_path
 
 
 def print_refinery_variable_groups():
@@ -3472,6 +3783,7 @@ feature_importance_source_df = _load_feature_importance_source_dataframe(
     y_test,
 )
 generate_feature_importance_reports(feature_importance_source_df)
+generate_prescriptive_optimization_report(feature_importance_source_df)
 generate_model_comparison_report(X_train, X_test, y_train, y_test)
 active_features = list(inputs)
 if selected_saved_run:

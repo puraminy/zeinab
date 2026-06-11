@@ -1,8 +1,40 @@
 diff --git a/NN/run.py b/NN/run.py
-index 6003a9002a2be35945d15c5dd72ee05018f77ecc..bbb2b250324df590a07ac9a4a3c8e9b123284543 100644
+index bbb2b250324df590a07ac9a4a3c8e9b123284543..53ef6bc556f5b5411aa9d4aa0e1067fcd1b88bf4 100644
 --- a/NN/run.py
 +++ b/NN/run.py
-@@ -31,74 +31,78 @@ from read_data import (
+@@ -1,120 +1,145 @@
+ from matplotlib import pyplot as plt
+ import torch
+ import torch.nn as nn
+ import torch.optim as optim
+ from sklearn.preprocessing import StandardScaler
+ from sklearn.model_selection import KFold, RandomizedSearchCV, train_test_split
+ from sklearn.ensemble import (
+     RandomForestRegressor,
+     ExtraTreesRegressor,
+     GradientBoostingRegressor,
+     AdaBoostRegressor,
+     HistGradientBoostingRegressor,
+ )
+ from sklearn.neighbors import KNeighborsRegressor
+ from sklearn.svm import SVR
+ from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
+ from sklearn.tree import DecisionTreeRegressor
+ from sklearn.multioutput import MultiOutputRegressor
++from sklearn.gaussian_process import GaussianProcessRegressor
++from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
+ import pandas as pd
+ import numpy as np
+ import re
+ from sklearn.metrics import make_scorer, r2_score
+ from sklearn.inspection import permutation_importance
+ from sklearn.feature_selection import mutual_info_regression
+ from tabulate import tabulate
+ import os
+ from latex import *
+ from plot import *
+ from models import *
+ from read_data import (
      read_prep_data,
      sync_prep_data_with_dataset,
      prep_data_exists,
@@ -27,10 +59,11 @@ index 6003a9002a2be35945d15c5dd72ee05018f77ecc..bbb2b250324df590a07ac9a4a3c8e9b1
  import models
  import json
  import copy
++import math
  from datetime import datetime
-+from collections import OrderedDict
-+
-+from openpyxl.styles import Font, PatternFill
+ from collections import OrderedDict
+ 
+ from openpyxl.styles import Font, PatternFill
  
  try:
      from xgboost import XGBRegressor
@@ -55,7 +88,8 @@ index 6003a9002a2be35945d15c5dd72ee05018f77ecc..bbb2b250324df590a07ac9a4a3c8e9b1
  MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
  LEAKAGE_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "leakage_report.xlsx")
  FEATURE_IMPORTANCE_REPORTS_DIR = os.path.join(MODULE_DIR, "reports")
-+MODEL_COMPARISON_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_comparison.xlsx")
+ MODEL_COMPARISON_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_comparison.xlsx")
++OPTIMIZATION_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "optimization_report.xlsx")
  
  
  FEATURE_IMPORTANCE_TARGETS = (
@@ -68,6 +102,27 @@ index 6003a9002a2be35945d15c5dd72ee05018f77ecc..bbb2b250324df590a07ac9a4a3c8e9b1
  )
  
  
++
++
++PRESCRIPTIVE_OPTIMIZATION_VARIABLES = (
++    "lime_milk_baume",
++    "lime_alkalinity",
++    "co2_percent",
++    "carbonated_pH",
++    "sulphited_pH",
++    "sulphited_brix",
++    "standard_liquor_pH",
++    "standard_liquor_brix",
++)
++
++PRESCRIPTIVE_OPTIMIZATION_OBJECTIVES = (
++    "white_total_points",
++    "white_solution_color",
++    "white_apparent_color",
++    "white_ash",
++)
++
++
  FUTURE_QUALITY_INPUT_CANDIDATES = [
      "filtercake_moisture",
      "filtercake_sugar",
@@ -81,371 +136,356 @@ index 6003a9002a2be35945d15c5dd72ee05018f77ecc..bbb2b250324df590a07ac9a4a3c8e9b1
  ]
  
  
-@@ -2115,54 +2119,363 @@ def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
-     if is_multi_output:
-         model_name = getattr(model, "__class__", type(model)).__name__
-         supports_multioutput = sklearn_model_supports_multioutput(model)
-         if not supports_multioutput:
-             print(
-                 f"{model_name} does not natively support multi-output regression. "
-                 "Wrapping it with MultiOutputRegressor."
-             )
-             fit_estimator = MultiOutputRegressor(model)
- 
-     fit_estimator.fit(X_train_scaled, y_train_fit)
-     predictions = fit_estimator.predict(X_test_scaled)
-     predictions_2d = as_2d_float_array(predictions, "predictions")
- 
-     if predictions_2d.shape != y_test_values.shape:
-         raise ValueError(
-             f"Prediction shape {predictions_2d.shape} does not match target shape {y_test_values.shape}."
-         )
- 
-     fit_estimator.feature_scaler_ = scaler_x
-     mse = float(np.mean((predictions_2d - y_test_values) ** 2))
-     r2 = safe_r2_score(y_test_values, predictions_2d)
-     return predictions_2d, mse, r2, fit_estimator
+ def color_text(text, color):
+     return f"{color}{text}{ANSI_RESET}"
  
  
-+MODEL_COMPARISON_MODELS = (
-+    "RandomForest",
-+    "ExtraTrees",
-+    "XGBoost",
-+    "LightGBM",
-+    "CatBoost",
-+    "GradientBoosting",
-+    "ANN",
-+)
-+MODEL_COMPARISON_CV_FOLDS = 5
-+MODEL_COMPARISON_ANN_EPOCHS = 100
-+MODEL_COMPARISON_ANN_HIDDEN_SIZES = [32, 16]
+ def print_divider(char="=", width=68):
+     print(char * width)
+ 
+ 
+ def print_numbered_feature_list(title, features, color):
+     print_divider("=")
+     print(title)
+     print_divider("-")
+@@ -449,50 +474,336 @@ def generate_feature_importance_reports(dataframe, targets=FEATURE_IMPORTANCE_TA
+         with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
+             combined.to_excel(writer, sheet_name="All Methods", index=False)
+             top_20.to_excel(writer, sheet_name="Top 20", index=False)
+             for sheet_name in [
+                 "Random Forest Importance",
+                 "Extra Trees Importance",
+                 "Permutation Importance",
+                 "Mutual Information",
+             ]:
+                 tables[sheet_name].to_excel(
+                     writer,
+                     sheet_name=_safe_excel_sheet_name(sheet_name),
+                     index=False,
+                 )
+             tables["metadata"].to_excel(writer, sheet_name="Metadata", index=False)
+ 
+         generated_reports.append(report_path)
+         print(f"Saved feature-importance report: {report_path}")
+         print(f"Top 20 variables for {target} (ranked by average rank across methods):")
+         display_columns = ["Overall Rank", "Variable", "Average Rank"]
+         print(tabulate(top_20[display_columns], headers="keys", tablefmt="github", showindex=False))
+     print("==============================================================\n")
+     return generated_reports
+ 
+ 
++
++def _normal_cdf(values):
++    """Vectorized standard-normal CDF without requiring scipy."""
++    arr = np.asarray(values, dtype=float)
++    return 0.5 * (1.0 + np.vectorize(math.erf)(arr / math.sqrt(2.0)))
 +
 +
- def is_torch_model(model_class):
-     return isinstance(model_class, type) and issubclass(model_class, nn.Module)
- 
- 
-+def _safe_mape_percent(y_true, y_pred, epsilon=1e-8):
-+    """Return MAPE (%) while ignoring zero/near-zero actual values."""
-+    y_true_arr = np.asarray(y_true, dtype=float)
-+    y_pred_arr = np.asarray(y_pred, dtype=float)
-+    denominator_mask = np.abs(y_true_arr) > epsilon
-+    if not denominator_mask.any():
-+        return np.nan
-+    return float(
-+        np.mean(
-+            np.abs((y_true_arr[denominator_mask] - y_pred_arr[denominator_mask]) / y_true_arr[denominator_mask])
-+        ) * 100.0
-+    )
++def _normal_pdf(values):
++    """Vectorized standard-normal PDF without requiring scipy."""
++    arr = np.asarray(values, dtype=float)
++    return np.exp(-0.5 * arr ** 2) / math.sqrt(2.0 * math.pi)
 +
 +
-+def _target_regression_metrics(y_true, y_pred):
-+    """Compute R2, RMSE, MAE, and MAPE for a single target vector."""
-+    y_true_arr = np.asarray(y_true, dtype=float).reshape(-1)
-+    y_pred_arr = np.asarray(y_pred, dtype=float).reshape(-1)
-+    if y_true_arr.shape != y_pred_arr.shape:
-+        raise ValueError(f"Metric input shapes do not match: {y_true_arr.shape} and {y_pred_arr.shape}.")
++def _prepare_prescriptive_optimization_data(dataframe, control_variables, objectives):
++    """Return numeric, complete historical rows for the requested optimization task."""
++    requested_columns = list(control_variables) + list(objectives)
++    missing_columns = [column for column in requested_columns if column not in dataframe.columns]
++    if missing_columns:
++        return None, missing_columns
 +
-+    r2 = np.nan
-+    if y_true_arr.size >= 2:
-+        candidate_r2 = r2_score(y_true_arr, y_pred_arr)
-+        r2 = float(candidate_r2) if np.isfinite(candidate_r2) else np.nan
++    numeric_df = dataframe[requested_columns].apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
++    complete_df = numeric_df.dropna(axis=0, how="any").reset_index(drop=True)
++    if complete_df.empty:
++        return None, []
++    return complete_df, []
 +
-+    errors = y_pred_arr - y_true_arr
++
++def _objective_normalization_parameters(objective_df):
++    """Build robust min/max parameters so differently scaled objectives can be summed."""
++    objective_min = objective_df.min(axis=0)
++    objective_max = objective_df.max(axis=0)
++    objective_range = (objective_max - objective_min).replace(0, 1.0)
++    return objective_min, objective_range
++
++
++def _scalar_quality_objective(objective_values, objective_min, objective_range):
++    """Lower is better: mean min/max-normalized white sugar quality penalties."""
++    values = pd.DataFrame(objective_values, columns=list(objective_min.index))
++    normalized = (values - objective_min) / objective_range
++    return normalized.mean(axis=1).to_numpy(dtype=float)
++
++
++def _predict_scalar_quality(candidate_values, model, objective_min, objective_range):
++    """Predict the scalar minimization objective for one or many candidate rows."""
++    candidate_array = np.asarray(candidate_values, dtype=float)
++    if candidate_array.ndim == 1:
++        candidate_array = candidate_array.reshape(1, -1)
++    predicted_objectives = model.predict(candidate_array)
++    return _scalar_quality_objective(predicted_objectives, objective_min, objective_range)
++
++
++def _clip_to_bounds(candidate, lower_bounds, upper_bounds):
++    return np.minimum(np.maximum(np.asarray(candidate, dtype=float), lower_bounds), upper_bounds)
++
++
++def _bayesian_optimize_controls(X, scalar_y, lower_bounds, upper_bounds, seed=123, iterations=3, candidates_per_iter=400):
++    """Gaussian-process Bayesian optimization with Expected Improvement acquisition."""
++    rng = np.random.default_rng(seed)
++    x_scaler = StandardScaler()
++    X_scaled = x_scaler.fit_transform(X)
++    lower_scaled = x_scaler.transform(lower_bounds.reshape(1, -1)).reshape(-1)
++    upper_scaled = x_scaler.transform(upper_bounds.reshape(1, -1)).reshape(-1)
++    scaled_low = np.minimum(lower_scaled, upper_scaled)
++    scaled_high = np.maximum(lower_scaled, upper_scaled)
++
++    kernel = ConstantKernel(1.0, (1e-3, 1e3)) * RBF(length_scale=np.ones(X.shape[1]), length_scale_bounds=(1e-2, 1e2)) + WhiteKernel(noise_level=1e-5, noise_level_bounds=(1e-8, 1e-1))
++    optimizer_X = X_scaled.copy()
++    optimizer_y = np.asarray(scalar_y, dtype=float).copy()
++    best_scaled = optimizer_X[int(np.argmin(optimizer_y))].copy()
++
++    for _ in range(int(iterations)):
++        gp = GaussianProcessRegressor(
++            kernel=kernel,
++            normalize_y=True,
++            random_state=seed,
++            optimizer=None,
++            n_restarts_optimizer=0,
++        )
++        gp.fit(optimizer_X, optimizer_y)
++        random_candidates = rng.uniform(scaled_low, scaled_high, size=(int(candidates_per_iter), X.shape[1]))
++        mean_pred, std_pred = gp.predict(random_candidates, return_std=True)
++        std_pred = np.maximum(std_pred, 1e-9)
++        improvement = float(np.min(optimizer_y)) - mean_pred
++        z_score = improvement / std_pred
++        expected_improvement = improvement * _normal_cdf(z_score) + std_pred * _normal_pdf(z_score)
++        best_candidate_index = int(np.argmax(expected_improvement))
++        chosen_scaled = random_candidates[best_candidate_index]
++        chosen_score = float(mean_pred[best_candidate_index])
++        optimizer_X = np.vstack([optimizer_X, chosen_scaled])
++        optimizer_y = np.append(optimizer_y, chosen_score)
++        if chosen_score < float(np.min(optimizer_y[:-1])):
++            best_scaled = chosen_scaled.copy()
++
++    recommended = x_scaler.inverse_transform(best_scaled.reshape(1, -1)).reshape(-1)
++    return _clip_to_bounds(recommended, lower_bounds, upper_bounds)
++
++
++def _differential_evolution_optimize_controls(
++    objective_function,
++    lower_bounds,
++    upper_bounds,
++    seed=123,
++    population_size=5,
++    generations=12,
++    mutation=0.7,
++    crossover=0.8,
++):
++    """Small self-contained Differential Evolution implementation for bounded controls."""
++    rng = np.random.default_rng(seed)
++    dimensions = len(lower_bounds)
++    population_count = max(int(population_size) * dimensions, 24)
++    population = rng.uniform(lower_bounds, upper_bounds, size=(population_count, dimensions))
++    scores = np.asarray([objective_function(member) for member in population], dtype=float)
++
++    for _ in range(int(generations)):
++        for idx in range(population_count):
++            choices = [choice for choice in range(population_count) if choice != idx]
++            a_idx, b_idx, c_idx = rng.choice(choices, size=3, replace=False)
++            mutant = population[a_idx] + float(mutation) * (population[b_idx] - population[c_idx])
++            mutant = _clip_to_bounds(mutant, lower_bounds, upper_bounds)
++            crossover_mask = rng.random(dimensions) < float(crossover)
++            if not crossover_mask.any():
++                crossover_mask[int(rng.integers(0, dimensions))] = True
++            trial = np.where(crossover_mask, mutant, population[idx])
++            trial_score = float(objective_function(trial))
++            if trial_score <= scores[idx]:
++                population[idx] = trial
++                scores[idx] = trial_score
++
++    return population[int(np.argmin(scores))]
++
++
++def _build_recommendation_row(method, variable, current_value, recommended_value, aggregate_improvement, current_scalar, recommended_scalar):
++    movement = float(recommended_value) - float(current_value)
 +    return {
-+        "R2": r2,
-+        "RMSE": float(np.sqrt(np.mean(errors ** 2))),
-+        "MAE": float(np.mean(np.abs(errors))),
-+        "MAPE": _safe_mape_percent(y_true_arr, y_pred_arr),
++        "Method": method,
++        "Variable": variable,
++        "Current Value": float(current_value),
++        "Recommended Value": float(recommended_value),
++        "Change": movement,
++        "Expected Improvement": float(aggregate_improvement),
++        "Expected Improvement %": float(aggregate_improvement / max(abs(current_scalar), 1e-9) * 100.0),
++        "Current Objective Score": float(current_scalar),
++        "Recommended Objective Score": float(recommended_scalar),
 +    }
 +
 +
-+def _build_model_comparison_factories(seed):
-+    """Build the exact model set requested for the cross-validation comparison."""
-+    factories = OrderedDict()
-+    factories["RandomForest"] = lambda fold_seed: RandomForestRegressor(
-+        n_estimators=300,
-+        random_state=fold_seed,
-+        n_jobs=-1,
-+    )
-+    factories["ExtraTrees"] = lambda fold_seed: ExtraTreesRegressor(
-+        n_estimators=300,
-+        random_state=fold_seed,
-+        n_jobs=-1,
-+    )
++def generate_prescriptive_optimization_report(
++    dataframe,
++    control_variables=PRESCRIPTIVE_OPTIMIZATION_VARIABLES,
++    objectives=PRESCRIPTIVE_OPTIMIZATION_OBJECTIVES,
++    report_path=OPTIMIZATION_REPORT_PATH,
++):
++    """Generate Bayesian Optimization and Differential Evolution recommendations.
 +
-+    if XGBRegressor is not None:
-+        factories["XGBoost"] = lambda fold_seed: XGBRegressor(
-+            n_estimators=300,
-+            random_state=fold_seed,
-+            objective="reg:squarederror",
-+            n_jobs=-1,
-+        )
-+    if LGBMRegressor is not None:
-+        factories["LightGBM"] = lambda fold_seed: LGBMRegressor(
-+            n_estimators=300,
-+            random_state=fold_seed,
-+            verbose=-1,
-+        )
-+    if CatBoostRegressor is not None:
-+        factories["CatBoost"] = lambda fold_seed: CatBoostRegressor(
-+            iterations=1200,
-+            learning_rate=0.03,
-+            depth=6,
-+            l2_leaf_reg=5.0,
-+            loss_function="RMSE",
-+            random_seed=fold_seed,
-+            verbose=False,
-+            allow_writing_files=False,
-+        )
-+
-+    factories["GradientBoosting"] = lambda fold_seed: GradientBoostingRegressor(random_state=fold_seed)
-+
-+    missing_models = [model_name for model_name in MODEL_COMPARISON_MODELS if model_name not in factories and model_name != "ANN"]
-+    if missing_models:
-+        print("Model comparison optional dependencies missing; skipped: " + ", ".join(missing_models))
-+
-+    return factories
-+
-+
-+def _fit_comparison_model(model_name, model_factory, X_train_fold, X_val_fold, y_train_fold, y_val_fold, fold_seed):
-+    """Fit one comparison model and return validation predictions."""
-+    if model_name == "ANN":
-+        ann_model_class = globals().get("ReluFFNN") or globals().get("FFNN")
-+        if ann_model_class is None:
-+            raise ValueError("No ANN model class was found in models.py.")
-+        predictions, _mse, _r2 = fit_model_on_split(
-+            ann_model_class,
-+            X_train_fold,
-+            X_val_fold,
-+            y_train_fold,
-+            y_val_fold,
-+            MODEL_COMPARISON_ANN_EPOCHS,
-+            MODEL_COMPARISON_ANN_HIDDEN_SIZES,
-+            run=fold_seed,
-+            optimization_scope="weights",
-+        )
-+        return predictions
-+
-+    model = model_factory(fold_seed)
-+    predictions, _mse, _r2, _fit_estimator = fit_sklearn_model(
-+        model,
-+        X_train_fold,
-+        X_val_fold,
-+        y_train_fold,
-+        y_val_fold,
-+    )
-+    return predictions
-+
-+
-+def _summarize_model_target_folds(fold_metric_rows):
-+    """Average fold metrics for each target/model pair and sort by highest R2 per target."""
-+    fold_df = pd.DataFrame(fold_metric_rows)
-+    if fold_df.empty:
-+        return pd.DataFrame(), fold_df
-+
-+    summary = (
-+        fold_df.groupby(["Target", "Model"], as_index=False)
-+        .agg(
-+            R2=("R2", "mean"),
-+            RMSE=("RMSE", "mean"),
-+            MAE=("MAE", "mean"),
-+            MAPE=("MAPE", "mean"),
-+            R2_std=("R2", "std"),
-+            RMSE_std=("RMSE", "std"),
-+            MAE_std=("MAE", "std"),
-+            MAPE_std=("MAPE", "std"),
-+            CV_folds=("Fold", "nunique"),
-+        )
-+        .sort_values(["Target", "R2"], ascending=[True, False], na_position="last")
-+        .reset_index(drop=True)
-+    )
-+    summary.insert(0, "Rank", summary.groupby("Target").cumcount() + 1)
-+    summary["Best for target"] = summary["Rank"].eq(1)
-+    ordered_columns = [
-+        "Target",
-+        "Rank",
-+        "Best for target",
-+        "Model",
-+        "R2",
-+        "RMSE",
-+        "MAE",
-+        "MAPE",
-+        "R2_std",
-+        "RMSE_std",
-+        "MAE_std",
-+        "MAPE_std",
-+        "CV_folds",
-+    ]
-+    return summary[ordered_columns], fold_df
-+
-+
-+def _write_model_comparison_workbook(summary_df, fold_df, report_path):
-+    """Write the model-comparison Excel workbook and highlight each target winner."""
++    The report varies only the requested controllable variables and constrains
++    every recommendation to the exact observed historical min/max envelope.
++    """
++    optimization_df, missing_columns = _prepare_prescriptive_optimization_data(dataframe, control_variables, objectives)
 +    os.makedirs(os.path.dirname(report_path), exist_ok=True)
 +
-+    best_df = pd.DataFrame()
-+    overall_df = pd.DataFrame()
-+    if not summary_df.empty:
-+        best_df = summary_df[summary_df["Best for target"]].copy()
-+        overall_df = (
-+            summary_df.groupby("Model", as_index=False)
-+            .agg(
-+                R2=("R2", "mean"),
-+                RMSE=("RMSE", "mean"),
-+                MAE=("MAE", "mean"),
-+                MAPE=("MAPE", "mean"),
-+                Targets=("Target", "nunique"),
-+            )
-+            .sort_values("R2", ascending=False, na_position="last")
-+            .reset_index(drop=True)
++    if optimization_df is None or len(optimization_df) < 8:
++        reason = (
++            "Missing required columns: " + ", ".join(missing_columns)
++            if missing_columns
++            else "Not enough complete numeric historical rows for optimization."
 +        )
-+        overall_df.insert(0, "Overall Rank", np.arange(1, len(overall_df) + 1))
-+
-+    metadata_df = pd.DataFrame(
-+        [
-+            {
++        with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
++            pd.DataFrame([{
++                "status": "skipped",
++                "reason": reason,
++                "required_control_variables": ", ".join(control_variables),
++                "required_objectives": ", ".join(objectives),
 +                "created_at_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
-+                "cv_folds_requested": MODEL_COMPARISON_CV_FOLDS,
-+                "sort_rule": "Within each target, models are sorted by highest mean CV R2.",
-+                "best_model_rule": "Best for target = rank 1 by mean CV R2.",
-+                "ann_model": (globals().get("ReluFFNN") or globals().get("FFNN") or object).__name__,
-+                "ann_epochs": MODEL_COMPARISON_ANN_EPOCHS,
-+                "ann_hidden_sizes": str(MODEL_COMPARISON_ANN_HIDDEN_SIZES),
-+            }
-+        ]
++            }]).to_excel(writer, sheet_name="Summary", index=False)
++        print(f"Prescriptive optimization skipped: {reason}")
++        print(f"Saved optimization report: {report_path}")
++        return report_path
++
++    X = optimization_df[list(control_variables)].to_numpy(dtype=float)
++    y_objectives = optimization_df[list(objectives)]
++    objective_min, objective_range = _objective_normalization_parameters(y_objectives)
++    scalar_y = _scalar_quality_objective(y_objectives, objective_min, objective_range)
++    lower_bounds = optimization_df[list(control_variables)].min(axis=0).to_numpy(dtype=float)
++    upper_bounds = optimization_df[list(control_variables)].max(axis=0).to_numpy(dtype=float)
++    current_row = optimization_df.iloc[-1]
++    current_controls = current_row[list(control_variables)].to_numpy(dtype=float)
++
++    surrogate = ExtraTreesRegressor(n_estimators=100, random_state=model_seed, min_samples_leaf=2, n_jobs=1)
++    surrogate.fit(X, y_objectives.to_numpy(dtype=float))
++
++    current_scalar = float(_predict_scalar_quality(current_controls, surrogate, objective_min, objective_range)[0])
++    objective_function = lambda candidate: float(
++        _predict_scalar_quality(_clip_to_bounds(candidate, lower_bounds, upper_bounds), surrogate, objective_min, objective_range)[0]
 +    )
 +
++    bayesian_controls = _bayesian_optimize_controls(
++        X,
++        scalar_y,
++        lower_bounds,
++        upper_bounds,
++        seed=model_seed,
++    )
++    de_controls = _differential_evolution_optimize_controls(
++        objective_function,
++        lower_bounds,
++        upper_bounds,
++        seed=model_seed,
++    )
++
++    recommendation_rows = []
++    prediction_rows = []
++    methods = OrderedDict([
++        ("Bayesian Optimization", bayesian_controls),
++        ("Differential Evolution", de_controls),
++    ])
++    for method, recommended_controls in methods.items():
++        recommended_scalar = float(objective_function(recommended_controls))
++        aggregate_improvement = current_scalar - recommended_scalar
++        predicted_current_objectives = surrogate.predict(current_controls.reshape(1, -1)).reshape(-1)
++        predicted_recommended_objectives = surrogate.predict(recommended_controls.reshape(1, -1)).reshape(-1)
++        for variable, current_value, recommended_value in zip(control_variables, current_controls, recommended_controls):
++            recommendation_rows.append(
++                _build_recommendation_row(
++                    method,
++                    variable,
++                    current_value,
++                    recommended_value,
++                    aggregate_improvement,
++                    current_scalar,
++                    recommended_scalar,
++                )
++            )
++        for objective_name, current_prediction, recommended_prediction in zip(
++            objectives,
++            predicted_current_objectives,
++            predicted_recommended_objectives,
++        ):
++            prediction_rows.append({
++                "Method": method,
++                "Objective": objective_name,
++                "Current Predicted Value": float(current_prediction),
++                "Recommended Predicted Value": float(recommended_prediction),
++                "Expected Improvement": float(current_prediction - recommended_prediction),
++                "Expected Improvement %": float((current_prediction - recommended_prediction) / max(abs(current_prediction), 1e-9) * 100.0),
++            })
++
++    limits_rows = [
++        {
++            "Variable": variable,
++            "Observed Min": float(low),
++            "Observed Max": float(high),
++            "Current Value": float(current),
++        }
++        for variable, low, high, current in zip(control_variables, lower_bounds, upper_bounds, current_controls)
++    ]
++    summary_rows = [{
++        "status": "completed",
++        "created_at_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
++        "historical_rows_used": int(len(optimization_df)),
++        "control_variables": ", ".join(control_variables),
++        "objectives_minimized": ", ".join(objectives),
++        "constraint": "Recommended values are clipped to, and selected inside, observed historical min/max limits.",
++        "current_objective_score": current_scalar,
++    }]
++
 +    with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
-+        summary_df.to_excel(writer, sheet_name="Model Comparison", index=False)
-+        best_df.to_excel(writer, sheet_name="Best by Target", index=False)
-+        overall_df.to_excel(writer, sheet_name="Overall Average", index=False)
-+        fold_df.to_excel(writer, sheet_name="Fold Metrics", index=False)
-+        metadata_df.to_excel(writer, sheet_name="Metadata", index=False)
++        pd.DataFrame(recommendation_rows).to_excel(writer, sheet_name="Recommendations", index=False)
++        pd.DataFrame(prediction_rows).to_excel(writer, sheet_name="Objective Forecasts", index=False)
++        pd.DataFrame(limits_rows).to_excel(writer, sheet_name="Historical Limits", index=False)
++        pd.DataFrame(summary_rows).to_excel(writer, sheet_name="Summary", index=False)
 +
 +        workbook = writer.book
-+        best_fill = PatternFill(fill_type="solid", fgColor="C6EFCE")
-+        best_font = Font(bold=True, color="006100")
-+        header_fill = PatternFill(fill_type="solid", fgColor="D9EAF7")
++        header_fill = PatternFill("solid", fgColor="D9EAD3")
 +        for worksheet in workbook.worksheets:
-+            worksheet.freeze_panes = "A2"
-+            worksheet.auto_filter.ref = worksheet.dimensions
 +            for cell in worksheet[1]:
 +                cell.font = Font(bold=True)
 +                cell.fill = header_fill
 +            for column_cells in worksheet.columns:
 +                max_length = max(len(str(cell.value)) if cell.value is not None else 0 for cell in column_cells)
-+                worksheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 12), 45)
++                worksheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 12), 42)
 +
-+        comparison_sheet = workbook["Model Comparison"]
-+        header_lookup = {cell.value: cell.column for cell in comparison_sheet[1]}
-+        best_column = header_lookup.get("Best for target")
-+        if best_column is not None:
-+            for row in range(2, comparison_sheet.max_row + 1):
-+                if comparison_sheet.cell(row=row, column=best_column).value is True:
-+                    for column in range(1, comparison_sheet.max_column + 1):
-+                        comparison_sheet.cell(row=row, column=column).fill = best_fill
-+                        comparison_sheet.cell(row=row, column=column).font = best_font
-+
-+    print(f"Saved model comparison report: {report_path}")
-+
-+
-+def generate_model_comparison_report(X_train, X_test, y_train, y_test, report_path=MODEL_COMPARISON_REPORT_PATH):
-+    """Compare requested regressors with 5-fold CV and save reports/model_comparison.xlsx."""
-+    full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
-+    full_y = pd.concat([y_train, y_test], axis=0).reset_index(drop=True)
-+    if len(full_X) < 2:
-+        print("Model comparison skipped: at least two rows are required for cross-validation.")
-+        return None
-+
-+    n_splits = min(MODEL_COMPARISON_CV_FOLDS, len(full_X))
-+    if n_splits < MODEL_COMPARISON_CV_FOLDS:
-+        print(f"Model comparison warning: using {n_splits} folds because only {len(full_X)} rows are available.")
-+    kfold = KFold(n_splits=n_splits, shuffle=True, random_state=data_seed)
-+    comparison_factories = _build_model_comparison_factories(model_seed)
-+    comparison_factories["ANN"] = None
-+
-+    fold_metric_rows = []
-+    target_names = list(full_y.columns)
-+    print("\n================= Model Comparison (5-fold CV) =================")
-+    for model_name in MODEL_COMPARISON_MODELS:
-+        if model_name not in comparison_factories:
-+            continue
-+        print(f"Evaluating {model_name}...")
-+        for fold_index, (train_idx, val_idx) in enumerate(kfold.split(full_X), start=1):
-+            X_train_fold = full_X.iloc[train_idx]
-+            X_val_fold = full_X.iloc[val_idx]
-+            y_train_fold = full_y.iloc[train_idx]
-+            y_val_fold = full_y.iloc[val_idx]
-+            fold_seed = model_seed + fold_index
-+            try:
-+                predictions = _fit_comparison_model(
-+                    model_name,
-+                    comparison_factories[model_name],
-+                    X_train_fold,
-+                    X_val_fold,
-+                    y_train_fold,
-+                    y_val_fold,
-+                    fold_seed,
-+                )
-+            except (TypeError, ValueError, RuntimeError) as err:
-+                print(f"{model_name} fold {fold_index} skipped: {err}")
-+                continue
-+
-+            predictions_2d = as_2d_float_array(predictions, f"{model_name} predictions")
-+            y_val_values = as_2d_float_array(y_val_fold, "y_val_fold")
-+            for target_index, target_name in enumerate(target_names):
-+                metrics = _target_regression_metrics(
-+                    y_val_values[:, target_index],
-+                    predictions_2d[:, target_index],
-+                )
-+                fold_metric_rows.append(
-+                    {
-+                        "Target": target_name,
-+                        "Model": model_name,
-+                        "Fold": fold_index,
-+                        **metrics,
-+                    }
-+                )
-+
-+    summary_df, fold_df = _summarize_model_target_folds(fold_metric_rows)
-+    if summary_df.empty:
-+        print("Model comparison skipped: no model produced valid fold metrics.")
-+        return None
-+
-+    _write_model_comparison_workbook(summary_df, fold_df, report_path)
-+    print(tabulate(summary_df[["Target", "Rank", "Model", "R2", "RMSE", "MAE", "MAPE"]], headers="keys", tablefmt="github", showindex=False))
-+    print("===============================================================\n")
++    print(f"Saved optimization report: {report_path}")
 +    return report_path
 +
 +
-+
- def select_epochs_with_cv_early_stopping(
-     model_class,
-     hidden_sizes,
-     features=None,
-     folds=5,
-     patience=early_stopping_patience,
-     min_delta=early_stopping_min_delta,
- ):
-     """Recommend an epoch count using leakage-safe K-Fold early stopping."""
-     X_train, _, y_train, _ = read_prep_data(features)
-     full_X = X_train.reset_index(drop=True)
-     full_y = y_train.reset_index(drop=True)
-     if len(full_X) < 2:
-         return None
+ def print_refinery_variable_groups():
+     """Explain the refinery feature groups and the interactive override."""
+     print_divider("=")
+     print("Industrial refinery variable logic")
+     print_divider("-")
+     print("EARLY_VARIABLES (available early): " + ", ".join(EARLY_VARIABLES))
+     print("CONTROL_VARIABLES (operator-adjustable): " + ", ".join(CONTROL_VARIABLES))
+     print("TARGET_VARIABLES (future quality outputs): " + ", ".join(TARGET_VARIABLES))
+     print("Default safe inputs are EARLY_VARIABLES + CONTROL_VARIABLES.")
+     print("Interactive mode now lets you choose any non-output column from sugar_all.csv as an input.")
+     print("Safety rule: a column selected as an output target is always blocked from X.")
+     print_divider("=")
  
-     n_splits = min(int(folds), len(full_X))
-     if n_splits < 2:
-         return None
  
-     kfold = KFold(n_splits=n_splits, shuffle=True, random_state=data_seed)
-     best_epochs = []
-     input_size = full_X.shape[1]
-     output_size = as_2d_float_array(full_y, "full_y").shape[1]
-     max_epochs = max(list_epochs) if list_epochs else 200
+ def _format_industrial_value(value):
+     """Format values for compact refinery-control demo tables."""
+     if isinstance(value, (int, float, np.integer, np.floating)):
+         return f"{float(value):,.3f}"
+     try:
+         return f"{float(value):,.3f}"
+     except (TypeError, ValueError):
+         return str(value)
  
-@@ -3137,50 +3450,51 @@ X_train, X_test, y_train, y_test = read_prep_data(
+ 
+ def _risk_badge(risk_level):
+@@ -3450,50 +3761,51 @@ X_train, X_test, y_train, y_test = read_prep_data(
  inputs = X_train.columns.tolist()
  if saved_outputs:
      missing_saved_outputs = [col for col in saved_outputs if col not in y_train.columns.tolist()]
@@ -471,7 +511,8 @@ index 6003a9002a2be35945d15c5dd72ee05018f77ecc..bbb2b250324df590a07ac9a4a3c8e9b1
      y_test,
  )
  generate_feature_importance_reports(feature_importance_source_df)
-+generate_model_comparison_report(X_train, X_test, y_train, y_test)
++generate_prescriptive_optimization_report(feature_importance_source_df)
+ generate_model_comparison_report(X_train, X_test, y_train, y_test)
  active_features = list(inputs)
  if selected_saved_run:
      print("Loaded saved run metadata; reusing prepared inputs/outputs.")
@@ -496,4 +537,3 @@ index 6003a9002a2be35945d15c5dd72ee05018f77ecc..bbb2b250324df590a07ac9a4a3c8e9b1
      ans = input("Confirm these numbered inputs/outputs from prep_data folder [y]: ").strip().lower()
      if ans not in ("", "y", "yes"):
          print("Please re-run and choose your preferred input/output features.")
-         exit()
