@@ -687,10 +687,14 @@ def _clip_to_bounds(candidate, lower_bounds, upper_bounds):
 def _bayesian_optimize_controls(X, scalar_y, lower_bounds, upper_bounds, seed=123, iterations=3, candidates_per_iter=400):
     """Gaussian-process Bayesian optimization with Expected Improvement acquisition."""
     rng = np.random.default_rng(seed)
+    X_df = dataframe_from_tabular(X, "X")
     x_scaler = StandardScaler()
-    X_scaled = x_scaler.fit_transform(X)
-    lower_scaled = x_scaler.transform(lower_bounds.reshape(1, -1)).reshape(-1)
-    upper_scaled = x_scaler.transform(upper_bounds.reshape(1, -1)).reshape(-1)
+    X_scaled_df = fit_transform_dataframe(x_scaler, X_df)
+    lower_df = pd.DataFrame([lower_bounds], columns=X_df.columns)
+    upper_df = pd.DataFrame([upper_bounds], columns=X_df.columns)
+    lower_scaled = transform_dataframe(x_scaler, lower_df).to_numpy().reshape(-1)
+    upper_scaled = transform_dataframe(x_scaler, upper_df).to_numpy().reshape(-1)
+    X_scaled = X_scaled_df.to_numpy()
     scaled_low = np.minimum(lower_scaled, upper_scaled)
     scaled_high = np.maximum(lower_scaled, upper_scaled)
 
@@ -722,7 +726,8 @@ def _bayesian_optimize_controls(X, scalar_y, lower_bounds, upper_bounds, seed=12
         if chosen_score < float(np.min(optimizer_y[:-1])):
             best_scaled = chosen_scaled.copy()
 
-    recommended = x_scaler.inverse_transform(best_scaled.reshape(1, -1)).reshape(-1)
+    best_scaled_df = pd.DataFrame([best_scaled], columns=X_df.columns)
+    recommended = inverse_transform_dataframe(x_scaler, best_scaled_df).to_numpy().reshape(-1)
     return _clip_to_bounds(recommended, lower_bounds, upper_bounds)
 
 
@@ -2219,6 +2224,70 @@ def as_feature_matrix(data, name):
     return arr
 
 
+
+def dataframe_from_tabular(data, name, columns=None, index=None):
+    """Convert tabular data to a finite DataFrame that preserves feature names."""
+    if isinstance(data, pd.DataFrame):
+        dataframe = data.copy()
+    elif isinstance(data, pd.Series):
+        dataframe = data.to_frame(name=columns[0] if columns else (data.name or name))
+    else:
+        array = np.asarray(data, dtype=float)
+        if array.ndim == 1:
+            array = array.reshape(-1, 1)
+        if array.ndim != 2:
+            raise ValueError(f"{name} must be a 1D or 2D array; got shape {array.shape}.")
+        if columns is None:
+            columns = [f"{name}_{idx}" for idx in range(array.shape[1])]
+        dataframe = pd.DataFrame(array, columns=columns, index=index)
+    if columns is not None:
+        dataframe = dataframe.reindex(columns=columns)
+    dataframe = dataframe.apply(pd.to_numeric, errors="coerce")
+    if dataframe.shape[0] == 0:
+        raise ValueError(f"{name} must contain at least one row.")
+    if dataframe.shape[1] == 0:
+        raise ValueError(f"{name} must contain at least one column.")
+    if not np.isfinite(dataframe.to_numpy(dtype=float)).all():
+        raise ValueError(f"{name} contains NaN or infinite values.")
+    return dataframe
+
+
+def target_dataframe(data, name, columns=None):
+    """Convert target values to a DataFrame for named StandardScaler fitting."""
+    dataframe = dataframe_from_tabular(data, name, columns=columns)
+    if columns is None and dataframe.shape[1] == 1:
+        dataframe.columns = ["target"]
+    return dataframe
+
+
+def fit_transform_dataframe(scaler, dataframe):
+    """Fit a scaler on a DataFrame and return a DataFrame, not an ndarray."""
+    return pd.DataFrame(
+        scaler.fit_transform(dataframe),
+        columns=dataframe.columns,
+        index=dataframe.index,
+    )
+
+
+def transform_dataframe(scaler, dataframe):
+    """Transform a DataFrame and preserve scaler feature names in the result."""
+    columns = getattr(scaler, "feature_names_in_", dataframe.columns)
+    return pd.DataFrame(
+        scaler.transform(dataframe),
+        columns=columns,
+        index=dataframe.index,
+    )
+
+
+def inverse_transform_dataframe(scaler, dataframe):
+    """Inverse-transform scaled DataFrame values without losing column names."""
+    columns = getattr(scaler, "feature_names_in_", dataframe.columns)
+    return pd.DataFrame(
+        scaler.inverse_transform(dataframe),
+        columns=columns,
+        index=dataframe.index,
+    )
+
 def safe_r2_score(y_true, y_pred):
     """Compute finite multi-output R², returning None when undefined."""
     y_true_arr = as_2d_float_array(y_true, "y_true")
@@ -2343,10 +2412,14 @@ def fit_model(
     """
     set_model_seed(model_seed + run)
     try:
-        X_train_values = as_feature_matrix(X_train, "X_train")
-        X_test_values = as_feature_matrix(X_test, "X_test")
-        y_train_values = as_2d_float_array(y_train, "y_train")
-        y_test_values = as_2d_float_array(y_test, "y_test")
+        X_train_df = dataframe_from_tabular(X_train, "X_train")
+        X_test_df = dataframe_from_tabular(X_test, "X_test", columns=X_train_df.columns)
+        y_train_df = target_dataframe(y_train, "y_train")
+        y_test_df = target_dataframe(y_test, "y_test", columns=y_train_df.columns)
+        X_train_values = X_train_df.to_numpy(dtype=float)
+        X_test_values = X_test_df.to_numpy(dtype=float)
+        y_train_values = y_train_df.to_numpy(dtype=float)
+        y_test_values = y_test_df.to_numpy(dtype=float)
     except ValueError as err:
         print(f"Invalid training data: {err}")
         return None, None, None, model, None
@@ -2374,30 +2447,35 @@ def fit_model(
     use_validation = len(X_train_values) >= 10 and validation_fraction > 0
     if use_validation:
         x_fit, x_val, y_fit, y_val = train_test_split(
-            X_train_values,
-            y_train_values,
+            X_train_df,
+            y_train_df,
             test_size=validation_fraction,
             random_state=data_seed + run,
             shuffle=True,
         )
     else:
-        x_fit, y_fit = X_train_values, y_train_values
+        x_fit, y_fit = X_train_df, y_train_df
         x_val, y_val = None, None
 
     x_scaler = StandardScaler()
     y_scaler = StandardScaler()
     try:
-        X_fit_normalized = torch.as_tensor(x_scaler.fit_transform(x_fit), dtype=torch.float32)
+        X_fit_normalized_df = fit_transform_dataframe(x_scaler, x_fit)
+        X_val_normalized_df = transform_dataframe(x_scaler, x_val) if x_val is not None else None
+        X_test_normalized_df = transform_dataframe(x_scaler, X_test_df)
+        y_fit_normalized_df = fit_transform_dataframe(y_scaler, y_fit)
+        y_val_normalized_df = transform_dataframe(y_scaler, y_val) if y_val is not None else None
+        X_fit_normalized = torch.as_tensor(X_fit_normalized_df.to_numpy(), dtype=torch.float32)
         X_val_normalized = (
-            torch.as_tensor(x_scaler.transform(x_val), dtype=torch.float32)
-            if x_val is not None
+            torch.as_tensor(X_val_normalized_df.to_numpy(), dtype=torch.float32)
+            if X_val_normalized_df is not None
             else None
         )
-        X_test_normalized = torch.as_tensor(x_scaler.transform(X_test_values), dtype=torch.float32)
-        y_fit_normalized = torch.as_tensor(y_scaler.fit_transform(y_fit), dtype=torch.float32)
+        X_test_normalized = torch.as_tensor(X_test_normalized_df.to_numpy(), dtype=torch.float32)
+        y_fit_normalized = torch.as_tensor(y_fit_normalized_df.to_numpy(), dtype=torch.float32)
         y_val_normalized = (
-            torch.as_tensor(y_scaler.transform(y_val), dtype=torch.float32)
-            if y_val is not None
+            torch.as_tensor(y_val_normalized_df.to_numpy(), dtype=torch.float32)
+            if y_val_normalized_df is not None
             else None
         )
     except ValueError as err:
@@ -2534,7 +2612,11 @@ def fit_model(
             return None, None, None, model, None
 
     try:
-        predictions_np = y_scaler.inverse_transform(predictions_norm.detach().cpu().numpy())
+        predictions_norm_df = pd.DataFrame(
+            predictions_norm.detach().cpu().numpy(),
+            columns=y_train_df.columns,
+        )
+        predictions_np = inverse_transform_dataframe(y_scaler, predictions_norm_df).to_numpy()
         predictions_np = as_2d_float_array(predictions_np, "predictions")
         mse = float(np.mean((predictions_np - y_test_values) ** 2))
         r2 = safe_r2_score(y_test_values, predictions_np)
@@ -2676,14 +2758,16 @@ def cross_validate_model(
 
 def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
     """Fit a scikit-learn regressor with train-only feature scaling."""
-    X_train_values = as_feature_matrix(X_train, "X_train")
-    X_test_values = as_feature_matrix(X_test, "X_test")
+    X_train_df = dataframe_from_tabular(X_train, "X_train")
+    X_test_df = dataframe_from_tabular(X_test, "X_test", columns=X_train_df.columns)
     y_train_values = as_2d_float_array(y_train, "y_train")
     y_test_values = as_2d_float_array(y_test, "y_test")
 
     scaler_x = StandardScaler()
-    X_train_scaled = scaler_x.fit_transform(X_train_values)
-    X_test_scaled = scaler_x.transform(X_test_values)
+    X_train_scaled_df = fit_transform_dataframe(scaler_x, X_train_df)
+    X_test_scaled_df = transform_dataframe(scaler_x, X_test_df)
+    X_train_scaled = X_train_scaled_df.to_numpy()
+    X_test_scaled = X_test_scaled_df.to_numpy()
 
     is_multi_output = y_train_values.shape[1] > 1
     y_train_fit = y_train_values if is_multi_output else y_train_values.ravel()
@@ -3075,12 +3159,18 @@ def select_epochs_with_cv_early_stopping(
         x_scaler = StandardScaler()
         y_scaler = StandardScaler()
         try:
-            x_train_tensor = torch.as_tensor(x_scaler.fit_transform(x_train_fold), dtype=torch.float32)
-            x_val_tensor = torch.as_tensor(x_scaler.transform(x_val_fold), dtype=torch.float32)
-            y_train_values = as_2d_float_array(y_train_fold, "y_train_fold")
-            y_val_values = as_2d_float_array(y_val_fold, "y_val_fold")
-            y_train_tensor = torch.as_tensor(y_scaler.fit_transform(y_train_values), dtype=torch.float32)
-            y_val_tensor = torch.as_tensor(y_scaler.transform(y_val_values), dtype=torch.float32)
+            x_train_scaled = fit_transform_dataframe(x_scaler, x_train_fold)
+            x_val_scaled = transform_dataframe(x_scaler, x_val_fold)
+            y_train_frame = target_dataframe(y_train_fold, "y_train_fold")
+            y_val_frame = target_dataframe(y_val_fold, "y_val_fold", columns=y_train_frame.columns)
+            y_train_values = y_train_frame.to_numpy(dtype=float)
+            y_val_values = y_val_frame.to_numpy(dtype=float)
+            y_train_scaled = fit_transform_dataframe(y_scaler, y_train_frame)
+            y_val_scaled = transform_dataframe(y_scaler, y_val_frame)
+            x_train_tensor = torch.as_tensor(x_train_scaled.to_numpy(), dtype=torch.float32)
+            x_val_tensor = torch.as_tensor(x_val_scaled.to_numpy(), dtype=torch.float32)
+            y_train_tensor = torch.as_tensor(y_train_scaled.to_numpy(), dtype=torch.float32)
+            y_val_tensor = torch.as_tensor(y_val_scaled.to_numpy(), dtype=torch.float32)
             model = make_torch_model(model_class, input_size, hidden_sizes, output_size)
         except (TypeError, ValueError) as err:
             print(f"CV fold {fold_index} skipped: {err}")
@@ -3190,8 +3280,11 @@ def _train_model_for_shap(model_class, inputs, num_epochs, hidden_sizes):
         scaler = getattr(model, "input_scaler_", None)
         if scaler is None:
             scaler = StandardScaler().fit(X_train)
-        X_train_explain = scaler.transform(X_train)
-        X_test_explain = scaler.transform(X_test)
+        X_train_explain = transform_dataframe(scaler, dataframe_from_tabular(X_train, "X_train")).to_numpy()
+        X_test_explain = transform_dataframe(
+            scaler,
+            dataframe_from_tabular(X_test, "X_test", columns=getattr(scaler, "feature_names_in_", X_train.columns)),
+        ).to_numpy()
         return model, X_train, X_train_explain, X_test_explain, True
 
     X_train, X_test, y_train, y_test = read_prep_data(inputs)
@@ -3207,8 +3300,11 @@ def _train_model_for_shap(model_class, inputs, num_epochs, hidden_sizes):
     scaler = getattr(fitted_model, "feature_scaler_", None)
     if scaler is None:
         scaler = StandardScaler().fit(X_train)
-    X_train_explain = scaler.transform(X_train)
-    X_test_explain = scaler.transform(X_test)
+    X_train_explain = transform_dataframe(scaler, dataframe_from_tabular(X_train, "X_train")).to_numpy()
+    X_test_explain = transform_dataframe(
+        scaler,
+        dataframe_from_tabular(X_test, "X_test", columns=getattr(scaler, "feature_names_in_", X_train.columns)),
+    ).to_numpy()
     return fitted_model, X_train, X_train_explain, X_test_explain, False
 
 
@@ -3801,9 +3897,70 @@ def jackknife_sensitivity_analysis(model_class, data, inputs, output, num_epochs
     sensitivity_table['Variance'] = variances
     return sensitivity_table
 
+def evaluate_feature_subset_on_training_split(
+    model_class,
+    features,
+    num_epochs,
+    hidden_sizes,
+    validation_size=0.25,
+):
+    """Score a feature subset using only the training partition.
+
+    The held-out test partition from prep_data is intentionally discarded here.
+    Feature selection is a model-selection step, so candidate subsets must be
+    chosen on an inner train/validation split of the training data and the final
+    test split must remain untouched until final model evaluation.
+    """
+    X_train_full, _X_test_unused, y_train_full, _y_test_unused = read_prep_data(features)
+    if len(X_train_full) < 3:
+        return None
+
+    inner_test_size = min(max(float(validation_size), 0.1), 0.5)
+    X_fit, X_val, y_fit, y_val = train_test_split(
+        X_train_full,
+        y_train_full,
+        test_size=inner_test_size,
+        random_state=data_seed,
+    )
+    X_fit, X_val, _ = apply_missing_value_pipeline(X_fit, X_val, verbose=False)
+    if X_fit.empty or X_val.empty:
+        return None
+
+    scores = []
+    input_size = X_fit.shape[1]
+    output_size = as_2d_float_array(y_fit, "y_fit").shape[1]
+    for i in range(int(num_repeats)):
+        try:
+            if is_torch_model(model_class):
+                model = make_torch_model(model_class, input_size, hidden_sizes, output_size)
+                if not validate_hidden_size_compatibility(model, hidden_sizes):
+                    continue
+                _predictions, _mse, r2, _model, _report = fit_model(
+                    model,
+                    X_fit,
+                    X_val,
+                    y_fit,
+                    y_val,
+                    num_epochs,
+                    run=i,
+                    optimization_scope="weights",
+                )
+            else:
+                model = model_class(model_seed + i)
+                _predictions, _mse, r2, _model = fit_sklearn_model(model, X_fit, X_val, y_fit, y_val)
+        except (TypeError, ValueError, RuntimeError) as err:
+            print(f"Feature-selection run {i + 1} failed for {features}: {err}")
+            continue
+        if r2 is not None:
+            scores.append(float(r2) * 100.0)
+
+    if not scores:
+        return None
+    return float(np.mean(scores))
+
+
 def backward_feature_elimination(model_class, data, inputs, output, num_epochs, hidden_sizes):
-    mean_r2, _, _, _, _, _, _run, _ = repeat_fit_model(model_class,
-            num_repeats, num_epochs, hidden_sizes,features=inputs)
+    mean_r2 = evaluate_feature_subset_on_training_split(model_class, inputs, num_epochs, hidden_sizes)
     if mean_r2 is None:
         print("Backward elimination skipped because the baseline model did not train successfully.")
         return pd.DataFrame(columns=["features", "R2"])
@@ -3815,11 +3972,14 @@ def backward_feature_elimination(model_class, data, inputs, output, num_epochs, 
     rows = [] # Rows of a table to show the features and the result
     rows.append({"features": ", ".join(inputs), "R2": round(mean_r2,2)})
     while(True):
+        if len(candidates) <= 1:
+            print("Only one feature remains; stopping backward elimination.")
+            break
         results = {}
         for feature in candidates:
             # Selet other features except for current feature
             features = [f for f in candidates if f != feature]
-            mean_r2, _, _, _, _, _, _run, _ = repeat_fit_model(model_class, num_repeats, num_epochs, hidden_sizes, features=features)
+            mean_r2 = evaluate_feature_subset_on_training_split(model_class, features, num_epochs, hidden_sizes)
             if mean_r2 is None:
                 continue
             results[feature] = mean_r2
@@ -3875,7 +4035,7 @@ def forward_feature_selection(model_class, data, inputs, output, num_epochs, hid
             else:
                 features = [feature] + candidates
 
-            mean_r2, _, _, _, _, _, _run, _ = repeat_fit_model(model_class, num_repeats, num_epochs, hidden_sizes, features=features)
+            mean_r2 = evaluate_feature_subset_on_training_split(model_class, features, num_epochs, hidden_sizes)
             if mean_r2 is None:
                 continue
             results[feature] = mean_r2

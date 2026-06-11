@@ -13,10 +13,25 @@ from itertools import product
 from math import isfinite
 from statistics import mean, pstdev
 
+import pandas as pd
+
 try:
     from refinery_variables import CONTROL_VARIABLES, validate_model_inputs
 except ImportError:  # Allows package-style imports when NN is imported as a package.
     from .refinery_variables import CONTROL_VARIABLES, validate_model_inputs
+
+
+def _feature_dataframe(values, input_features):
+    """Build a one-row feature DataFrame so fitted scalers see feature names."""
+    return pd.DataFrame(values, columns=input_features)
+
+
+def _transform_with_feature_names(scaler, values, input_features):
+    """Transform features as a DataFrame and return a DataFrame with names intact."""
+    feature_frame = _feature_dataframe(values, input_features)
+    transformed = scaler.transform(feature_frame)
+    columns = getattr(scaler, "feature_names_in_", feature_frame.columns)
+    return pd.DataFrame(transformed, columns=columns, index=feature_frame.index)
 
 
 # Industrially conservative fallback envelopes.  When historical data is passed,
@@ -167,7 +182,7 @@ def _model_predict_one(trained_model, feature_row, input_features, output_featur
         model_input = values
         scaler = getattr(trained_model, "feature_scaler_", None) or getattr(trained_model, "input_scaler_", None)
         if scaler is not None:
-            model_input = scaler.transform(values)
+            model_input = _transform_with_feature_names(scaler, values, input_features)
         prediction = trained_model.predict(model_input)
         if hasattr(prediction, "tolist"):
             prediction = prediction.tolist()
@@ -183,7 +198,7 @@ def _model_predict_one(trained_model, feature_row, input_features, output_featur
 
     scaler = getattr(trained_model, "input_scaler_", None)
     if scaler is not None:
-        values = scaler.transform(values)
+        values = _transform_with_feature_names(scaler, values, input_features)
     tensor = torch.tensor(values, dtype=torch.float32)
 
     trained_model.eval()
@@ -192,7 +207,9 @@ def _model_predict_one(trained_model, feature_row, input_features, output_featur
     prediction_np = prediction.detach().numpy()
     target_scaler = getattr(trained_model, "target_scaler_", None)
     if target_scaler is not None:
-        prediction_np = target_scaler.inverse_transform(prediction_np)
+        target_columns = getattr(target_scaler, "feature_names_in_", output_features)
+        prediction_frame = pd.DataFrame(prediction_np, columns=target_columns)
+        prediction_np = target_scaler.inverse_transform(prediction_frame)
     prediction_values = prediction_np.reshape(-1).tolist()
     return {name: float(prediction_values[index]) for index, name in enumerate(output_features)}
 

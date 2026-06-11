@@ -33,6 +33,36 @@ ann_weight_decay = 1e-4
 early_stopping_patience = 20
 early_stopping_min_delta = 1e-4
 validation_fraction = 0.2
+
+
+def dataframe_from_tabular(data, columns=None, index=None):
+    if isinstance(data, pd.DataFrame):
+        dataframe = data.copy()
+        return dataframe.reindex(columns=columns) if columns is not None else dataframe
+    if isinstance(data, pd.Series):
+        return data.to_frame(name=columns[0] if columns else data.name)
+    array = np.asarray(data, dtype=float)
+    if array.ndim == 1:
+        array = array.reshape(-1, 1)
+    if columns is None:
+        columns = [f"feature_{idx}" for idx in range(array.shape[1])]
+    return pd.DataFrame(array, columns=columns, index=index)
+
+
+def fit_transform_dataframe(scaler, dataframe):
+    return pd.DataFrame(
+        scaler.fit_transform(dataframe),
+        columns=dataframe.columns,
+        index=dataframe.index,
+    )
+
+
+def transform_dataframe(scaler, dataframe):
+    return pd.DataFrame(
+        scaler.transform(dataframe),
+        columns=dataframe.columns,
+        index=dataframe.index,
+    )
 lr_plateau_patience = 8
 lr_plateau_factor = 0.5
 min_learning_rate = 1e-5
@@ -126,40 +156,47 @@ class Relu2HiddenLayer(Linear2HiddenLayer):
 def fit_model(model_class, X_train, X_test, y_train, y_test, num_epochs, 
         display_steps=False):
    # Fit feature and target scalers on the fitting split only.
-    X_train_values = np.asarray(X_train, dtype=float)
-    X_test_values = np.asarray(X_test, dtype=float)
-    y_train_values = np.asarray(y_train.values if hasattr(y_train, "values") else y_train).reshape(-1, 1)
-    y_test_values = np.asarray(y_test.values if hasattr(y_test, "values") else y_test).reshape(-1, 1)
+    X_train_df = dataframe_from_tabular(X_train)
+    X_test_df = dataframe_from_tabular(X_test, columns=X_train_df.columns)
+    y_train_df = dataframe_from_tabular(y_train, columns=["target"])
+    y_test_df = dataframe_from_tabular(y_test, columns=y_train_df.columns)
+    y_test_values = y_test_df.to_numpy()
 
-    use_validation = len(X_train_values) >= 10 and validation_fraction > 0
+    use_validation = len(X_train_df) >= 10 and validation_fraction > 0
     if use_validation:
         x_fit, x_val, y_fit, y_val = train_test_split(
-            X_train_values,
-            y_train_values,
+            X_train_df,
+            y_train_df,
             test_size=validation_fraction,
             random_state=data_seed,
             shuffle=True,
         )
     else:
-        x_fit, y_fit = X_train_values, y_train_values
+        x_fit, y_fit = X_train_df, y_train_df
         x_val, y_val = None, None
 
     x_scaler = StandardScaler()
     y_scaler = StandardScaler()
-    X_fit_normalized = torch.tensor(x_scaler.fit_transform(x_fit), dtype=torch.float32)
+    X_fit_normalized_df = fit_transform_dataframe(x_scaler, x_fit)
+    X_val_normalized_df = transform_dataframe(x_scaler, x_val) if x_val is not None else None
+    X_test_normalized_df = transform_dataframe(x_scaler, X_test_df)
+    y_fit_normalized_df = fit_transform_dataframe(y_scaler, y_fit)
+    y_val_normalized_df = transform_dataframe(y_scaler, y_val) if y_val is not None else None
+    y_test_normalized_df = transform_dataframe(y_scaler, y_test_df)
+    X_fit_normalized = torch.tensor(X_fit_normalized_df.to_numpy(), dtype=torch.float32)
     X_val_normalized = (
-        torch.tensor(x_scaler.transform(x_val), dtype=torch.float32)
-        if x_val is not None else None
+        torch.tensor(X_val_normalized_df.to_numpy(), dtype=torch.float32)
+        if X_val_normalized_df is not None else None
     )
-    X_test_normalized = torch.tensor(x_scaler.transform(X_test_values), dtype=torch.float32)
-    y_fit_normalized = torch.tensor(y_scaler.fit_transform(y_fit), dtype=torch.float32)
+    X_test_normalized = torch.tensor(X_test_normalized_df.to_numpy(), dtype=torch.float32)
+    y_fit_normalized = torch.tensor(y_fit_normalized_df.to_numpy(), dtype=torch.float32)
     y_val_normalized = (
-        torch.tensor(y_scaler.transform(y_val), dtype=torch.float32)
-        if y_val is not None else None
+        torch.tensor(y_val_normalized_df.to_numpy(), dtype=torch.float32)
+        if y_val_normalized_df is not None else None
     )
-    y_test_normalized = torch.tensor(y_scaler.transform(y_test_values), dtype=torch.float32)
+    y_test_normalized = torch.tensor(y_test_normalized_df.to_numpy(), dtype=torch.float32)
 
-    input_size = X_train_values.shape[1]
+    input_size = X_train_df.shape[1]
     # Instantiate the model and define loss function and optimizer
     model = model_class(input_size)
     model.input_scaler_ = x_scaler
@@ -251,7 +288,11 @@ def fit_model(model_class, X_train, X_test, y_train, y_test, num_epochs,
     
     mse = nn.MSELoss()(predictions, y_test_normalized)
     # Denormalize the predictions and y_test
-    predictions_np = y_scaler.inverse_transform(predictions.numpy())
+    predictions_normalized_df = pd.DataFrame(predictions.numpy(), columns=y_train_df.columns)
+    predictions_np = pd.DataFrame(
+        y_scaler.inverse_transform(predictions_normalized_df),
+        columns=y_train_df.columns,
+    ).to_numpy()
     y_test_np = y_test_values
 
     # Calculate R-squared
