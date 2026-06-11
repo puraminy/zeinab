@@ -23,10 +23,15 @@ EARLY_VARIABLES = (
 # settings/controlled measurements that can be changed before final quality is
 # observed (for example CO2, pH, lime/alkalinity controls).
 CONTROL_VARIABLES = (
+    "lime_milk_baume",
     "lime_alkalinity",
     "co2_percent",
     "carbonated_alkalinity",
     "carbonated_pH",
+    "sulphited_pH",
+    "sulphited_brix",
+    "standard_liquor_pH",
+    "standard_liquor_brix",
 )
 
 

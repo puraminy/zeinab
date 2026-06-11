@@ -49,7 +49,11 @@ from refinery_variables import (
     remove_name_based_leakage_inputs,
     validate_model_inputs,
 )
-from recommendation_engine import RecommendationError, recommend_operating_conditions
+from recommendation_engine import (
+    DEFAULT_RECOMMENDED_CONTROLS,
+    RecommendationError,
+    recommend_operating_conditions,
+)
 import inspect
 import models
 import json
@@ -58,7 +62,7 @@ import math
 from datetime import datetime
 from collections import OrderedDict
 
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Font, PatternFill, Alignment
 
 try:
     from xgboost import XGBRegressor
@@ -85,6 +89,7 @@ LEAKAGE_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "leakage_report.xlsx")
 FEATURE_IMPORTANCE_REPORTS_DIR = os.path.join(MODULE_DIR, "reports")
 MODEL_COMPARISON_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_comparison.xlsx")
 OPTIMIZATION_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "optimization_report.xlsx")
+OPERATOR_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "operator_report.xlsx")
 
 
 FEATURE_IMPORTANCE_TARGETS = (
@@ -110,6 +115,8 @@ PRESCRIPTIVE_OPTIMIZATION_VARIABLES = (
     "standard_liquor_brix",
 )
 
+OPERATOR_RECOMMENDATION_VARIABLES = DEFAULT_RECOMMENDED_CONTROLS
+
 PRESCRIPTIVE_OPTIMIZATION_OBJECTIVES = (
     "white_total_points",
     "white_solution_color",
@@ -119,6 +126,7 @@ PRESCRIPTIVE_OPTIMIZATION_OBJECTIVES = (
 
 
 FUTURE_QUALITY_INPUT_CANDIDATES = [
+    "lime_milk_baume",
     "filtercake_moisture",
     "filtercake_sugar",
     "sweetwater_brix",
@@ -815,6 +823,138 @@ def _risk_badge(risk_level):
         "HIGH": "HIGH - Immediate operator attention",
     }
     return badges.get(risk_level, risk_level)
+
+
+
+def _operator_expected_improvement(recommendation):
+    """Return aggregate expected quality gain (positive means lower predicted objective)."""
+    current_prediction = recommendation.get("current_prediction", {}) or {}
+    future_quality = recommendation.get("predicted_future_quality", {}) or {}
+    target_weights = recommendation.get("target_weights", {}) or {}
+    improvements = []
+    for target, weight in target_weights.items():
+        if target not in current_prediction or target not in future_quality:
+            continue
+        improvements.append((float(current_prediction[target]) - float(future_quality[target])) * float(weight))
+    if improvements:
+        return float(sum(improvements) / max(sum(abs(float(w)) for w in target_weights.values()), 1e-9))
+
+    for target, before in current_prediction.items():
+        if target in future_quality:
+            improvements.append(float(before) - float(future_quality[target]))
+    return float(sum(improvements) / len(improvements)) if improvements else 0.0
+
+
+def _operator_confidence(recommendation):
+    """Estimate recommendation confidence from model risk and search coverage."""
+    risk_level = str(recommendation.get("risk_prediction", {}).get("risk_level", "MEDIUM")).upper()
+    base = {"LOW": 0.86, "MEDIUM": 0.70, "HIGH": 0.52}.get(risk_level, 0.60)
+    searched = int(recommendation.get("searched_candidates", 0) or 0)
+    if searched >= 1000:
+        base += 0.04
+    elif searched < 25:
+        base -= 0.08
+    return max(0.05, min(base, 0.95))
+
+
+def _autofit_excel_columns(writer, sheet_name):
+    """Resize worksheet columns after a pandas export."""
+    worksheet = writer.sheets.get(sheet_name)
+    if worksheet is None:
+        return
+    for column_cells in worksheet.columns:
+        values = [str(cell.value) for cell in column_cells if cell.value is not None]
+        width = min(max([len(value) for value in values] + [10]) + 2, 60)
+        worksheet.column_dimensions[column_cells[0].column_letter].width = width
+    for cell in worksheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1F4E78")
+        cell.alignment = Alignment(horizontal="center")
+
+
+def save_operator_report(recommendation, report_path=OPERATOR_REPORT_PATH):
+    """Write the operator-facing refinery recommendation workbook.
+
+    The workbook gives operators the requested side-by-side view of the current
+    set-points, AI-recommended set-points, predicted quality change, risk level,
+    and confidence, plus supporting quality and advisory sheets.
+    """
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+
+    current_settings = recommendation.get("current_settings", {}) or {}
+    recommended_settings = recommendation.get("recommended_settings", {}) or {}
+    current_prediction = recommendation.get("current_prediction", {}) or {}
+    future_quality = recommendation.get("predicted_future_quality", {}) or {}
+    risk = recommendation.get("risk_prediction", {}) or {}
+    current_risk = recommendation.get("current_risk_prediction", {}) or {}
+    control_ranges = recommendation.get("control_ranges", {}) or {}
+    improvement = _operator_expected_improvement(recommendation)
+    confidence = _operator_confidence(recommendation)
+    risk_level = risk.get("risk_level", "UNKNOWN")
+
+    setting_rows = []
+    for variable in OPERATOR_RECOMMENDATION_VARIABLES:
+        if variable not in recommended_settings and variable not in current_settings:
+            continue
+        current_value = current_settings.get(variable)
+        recommended_value = recommended_settings.get(variable)
+        change = None
+        if current_value is not None and recommended_value is not None:
+            change = float(recommended_value) - float(current_value)
+        low, high = control_ranges.get(variable, (None, None))
+        setting_rows.append({
+            "Setting": variable,
+            "Current": current_value,
+            "Recommended": recommended_value,
+            "Change": change,
+            "Expected Quality Improvement": improvement,
+            "Risk Level": risk_level,
+            "Confidence": confidence,
+            "Search Low": low,
+            "Search High": high,
+        })
+
+    quality_rows = []
+    for target, current_value in current_prediction.items():
+        recommended_value = future_quality.get(target)
+        quality_rows.append({
+            "Quality Target": target,
+            "Current Predicted Quality": current_value,
+            "Recommended Predicted Quality": recommended_value,
+            "Expected Quality Improvement": (
+                float(current_value) - float(recommended_value)
+                if recommended_value is not None else None
+            ),
+            "Current Risk Level": current_risk.get("risk_level", "UNKNOWN"),
+            "Recommended Risk Level": risk_level,
+            "Confidence": confidence,
+        })
+
+    summary_rows = [{
+        "Created At UTC": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "Current Predicted Quality": json.dumps(current_prediction, ensure_ascii=False, default=float),
+        "Recommended Predicted Quality": json.dumps(future_quality, ensure_ascii=False, default=float),
+        "Expected Quality Improvement": improvement,
+        "Risk Level": risk_level,
+        "Confidence": confidence,
+        "Candidate Simulations": recommendation.get("searched_candidates"),
+        "Report Path": report_path,
+    }]
+
+    risk_driver_rows = risk.get("risk_drivers", []) or []
+    warning_rows = [{"Operator Advisory": warning} for warning in risk.get("operator_warnings", [])]
+
+    with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
+        pd.DataFrame(summary_rows).to_excel(writer, sheet_name="Summary", index=False)
+        pd.DataFrame(setting_rows).to_excel(writer, sheet_name="Recommended Settings", index=False)
+        pd.DataFrame(quality_rows).to_excel(writer, sheet_name="Predicted Quality", index=False)
+        pd.DataFrame(risk_driver_rows).to_excel(writer, sheet_name="Risk Drivers", index=False)
+        pd.DataFrame(warning_rows).to_excel(writer, sheet_name="Operator Advisory", index=False)
+        for sheet_name in writer.sheets:
+            _autofit_excel_columns(writer, sheet_name)
+
+    print(f"Saved operator report: {report_path}")
+    return report_path
 
 
 def print_industrial_operator_demo(recommendation, input_features, output_features):
@@ -4261,6 +4401,16 @@ if answer != "0":
             print(f"Saved model checkpoint: {weights_path}")
 
             try:
+                operator_controls = tuple(
+                    variable for variable in OPERATOR_RECOMMENDATION_VARIABLES
+                    if variable in active_features
+                )
+                if not operator_controls:
+                    raise RecommendationError(
+                        "None of the requested operator recommendation settings are present "
+                        "in the trained input features."
+                    )
+                recommendation_grid_steps = 3 if len(operator_controls) > 4 else 7
                 recommendation = recommend_operating_conditions(
                     current_conditions=X_test.iloc[0],
                     trained_model=best_model_instance,
@@ -4268,16 +4418,20 @@ if answer != "0":
                     output_features=outputs,
                     historical_inputs=X_train,
                     historical_targets=y_train,
+                    control_variables=operator_controls,
+                    grid_steps=recommendation_grid_steps,
                 )
                 recommendation_path = os.path.join("tables", "recommended-operating-conditions.json")
                 with open(recommendation_path, "w", encoding="utf-8") as fp:
                     json.dump(recommendation, fp, indent=2, ensure_ascii=False, default=float)
+                operator_report_path = save_operator_report(recommendation)
                 print_industrial_operator_demo(
                     recommendation=recommendation,
                     input_features=active_features,
                     output_features=outputs,
                 )
                 print(f"Saved recommendation: {recommendation_path}")
+                print(f"Saved operator workbook: {operator_report_path}")
             except (RecommendationError, ValueError, KeyError, TypeError) as err:
                 print(f"Recommendation engine skipped: {err}")
         else:

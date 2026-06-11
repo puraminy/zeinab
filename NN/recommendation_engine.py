@@ -22,18 +22,28 @@ except ImportError:  # Allows package-style imports when NN is imported as a pac
 # Industrially conservative fallback envelopes.  When historical data is passed,
 # these are tightened to the observed operating window before searching.
 DEFAULT_CONTROL_RANGES = {
-    "co2_percent": (0.5, 8.0),
-    "carbonated_pH": (7.0, 11.5),
+    "lime_milk_baume": (5.0, 25.0),
     "lime_alkalinity": (0.01, 0.25),
+    "co2_percent": (0.5, 8.0),
     "carbonated_alkalinity": (0.01, 0.35),
+    "carbonated_pH": (7.0, 11.5),
+    "sulphited_pH": (5.0, 9.5),
+    "sulphited_brix": (40.0, 75.0),
+    "standard_liquor_pH": (5.0, 9.5),
+    "standard_liquor_brix": (50.0, 75.0),
 }
 
-# Only the requested knobs are optimized by default.  carbonated_alkalinity stays
+# Requested operator knobs are optimized by default. carbonated_alkalinity stays
 # available for callers that explicitly include it in control_variables.
 DEFAULT_RECOMMENDED_CONTROLS = (
+    "lime_milk_baume",
+    "lime_alkalinity",
     "co2_percent",
     "carbonated_pH",
-    "lime_alkalinity",
+    "sulphited_pH",
+    "sulphited_brix",
+    "standard_liquor_pH",
+    "standard_liquor_brix",
 )
 
 # Prefer outputs that are direct color measurements, then the aggregate quality
@@ -380,8 +390,9 @@ def recommend_operating_conditions(
     historical_inputs / historical_targets:
         Optional training data used to tighten ranges and define risk thresholds.
     control_variables:
-        Controllable variables to search.  Defaults to CO2 percentage, pH, and
-        lime alkalinity, matching the requested industrial levers.
+        Controllable variables to search. Defaults to the requested operator
+        advisory set-points (lime, CO2, carbonated, sulphited, and standard
+        liquor pH/brix settings).
     control_ranges:
         Optional explicit ranges, e.g. {"carbonated_pH": (8.8, 10.5)}.
     grid_steps:
@@ -406,7 +417,11 @@ def recommend_operating_conditions(
     if grid_steps < 2:
         raise RecommendationError("grid_steps must be at least 2 so each range is actually searched.")
 
-    validate_model_inputs(input_features, output_features=output_features)
+    validate_model_inputs(
+        input_features,
+        output_features=output_features,
+        optional_future_quality_inputs=control_variables,
+    )
     disallowed_controls = [variable for variable in control_variables if variable not in CONTROL_VARIABLES]
     if disallowed_controls:
         raise RecommendationError(f"Only refinery control variables can be optimized: {disallowed_controls}")

@@ -120,11 +120,16 @@ The project now includes a prescriptive recommendation layer in `recommendation_
 
 ### Controllable variables searched
 
-By default the engine searches the requested industrial control levers:
+By default the engine searches the requested industrial operator control levers:
 
+* `lime_milk_baume`
+* `lime_alkalinity`
 * `co2_percent`
 * `carbonated_pH`
-* `lime_alkalinity`
+* `sulphited_pH`
+* `sulphited_brix`
+* `standard_liquor_pH`
+* `standard_liquor_brix`
 
 The wider refinery control list still includes `carbonated_alkalinity`, but that variable is only optimized when explicitly requested.
 
@@ -137,7 +142,7 @@ The search never changes raw/early process conditions.  It only changes approved
 For every candidate set-point combination, the engine:
 
 1. keeps all current non-controllable conditions fixed;
-2. substitutes one candidate combination for CO2, pH, and lime alkalinity;
+2. substitutes one candidate combination for the available requested operator set-points;
 3. calls the trained model to predict future sugar quality/color;
 4. scores the candidate by minimizing predicted future color/quality output;
 5. classifies predicted sugar quality as `LOW`, `MEDIUM`, or `HIGH` industrial risk using historical quality thresholds (`LOW` at or below P50, `MEDIUM` between P50 and P80, and `HIGH` above P80 when history is available);
@@ -145,7 +150,7 @@ For every candidate set-point combination, the engine:
 7. adds a small movement and range-edge penalty so the recommendation avoids unnecessary set-point jumps and unrealistic boundary operation;
 8. returns the feasible candidate with the lowest objective score.
 
-The recommendation result now includes `risk_prediction`, `current_risk_prediction`, per-target risk drivers, and clear `operator_warnings`.  When `run.py` trains and saves a PyTorch checkpoint, it prints the recommended risk level and operator warnings, then writes the full recommendation to `tables/recommended-operating-conditions.json`.
+The recommendation result now includes `risk_prediction`, `current_risk_prediction`, per-target risk drivers, and clear `operator_warnings`.  When `run.py` trains and saves a PyTorch checkpoint, it prints the recommended risk level and operator warnings, writes the full recommendation to `tables/recommended-operating-conditions.json`, and creates the operator-facing workbook at `reports/operator_report.xlsx`.
 
 ### Industrial operator demo output
 
@@ -153,7 +158,7 @@ After the best PyTorch model is saved, `run.py` now prints a professional operat
 
 1. the shift operator enters the current refinery conditions;
 2. the AI predicts future sugar quality at the current conditions;
-3. the AI recommends optimal controllable variables such as CO2 percentage, carbonated pH, and lime alkalinity;
+3. the AI recommends optimal controllable variables such as lime milk baumé, lime alkalinity, CO2 percentage, carbonated pH, sulphited pH/brix, and standard-liquor pH/brix;
 4. the AI prints the expected future quality after applying the recommended set-points;
 5. the AI prints the industrial risk level, risk drivers, and operator advisory messages.
 
