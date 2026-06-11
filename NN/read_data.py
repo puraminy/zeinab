@@ -956,19 +956,30 @@ def read_prep_data(inputs=None, prep_folder="prep_data", optional_future_quality
     _nan_report(y_test, "y_test")
 
     # Fill missing values in inputs so sklearn regressors that do not support NaN can train.
+    # Medians and any columns dropped for being entirely missing are learned from
+    # X_train only, then applied unchanged to X_test.
     input_fill_values = X_train.median(numeric_only=True)
+    all_missing_train_columns = input_fill_values[input_fill_values.isna()].index.tolist()
+    if all_missing_train_columns:
+        print(
+            f"{ANSI_YELLOW}Dropping input columns with no non-missing training values: "
+            + ", ".join(all_missing_train_columns)
+            + f"{ANSI_RESET}"
+        )
+        X_train = X_train.drop(columns=all_missing_train_columns)
+        X_test = X_test.drop(columns=all_missing_train_columns, errors="ignore")
+        input_fill_values = input_fill_values.drop(index=all_missing_train_columns)
+
+    X_test = X_test.reindex(columns=X_train.columns)
     X_train = X_train.fillna(input_fill_values)
     X_test = X_test.fillna(input_fill_values)
     remaining_train_nan = int(X_train.isna().sum().sum())
     remaining_test_nan = int(X_test.isna().sum().sum())
     if remaining_train_nan or remaining_test_nan:
-        print(
-            f"{ANSI_YELLOW}Some input NaNs remained after median-fill. "
-            "Applying forward/backward fill as fallback for compatibility."
-            f"{ANSI_RESET}"
+        raise ValueError(
+            "Input NaNs remained after train-only median imputation; "
+            "check for non-numeric columns or empty training features."
         )
-        X_train = X_train.ffill().bfill()
-        X_test = X_test.ffill().bfill()
 
     print("Data loaded successfully!")
     print(f"X_train shape: {X_train.shape}")

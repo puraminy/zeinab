@@ -361,10 +361,19 @@ def _safe_report_filename_part(name):
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(name)).strip("_") or "target"
 
 
-def _coerce_feature_importance_source(raw_df, target):
-    """Prepare a mixed-type dataframe for sklearn feature-importance estimators."""
+def _coerce_feature_importance_source(raw_df, target, seed=None, test_size=0.25):
+    """Prepare train/holdout feature matrices without fitting on holdout rows.
+
+    Numeric medians, categorical levels, and constant-column filtering are learned
+    from the feature-importance training split only, then applied to the
+    permutation holdout split.  This keeps preprocessing consistent with the
+    model-evaluation path and avoids letting holdout rows influence imputation
+    or encoding.
+    """
+    if seed is None:
+        seed = model_seed
     if target not in raw_df.columns:
-        return None, None, None
+        return None, None, None, None, None
 
     working_df = raw_df.copy().replace([np.inf, -np.inf], np.nan)
     y = coerce_refinery_numeric_series(working_df[target])
@@ -373,60 +382,93 @@ def _coerce_feature_importance_source(raw_df, target):
         if column != target and not leakage_pattern_matches(column)
     ]
     if not feature_columns:
-        return None, None, None
+        return None, None, None, None, None
 
     X_raw = working_df[feature_columns].copy()
     valid_rows = y.notna()
     X_raw = X_raw.loc[valid_rows]
-    y = y.loc[valid_rows]
+    y = y.loc[valid_rows].astype(float)
     if len(y) < 3:
-        return None, None, None
+        return None, None, None, None, None
 
-    encoded_parts = []
+    if len(y) >= 8:
+        X_train_raw, X_perm_raw, y_train, y_perm = train_test_split(
+            X_raw,
+            y,
+            test_size=test_size,
+            random_state=seed,
+        )
+    else:
+        # Very small report-only datasets cannot spare a holdout; no separate
+        # test preprocessing is fitted because train and permutation data are
+        # intentionally identical in this fallback.
+        X_train_raw, X_perm_raw, y_train, y_perm = X_raw, X_raw, y, y
+
+    encoded_train_parts = []
+    encoded_perm_parts = []
     encoded_to_original = {}
+
     for column in feature_columns:
-        series = X_raw[column]
-        non_null = series.notna().sum()
-        if non_null == 0:
+        train_series = X_train_raw[column]
+        train_non_null = train_series.notna().sum()
+        if train_non_null == 0:
             continue
 
-        numeric_series = coerce_refinery_numeric_series(series)
-        numeric_ratio = numeric_series.notna().sum() / max(non_null, 1)
-        if pd.api.types.is_numeric_dtype(series) or numeric_ratio >= 0.8:
-            fill_value = numeric_series.median()
+        train_numeric = coerce_refinery_numeric_series(train_series)
+        train_numeric_ratio = train_numeric.notna().sum() / max(train_non_null, 1)
+        if pd.api.types.is_numeric_dtype(train_series) or train_numeric_ratio >= 0.8:
+            fill_value = train_numeric.median()
             if pd.isna(fill_value):
                 continue
-            prepared = numeric_series.fillna(fill_value).astype(float)
-            encoded_parts.append(prepared.to_frame(column))
+            perm_numeric = coerce_refinery_numeric_series(X_perm_raw[column])
+            encoded_train_parts.append(train_numeric.fillna(fill_value).astype(float).to_frame(column))
+            encoded_perm_parts.append(perm_numeric.fillna(fill_value).astype(float).to_frame(column))
             encoded_to_original[column] = column
         else:
-            categorical = series.astype("object").where(series.notna(), "__missing__").astype(str)
-            dummies = pd.get_dummies(
-                categorical,
+            train_categorical = train_series.astype("object").where(train_series.notna(), "__missing__").astype(str)
+            train_dummies = pd.get_dummies(
+                train_categorical,
                 prefix=column,
                 prefix_sep="__category__",
                 dummy_na=False,
                 dtype=float,
             )
-            if dummies.empty:
+            if train_dummies.empty:
                 continue
-            encoded_parts.append(dummies)
-            for encoded_column in dummies.columns:
+            perm_categorical = X_perm_raw[column].astype("object").where(
+                X_perm_raw[column].notna(), "__missing__"
+            ).astype(str)
+            perm_dummies = pd.get_dummies(
+                perm_categorical,
+                prefix=column,
+                prefix_sep="__category__",
+                dummy_na=False,
+                dtype=float,
+            ).reindex(columns=train_dummies.columns, fill_value=0.0)
+            encoded_train_parts.append(train_dummies)
+            encoded_perm_parts.append(perm_dummies)
+            for encoded_column in train_dummies.columns:
                 encoded_to_original[encoded_column] = column
 
-    if not encoded_parts:
-        return None, None, None
+    if not encoded_train_parts:
+        return None, None, None, None, None
 
-    X_encoded = pd.concat(encoded_parts, axis=1)
-    constant_columns = [column for column in X_encoded.columns if X_encoded[column].nunique(dropna=False) <= 1]
+    X_train_encoded = pd.concat(encoded_train_parts, axis=1)
+    X_perm_encoded = pd.concat(encoded_perm_parts, axis=1).reindex(columns=X_train_encoded.columns, fill_value=0.0)
+
+    constant_columns = [
+        column for column in X_train_encoded.columns
+        if X_train_encoded[column].nunique(dropna=False) <= 1
+    ]
     if constant_columns:
-        X_encoded = X_encoded.drop(columns=constant_columns)
+        X_train_encoded = X_train_encoded.drop(columns=constant_columns)
+        X_perm_encoded = X_perm_encoded.drop(columns=constant_columns, errors="ignore")
         for column in constant_columns:
             encoded_to_original.pop(column, None)
-    if X_encoded.empty:
-        return None, None, None
+    if X_train_encoded.empty:
+        return None, None, None, None, None
 
-    return X_encoded, y.astype(float), encoded_to_original
+    return X_train_encoded, X_perm_encoded, y_train, y_perm, encoded_to_original
 
 
 def _aggregate_encoded_importance(encoded_values, encoded_columns, encoded_to_original):
@@ -451,19 +493,13 @@ def _build_feature_importance_tables(dataframe, target, seed=None):
     """Calculate tree, permutation, and mutual-information importance tables."""
     if seed is None:
         seed = model_seed
-    X_encoded, y, encoded_to_original = _coerce_feature_importance_source(dataframe, target)
-    if X_encoded is None:
+    X_train_fi, X_perm, y_train_fi, y_perm, encoded_to_original = _coerce_feature_importance_source(
+        dataframe,
+        target,
+        seed=seed,
+    )
+    if X_train_fi is None:
         return None
-
-    if len(y) >= 8:
-        X_train_fi, X_perm, y_train_fi, y_perm = train_test_split(
-            X_encoded,
-            y,
-            test_size=0.25,
-            random_state=seed,
-        )
-    else:
-        X_train_fi, X_perm, y_train_fi, y_perm = X_encoded, X_encoded, y, y
 
     rf_model = RandomForestRegressor(
         n_estimators=500,
@@ -480,10 +516,10 @@ def _build_feature_importance_tables(dataframe, target, seed=None):
     et_model.fit(X_train_fi, y_train_fi)
 
     rf_table = _rank_importance_table(
-        _aggregate_encoded_importance(rf_model.feature_importances_, X_encoded.columns, encoded_to_original)
+        _aggregate_encoded_importance(rf_model.feature_importances_, X_train_fi.columns, encoded_to_original)
     )
     et_table = _rank_importance_table(
-        _aggregate_encoded_importance(et_model.feature_importances_, X_encoded.columns, encoded_to_original)
+        _aggregate_encoded_importance(et_model.feature_importances_, X_train_fi.columns, encoded_to_original)
     )
 
     permutation = permutation_importance(
@@ -497,12 +533,12 @@ def _build_feature_importance_tables(dataframe, target, seed=None):
     )
     permutation_table = _aggregate_encoded_importance(
         permutation.importances_mean,
-        X_encoded.columns,
+        X_train_fi.columns,
         encoded_to_original,
     )
     permutation_std_table = _aggregate_encoded_importance(
         permutation.importances_std,
-        X_encoded.columns,
+        X_train_fi.columns,
         encoded_to_original,
     ).rename(columns={"Importance": "Permutation Std"})
     permutation_table = permutation_table.merge(permutation_std_table, on="Variable", how="left")
@@ -513,9 +549,9 @@ def _build_feature_importance_tables(dataframe, target, seed=None):
         how="left",
     )[["Rank", "Variable", "Importance", "Permutation Std"]]
 
-    mutual_information = mutual_info_regression(X_encoded, y, random_state=seed)
+    mutual_information = mutual_info_regression(X_train_fi, y_train_fi, random_state=seed)
     mi_table = _rank_importance_table(
-        _aggregate_encoded_importance(mutual_information, X_encoded.columns, encoded_to_original)
+        _aggregate_encoded_importance(mutual_information, X_train_fi.columns, encoded_to_original)
     )
 
     return {
@@ -526,9 +562,12 @@ def _build_feature_importance_tables(dataframe, target, seed=None):
         "metadata": pd.DataFrame([
             {
                 "target": target,
-                "rows_used": int(len(y)),
+                "rows_used": int(len(y_train_fi.index.union(y_perm.index))),
+                "training_rows_used": int(len(y_train_fi)),
+                "permutation_rows_used": int(len(y_perm)),
                 "source_variables_ranked": int(len(set(encoded_to_original.values()))),
-                "encoded_feature_count": int(X_encoded.shape[1]),
+                "encoded_feature_count": int(X_train_fi.shape[1]),
+                "preprocessing_scope": "fit_on_training_split_only",
                 "created_at_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
             }
         ]),
