@@ -815,7 +815,7 @@ def parse_sequential_layout(answer, options, one_based=False):
     return flat_features, groups
 
 
-def prepare_or_reuse_data(dataset_path="convert/sugar_all.csv", prep_folder="prep_data"):
+def prepare_or_reuse_data(dataset_path="convert/stclean.csv", prep_folder="prep_data"):
     print("====================================")
     print("DATASET PATH: " + dataset_path)
     print("====================================")
@@ -2418,7 +2418,7 @@ def repeat_fit_model(
 
 
 ############################### Start of Program ###################
-dataset_path = "convert/sugar_all.csv"
+dataset_path = "convert/stclean.csv"
 selected_saved_run, loaded_optimization_scope = prompt_saved_run_choice()
 prepared_X_train, prepared_outputs, use_auto_feature_selection, reused_prep_data = prepare_or_reuse_data(
     dataset_path=dataset_path,
