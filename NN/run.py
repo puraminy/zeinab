@@ -2457,6 +2457,312 @@ def _save_shap_tables(shap_table, model_slug):
     print(f"SHAP top 20 features saved at {top20_path}")
 
 
+SHAP_RESULTS_DIR = os.path.join("results", "shap")
+SHAP_MAX_EXPLAIN_SAMPLES = 200
+
+
+def _target_shap_tree_model_factories(seed):
+    """Return target-level tree-model candidates for automatic SHAP analysis."""
+    factories = [
+        (
+            "RandomForestRegressor",
+            lambda: RandomForestRegressor(
+                n_estimators=500,
+                random_state=seed,
+                n_jobs=-1,
+            ),
+        ),
+        (
+            "ExtraTreesRegressor",
+            lambda: ExtraTreesRegressor(
+                n_estimators=500,
+                random_state=seed,
+                n_jobs=-1,
+            ),
+        ),
+        (
+            "GradientBoostingRegressor",
+            lambda: GradientBoostingRegressor(random_state=seed),
+        ),
+        (
+            "AdaBoostRegressor",
+            lambda: AdaBoostRegressor(random_state=seed),
+        ),
+        (
+            "DecisionTreeRegressor",
+            lambda: DecisionTreeRegressor(random_state=seed),
+        ),
+    ]
+
+    if XGBRegressor is not None:
+        factories.append(
+            (
+                "XGBoostRegressor",
+                lambda: XGBRegressor(
+                    n_estimators=500,
+                    random_state=seed,
+                    objective="reg:squarederror",
+                ),
+            )
+        )
+    if LGBMRegressor is not None:
+        factories.append(
+            (
+                "LightGBMRegressor",
+                lambda: LGBMRegressor(
+                    n_estimators=500,
+                    random_state=seed,
+                    verbose=-1,
+                ),
+            )
+        )
+    if CatBoostRegressor is not None:
+        factories.append(("CatBoostRegressor", lambda: make_catboost_regressor(seed)))
+
+    return factories
+
+
+def _prepare_target_shap_data(X_train, X_test, y_train, y_test, target):
+    """Return finite numeric train/test matrices for one target."""
+    X_train_target = X_train.copy().replace([np.inf, -np.inf], np.nan)
+    X_test_target = X_test.copy().replace([np.inf, -np.inf], np.nan)
+    y_train_target = pd.to_numeric(y_train[target], errors="coerce")
+    y_test_target = pd.to_numeric(y_test[target], errors="coerce")
+
+    numeric_train_parts = []
+    numeric_test_parts = []
+    kept_features = []
+    for feature in X_train_target.columns:
+        train_series = pd.to_numeric(X_train_target[feature], errors="coerce")
+        test_series = pd.to_numeric(X_test_target[feature], errors="coerce")
+        fill_value = train_series.median()
+        if pd.isna(fill_value):
+            continue
+        numeric_train_parts.append(train_series.fillna(fill_value).astype(float).to_frame(feature))
+        numeric_test_parts.append(test_series.fillna(fill_value).astype(float).to_frame(feature))
+        kept_features.append(feature)
+
+    if not numeric_train_parts or y_train_target.notna().sum() < 2:
+        return None
+
+    X_train_numeric = pd.concat(numeric_train_parts, axis=1)
+    X_test_numeric = pd.concat(numeric_test_parts, axis=1)
+    train_mask = y_train_target.notna()
+    test_mask = y_test_target.notna()
+
+    X_train_numeric = X_train_numeric.loc[train_mask]
+    y_train_target = y_train_target.loc[train_mask].astype(float)
+    X_test_numeric = X_test_numeric.loc[test_mask]
+    y_test_target = y_test_target.loc[test_mask].astype(float)
+
+    constant_features = [feature for feature in kept_features if X_train_numeric[feature].nunique(dropna=False) <= 1]
+    if constant_features:
+        X_train_numeric = X_train_numeric.drop(columns=constant_features)
+        X_test_numeric = X_test_numeric.drop(columns=constant_features)
+
+    if X_train_numeric.empty or X_test_numeric.empty or y_test_target.empty:
+        return None
+
+    return X_train_numeric, X_test_numeric, y_train_target, y_test_target
+
+
+def _fit_best_tree_model_for_target(X_train, X_test, y_train, y_test, target, seed=None):
+    """Train tree candidates for one target and return the best fitted model by test R²."""
+    if seed is None:
+        seed = model_seed
+
+    prepared = _prepare_target_shap_data(X_train, X_test, y_train, y_test, target)
+    if prepared is None:
+        print(f"Skipping SHAP for {target}: not enough finite numeric rows/features.")
+        return None
+
+    X_train_target, X_test_target, y_train_target, y_test_target = prepared
+    best = None
+    rows = []
+    for model_name, factory in _target_shap_tree_model_factories(seed):
+        try:
+            model = factory()
+            model.fit(X_train_target, y_train_target)
+            predictions = model.predict(X_test_target)
+            score = safe_r2_score(y_test_target, predictions)
+            score_for_sort = -np.inf if score is None else score
+            rows.append({"Model": model_name, "R2": score})
+            if best is None or score_for_sort > best["score_for_sort"]:
+                best = {
+                    "model_name": model_name,
+                    "model": model,
+                    "score": score,
+                    "score_for_sort": score_for_sort,
+                    "X_train": X_train_target,
+                    "X_test": X_test_target,
+                    "y_train": y_train_target,
+                    "y_test": y_test_target,
+                }
+        except Exception as err:
+            print(f"SHAP tree candidate skipped for {target} ({model_name}): {err}")
+
+    if best is None:
+        print(f"Skipping SHAP for {target}: no tree model could be trained.")
+        return None
+
+    metrics_table = pd.DataFrame(rows).sort_values(by="R2", ascending=False, na_position="last")
+    target_dir = os.path.join(SHAP_RESULTS_DIR, _safe_report_filename_part(target))
+    os.makedirs(target_dir, exist_ok=True)
+    metrics_table.to_csv(os.path.join(target_dir, "tree_model_scores.csv"), index=False)
+    score_text = "undefined" if best["score"] is None else f"{best['score']:.4f}"
+    print(f"Best tree model for {target}: {best['model_name']} (test R2={score_text})")
+    return best
+
+
+def _coerce_shap_values_for_single_target(shap_values, n_features):
+    """Return a 2D SHAP matrix for a single target and feature count."""
+    if isinstance(shap_values, list):
+        shap_values = shap_values[0]
+    shap_array = np.asarray(shap_values)
+    if shap_array.ndim == 3:
+        feature_axes = [axis for axis, size in enumerate(shap_array.shape) if size == n_features]
+        if feature_axes:
+            feature_axis = feature_axes[-1]
+            shap_array = np.moveaxis(shap_array, feature_axis, 1)
+            shap_array = shap_array[:, :, 0]
+    if shap_array.ndim != 2:
+        shap_array = shap_array.reshape(shap_array.shape[0], -1)
+    return shap_array
+
+
+def _save_target_shap_plots(shap_module, shap_values, explain_points, feature_names, output_dir):
+    """Save summary, bar, and dependence SHAP plots for one target."""
+    os.makedirs(output_dir, exist_ok=True)
+    summary_path = os.path.join(output_dir, "shap_summary.png")
+    bar_path = os.path.join(output_dir, "shap_bar.png")
+    dependence_path = os.path.join(output_dir, "shap_dependence.png")
+
+    top_feature_index = int(np.argmax(np.abs(shap_values).mean(axis=0)))
+    top_feature_name = feature_names[top_feature_index]
+
+    shap_module.summary_plot(shap_values, explain_points, feature_names=feature_names, show=False)
+    plt.tight_layout()
+    plt.savefig(summary_path, dpi=200, bbox_inches="tight")
+    plt.close()
+
+    shap_module.summary_plot(
+        shap_values,
+        explain_points,
+        feature_names=feature_names,
+        plot_type="bar",
+        show=False,
+    )
+    plt.tight_layout()
+    plt.savefig(bar_path, dpi=200, bbox_inches="tight")
+    plt.close()
+
+    shap_module.dependence_plot(
+        top_feature_index,
+        shap_values,
+        explain_points,
+        feature_names=feature_names,
+        show=False,
+    )
+    plt.tight_layout()
+    plt.savefig(dependence_path, dpi=200, bbox_inches="tight")
+    plt.close()
+
+    return {
+        "summary": summary_path,
+        "bar": bar_path,
+        "dependence": dependence_path,
+        "dependence_feature": top_feature_name,
+    }
+
+
+def generate_target_shap_analysis(X_train, X_test, y_train, y_test, targets=None, results_dir=SHAP_RESULTS_DIR):
+    """Train the best tree model per target, save SHAP plots, and print top refinery variables."""
+    import importlib.util
+    shap_spec = importlib.util.find_spec("shap")
+    if shap_spec is None:
+        print("SHAP target analysis skipped: shap is not installed. Install it with: pip install shap")
+        return []
+    import shap
+
+    targets = list(targets or y_train.columns)
+    os.makedirs(results_dir, exist_ok=True)
+    generated = []
+    print("\n================= Target SHAP Analysis =================")
+    for target in targets:
+        if target not in y_train.columns or target not in y_test.columns:
+            print(f"Skipping SHAP for {target}: target is not present in train/test targets.")
+            continue
+
+        print(f"\nCalculating SHAP analysis for target: {target}")
+        best = _fit_best_tree_model_for_target(X_train, X_test, y_train, y_test, target)
+        if best is None:
+            continue
+
+        X_explain = best["X_test"].head(min(SHAP_MAX_EXPLAIN_SAMPLES, len(best["X_test"])))
+        feature_names = list(X_explain.columns)
+        try:
+            explainer = shap.TreeExplainer(best["model"])
+            shap_values = explainer.shap_values(X_explain)
+            shap_values = _coerce_shap_values_for_single_target(shap_values, len(feature_names))
+        except Exception as err:
+            print(f"Skipping SHAP plots for {target}: could not calculate TreeExplainer values ({err}).")
+            continue
+
+        if shap_values.shape[1] != len(feature_names):
+            print(
+                f"Skipping SHAP plots for {target}: got {shap_values.shape[1]} SHAP features "
+                f"for {len(feature_names)} input features."
+            )
+            continue
+
+        mean_abs_shap = np.abs(shap_values).mean(axis=0)
+        total_importance = float(mean_abs_shap.sum())
+        normalized = mean_abs_shap / total_importance if total_importance > 0 else np.zeros_like(mean_abs_shap)
+        top_table = pd.DataFrame(
+            {
+                "Rank": np.arange(1, len(feature_names) + 1),
+                "Variable": feature_names,
+                "Mean(|SHAP|)": mean_abs_shap,
+                "Normalized Importance": normalized,
+            }
+        ).sort_values(by="Mean(|SHAP|)", ascending=False).reset_index(drop=True)
+        top_table["Rank"] = np.arange(1, len(top_table) + 1)
+        top_10 = top_table.head(10)
+
+        target_dir = os.path.join(results_dir, _safe_report_filename_part(target))
+        try:
+            plot_paths = _save_target_shap_plots(shap, shap_values, X_explain, feature_names, target_dir)
+        except Exception as err:
+            plt.close()
+            print(f"SHAP plot save failed for {target}: {err}")
+            plot_paths = {}
+
+        top_table.to_csv(os.path.join(target_dir, "shap_ranked_variables.csv"), index=False)
+        top_10.to_csv(os.path.join(target_dir, "top10_refinery_variables.csv"), index=False)
+        generated.append(
+            {
+                "target": target,
+                "model": best["model_name"],
+                "r2": best["score"],
+                "directory": target_dir,
+                "plots": plot_paths,
+            }
+        )
+
+        print(f"Saved SHAP outputs for {target}: {target_dir}")
+        if plot_paths:
+            print(f" - shap_summary.png: {plot_paths['summary']}")
+            print(f" - shap_bar.png: {plot_paths['bar']}")
+            print(
+                f" - shap_dependence.png: {plot_paths['dependence']} "
+                f"(feature: {plot_paths['dependence_feature']})"
+            )
+        print(f"Top 10 most influential refinery variables for {target}:")
+        print(tabulate(top_10, headers="keys", tablefmt="github", showindex=False))
+    print("========================================================\n")
+    return generated
+
+
 def shap_feature_importance(model_class, inputs, num_epochs, hidden_sizes, model_name=None):
     """Compute and save SHAP feature importance for neural nets and supported tree models."""
     import importlib.util
@@ -3197,6 +3503,7 @@ if answer != "0":
     results_table.to_csv("exp.csv")
 
     X_train, X_test, y_train, y_test = read_prep_data(active_features)
+    generate_target_shap_analysis(X_train, X_test, y_train, y_test, targets=outputs)
 
     # Show and save the plot for best results
     best_predictions = model_best_predictions.get(max_model_name)
