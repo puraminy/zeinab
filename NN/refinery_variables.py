@@ -50,6 +50,54 @@ TARGET_VARIABLES = (
 _ALLOWED_INPUTS = set(EARLY_VARIABLES) | set(CONTROL_VARIABLES)
 _TARGETS = set(TARGET_VARIABLES)
 _DERIVED_SEPARATOR = "__"
+LEAKAGE_NAME_PATTERNS = (
+    "average_to_date",
+    "average_two_shifts",
+    "moving_average",
+    "future",
+    "target",
+)
+
+
+def leakage_pattern_matches(column_name):
+    """Return leakage marker substrings found in a column name."""
+    lower_name = str(column_name).lower()
+    return [pattern for pattern in LEAKAGE_NAME_PATTERNS if pattern in lower_name]
+
+
+def is_name_based_leakage_column(column_name):
+    """Return True when a column name contains an automatic leakage marker."""
+    return bool(leakage_pattern_matches(column_name))
+
+
+def find_name_based_leakage_columns(columns, output_features=None, include_outputs=False):
+    """Find columns whose names contain configured leakage marker substrings.
+
+    Selected output targets can be kept out of removal lists by leaving
+    ``include_outputs`` as False, which preserves final targets while still
+    detecting leakage candidates in X.
+    """
+    output_features = set(output_features or [])
+    leakage_columns = []
+    for column in columns:
+        if not include_outputs and column in output_features:
+            continue
+        if is_name_based_leakage_column(column):
+            leakage_columns.append(column)
+    return leakage_columns
+
+
+def remove_name_based_leakage_inputs(input_features, output_features=None):
+    """Remove automatic name-based leakage columns from an X feature list."""
+    _ = set(output_features or [])  # Final targets are preserved by callers in y, not in X.
+    cleaned_inputs = []
+    removed_inputs = []
+    for column in input_features:
+        if is_name_based_leakage_column(column):
+            removed_inputs.append(column)
+        else:
+            cleaned_inputs.append(column)
+    return cleaned_inputs, removed_inputs
 
 
 def _canonical_name(name):
@@ -92,6 +140,9 @@ def is_allowed_model_input(column_name, output_features=None, optional_future_qu
     if column_name in output_features or base_name in output_features:
         return False
 
+    if is_name_based_leakage_column(column_name):
+        return False
+
     optional_quality_inputs = _optional_future_quality_input_set(optional_future_quality_inputs)
     if _canonical_name(base_name) in optional_quality_inputs:
         return True
@@ -115,14 +166,20 @@ def filter_allowed_model_inputs(columns, output_features=None, optional_future_q
 
 def find_leakage_columns(input_features, output_features=None, optional_future_quality_inputs=None):
     """Identify selected inputs that would leak future quality information."""
-    return [
-        column for column in input_features
+    leakage_columns = []
+    for column in input_features:
+        if column in leakage_columns:
+            continue
+        if is_name_based_leakage_column(column):
+            leakage_columns.append(column)
+            continue
         if not is_allowed_model_input(
             column,
             output_features=output_features,
             optional_future_quality_inputs=optional_future_quality_inputs,
-        )
-    ]
+        ):
+            leakage_columns.append(column)
+    return leakage_columns
 
 
 def validate_model_inputs(input_features, output_features=None, optional_future_quality_inputs=None):
@@ -141,7 +198,8 @@ def validate_model_inputs(input_features, output_features=None, optional_future_
             f"CONTROL_VARIABLES only: {allowed}. Future quality variables are "
             "TARGET_VARIABLES and must be predicted, not used as inputs unless "
             "explicitly selected in run.py's Future Quality Variables prompt "
-            f"and not also selected as output targets: {targets}."
+            f"and not also selected as output targets: {targets}. Columns containing "
+            f"automatic leakage markers are always blocked from X: {list(LEAKAGE_NAME_PATTERNS)}."
         )
     return list(input_features)
 
@@ -153,5 +211,9 @@ def refinery_variable_group_metadata():
         "CONTROL_VARIABLES": list(CONTROL_VARIABLES),
         "TARGET_VARIABLES": list(TARGET_VARIABLES),
         "input_rule": "Model inputs = EARLY_VARIABLES + CONTROL_VARIABLES only.",
-        "leakage_rule": "TARGET_VARIABLES and selected outputs are never allowed as inputs.",
+        "leakage_rule": (
+            "TARGET_VARIABLES, selected outputs, and columns containing "
+            "average_to_date/average_two_shifts/moving_average/future/target "
+            "are never allowed as inputs."
+        ),
     }

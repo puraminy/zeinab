@@ -40,7 +40,9 @@ from refinery_variables import (
     TARGET_VARIABLES,
     filter_allowed_model_inputs,
     find_leakage_columns,
+    leakage_pattern_matches,
     refinery_variable_group_metadata,
+    remove_name_based_leakage_inputs,
     validate_model_inputs,
 )
 from recommendation_engine import RecommendationError, recommend_operating_conditions
@@ -70,6 +72,8 @@ ANSI_GREEN = "\033[92m"
 ANSI_BLUE = "\033[94m"
 SAVED_RUNS_DIR = "saved_runs"
 CHECKPOINTS_DIR = "checkpoints"
+MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+LEAKAGE_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "leakage_report.xlsx")
 
 
 FUTURE_QUALITY_INPUT_CANDIDATES = [
@@ -100,6 +104,75 @@ def print_numbered_feature_list(title, features, color):
     for idx, feature_name in enumerate(features, start=1):
         print(color_text(f"{idx:>2}. {feature_name}", color))
     print_divider("=")
+
+
+def save_leakage_report(removed_columns, output_features=None, context="pre_training", report_path=LEAKAGE_REPORT_PATH):
+    """Write the target-leakage audit workbook showing exact X removals."""
+    output_features = list(output_features or [])
+    removed_rows = [
+        {
+            "context": context,
+            "column": column,
+            "matched_patterns": ", ".join(leakage_pattern_matches(column)),
+            "action": "removed_from_X",
+            "reason": "Column name contains an automatic target-leakage marker.",
+        }
+        for column in removed_columns
+    ]
+    kept_target_rows = [
+        {
+            "context": context,
+            "column": column,
+            "matched_patterns": ", ".join(leakage_pattern_matches(column)),
+            "action": "kept_as_final_target",
+            "reason": "Selected final targets are not removed from y.",
+        }
+        for column in output_features
+        if leakage_pattern_matches(column)
+    ]
+    summary_rows = [
+        {
+            "context": context,
+            "created_at_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "removed_from_X_count": len(removed_rows),
+            "kept_final_target_count": len(kept_target_rows),
+            "report_path": report_path,
+        }
+    ]
+
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+    with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
+        pd.DataFrame(removed_rows, columns=["context", "column", "matched_patterns", "action", "reason"]).to_excel(
+            writer, sheet_name="removed_from_X", index=False
+        )
+        pd.DataFrame(kept_target_rows, columns=["context", "column", "matched_patterns", "action", "reason"]).to_excel(
+            writer, sheet_name="kept_targets", index=False
+        )
+        pd.DataFrame(summary_rows).to_excel(writer, sheet_name="summary", index=False)
+    print(f"Saved target-leakage report: {report_path}")
+
+
+def remove_leakage_inputs_for_training(input_features, output_features=None, context="pre_training"):
+    """Print, report, and remove automatic name-based leakage columns from X."""
+    cleaned_inputs, removed_columns = remove_name_based_leakage_inputs(
+        list(input_features),
+        output_features=output_features,
+    )
+    if removed_columns:
+        print("Target leakage columns detected in X candidates:")
+        for column in removed_columns:
+            patterns = ", ".join(leakage_pattern_matches(column))
+            print(f" - {column} (matched: {patterns})")
+        print("Removed leakage columns from X: " + ", ".join(removed_columns))
+    else:
+        print("No automatic name-based target leakage columns detected in X candidates.")
+
+    kept_targets = [column for column in (output_features or []) if leakage_pattern_matches(column)]
+    if kept_targets:
+        print("Final target column(s) kept in y (not removed): " + ", ".join(kept_targets))
+
+    save_leakage_report(removed_columns, output_features=output_features, context=context)
+    return cleaned_inputs, removed_columns
 
 
 def print_refinery_variable_groups():
@@ -918,6 +991,14 @@ def prepare_or_reuse_data(dataset_path="convert/stclean.csv", prep_folder="prep_
                         resolved_inputs = (
                             available_inputs if selected_input_features is None else selected_input_features
                         )
+                        resolved_inputs, _ = remove_leakage_inputs_for_training(
+                            resolved_inputs,
+                            output_features=existing_outputs,
+                            context="prep_data_reselect",
+                        )
+                        if not resolved_inputs:
+                            print("No input columns remain after automatic target-leakage removal.")
+                            exit()
                         optional_future_quality_inputs = optional_input_overrides_for_selection(
                             resolved_inputs, existing_outputs
                         )
@@ -1041,6 +1122,14 @@ def prepare_or_reuse_data(dataset_path="convert/stclean.csv", prep_folder="prep_
     resolved_inputs = (
         available_input_features if selected_input_features is None else selected_input_features
     )
+    resolved_inputs, _ = remove_leakage_inputs_for_training(
+        resolved_inputs,
+        output_features=selected_output_features,
+        context="raw_dataset_selection",
+    )
+    if not resolved_inputs:
+        print("No input columns remain after automatic target-leakage removal.")
+        exit()
     optional_future_quality_inputs = optional_input_overrides_for_selection(
         resolved_inputs, selected_output_features
     )
@@ -2429,6 +2518,14 @@ saved_inputs = selected_saved_run.get("inputs") if selected_saved_run else None
 saved_outputs = selected_saved_run.get("outputs") if selected_saved_run else None
 run_inputs = saved_inputs if saved_inputs else prepared_X_train.columns.tolist()
 run_outputs_for_validation = saved_outputs if saved_outputs else prepared_outputs
+run_inputs, _ = remove_leakage_inputs_for_training(
+    run_inputs,
+    output_features=run_outputs_for_validation,
+    context="pre_training",
+)
+if not run_inputs:
+    print("No input columns remain after automatic target-leakage removal.")
+    exit()
 run_optional_future_quality_inputs = optional_input_overrides_for_selection(
     run_inputs, run_outputs_for_validation
 )

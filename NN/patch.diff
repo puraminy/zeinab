@@ -1,304 +1,203 @@
-diff --git a/NN/convert/convert2.py b/NN/convert/convert2.py
-index 7cda0b21aef26a98bcad4d9dacf06db7712a1e54..62be45609c3a976c8c359dd14e455fa6b9df0812 100644
---- a/NN/convert/convert2.py
-+++ b/NN/convert/convert2.py
-@@ -431,103 +431,276 @@ def extract_report_metadata(df):
- 
-             if "دوره کاری" in cell and "work_period" not in metadata:
-                 metadata["work_period"] = extract_numeric_to_right(
-                     df, row_idx, col_idx, max_offset=4
-                 )
- 
-             if "روز کاری" in cell and "work_day" not in metadata:
-                 metadata["work_day"] = extract_numeric_to_right(
-                     df, row_idx, col_idx, max_offset=4
-                 )
- 
-             if "تاریخ" in cell and "report_date_day" not in metadata:
-                 metadata["report_date_day"] = extract_value_near_column(
-                     df, row_idx, col_idx + 1, max_col_offset=1
-                 )
-                 metadata["report_date_month"] = extract_value_near_column(
-                     df, row_idx, col_idx + 2, max_col_offset=1
-                 )
-                 metadata["report_date_year"] = extract_value_near_column(
-                     df, row_idx, col_idx + 3, max_col_offset=1
-                 )
- 
-     return metadata
+diff --git a/NN/refinery_variables.py b/NN/refinery_variables.py
+index 356f869e9593defccef7c9c7ac2700ae60af4d1e..a7c5b7127340172e49544feaa110c487fc20ce33 100644
+--- a/NN/refinery_variables.py
++++ b/NN/refinery_variables.py
+@@ -28,130 +28,192 @@ CONTROL_VARIABLES = (
+     "carbonated_alkalinity",
+     "carbonated_pH",
+ )
  
  
-+def normalize_table_label(value):
-+    """Normalize a row-label cell so R1/R2/R3/A/B/C matching is stable."""
-+    if pd.isna(value):
-+        return ""
-+
-+    text = str(value).strip()
-+    persian_digits = "۰۱۲۳۴۵۶۷۸۹"
-+    english_digits = "0123456789"
-+    for p, e in zip(persian_digits, english_digits):
-+        text = text.replace(p, e)
-+
-+    text = text.replace("ي", "ی").replace("ك", "ک")
-+    return re.sub(r"\s+", "", text).upper()
-+
-+
-+def normalize_metric_header(value):
-+    """Return the canonical metric name for a table header cell."""
-+    if pd.isna(value):
-+        return None
-+
-+    text = str(value).strip()
-+    normalized = text.replace(" ", "").replace("_", "").upper()
-+
-+    if normalized in {"BX", "BRIX"} or "بریکس" in text:
-+        return "brix"
-+    if normalized == "POL" or "پل" in text:
-+        return "pol"
-+    if normalized == "Q" or "خلوص" in text:
-+        return "q"
-+    if normalized in {"PH", "P.H"}:
-+        return "pH"
-+
-+    return None
+ # 3) Future/downstream quality outputs.  These columns must not be used as
+ # model inputs, even when the user selects "all" or uses automatic feature
+ # selection, because they are measured after the early/control decision point.
+ TARGET_VARIABLES = (
+     "filtercake_moisture",
+     "filtercake_sugar",
+     "sweetwater_brix",
+     "sulphited_pH",
+     "sulphited_brix",
+     "sulphited_color",
+     "standard_liquor_pH",
+     "standard_liquor_brix",
+     "standard_liquor_color",
+     "white_total_points",
+ )
+ 
+ 
+ _ALLOWED_INPUTS = set(EARLY_VARIABLES) | set(CONTROL_VARIABLES)
+ _TARGETS = set(TARGET_VARIABLES)
+ _DERIVED_SEPARATOR = "__"
++LEAKAGE_NAME_PATTERNS = (
++    "average_to_date",
++    "average_two_shifts",
++    "moving_average",
++    "future",
++    "target",
++)
 +
 +
-+def row_contains_metric_headers(df, row_idx):
-+    """Return True when a row contains at least one BX/POL/Q/PH header."""
-+    return any(normalize_metric_header(cell) is not None for cell in df.iloc[row_idx])
++def leakage_pattern_matches(column_name):
++    """Return leakage marker substrings found in a column name."""
++    lower_name = str(column_name).lower()
++    return [pattern for pattern in LEAKAGE_NAME_PATTERNS if pattern in lower_name]
 +
 +
-+def find_table_header_row(df, section_row, search_depth=10):
++def is_name_based_leakage_column(column_name):
++    """Return True when a column name contains an automatic leakage marker."""
++    return bool(leakage_pattern_matches(column_name))
++
++
++def find_name_based_leakage_columns(columns, output_features=None, include_outputs=False):
++    """Find columns whose names contain configured leakage marker substrings.
++
++    Selected output targets can be kept out of removal lists by leaving
++    ``include_outputs`` as False, which preserves final targets while still
++    detecting leakage candidates in X.
 +    """
-+    Locate the header row for matrix tables.
-+
-+    The section title (for example پخت ها) may be on a separate row from the
-+    header row. Prefer a row below the section title that contains نوع plus the
-+    BX/POL/Q/PH headers. If a section such as پساب ها omits its own header, fall
-+    back to the nearest previous header row with the same structure.
-+    """
-+    forward_stop = min(section_row + search_depth + 1, len(df))
-+    for row_idx in range(section_row, forward_stop):
-+        row = df.iloc[row_idx].astype(str)
-+        if any("نوع" in cell for cell in row) and row_contains_metric_headers(df, row_idx):
-+            return row_idx
-+
-+    for row_idx in range(section_row - 1, -1, -1):
-+        row = df.iloc[row_idx].astype(str)
-+        if any("نوع" in cell for cell in row) and row_contains_metric_headers(df, row_idx):
-+            return row_idx
-+
-+    return None
-+
-+
-+def detected_metric_columns(df, header_row, label_col, required_metrics):
-+    """
-+    Detect day/night metric columns around the نوع column.
-+
-+    Supports both observed layouts:
-+      * نوع | BX | POL | Q | PH | BX | POL | Q | PH
-+      * PH | Q | POL | BX | PH | Q | POL | BX | نوع
-+    """
-+    metric_headers = []
-+    for col_idx, cell in enumerate(df.iloc[header_row]):
-+        metric_name = normalize_metric_header(cell)
-+        if metric_name is not None:
-+            metric_headers.append((col_idx, metric_name))
-+
-+    if not metric_headers:
-+        return {}, {}, metric_headers
-+
-+    metric_headers = sorted(metric_headers)
-+    required_count = len(required_metrics)
-+
-+    if label_col is not None:
-+        right_headers = [(col, metric) for col, metric in metric_headers if col > label_col]
-+        left_headers = [(col, metric) for col, metric in metric_headers if col < label_col]
-+
-+        if len(right_headers) >= required_count * 2:
-+            ordered_headers = right_headers
-+        elif len(left_headers) >= required_count * 2:
-+            ordered_headers = left_headers
-+        else:
-+            ordered_headers = metric_headers
-+    else:
-+        ordered_headers = metric_headers
-+
-+    first_group = ordered_headers[:required_count]
-+    second_group = ordered_headers[required_count : required_count * 2]
-+
-+    # If there are extra metric-like cells, keep the two groups closest to the
-+    # label column. This protects against nearby summary rows/merged headers.
-+    if label_col is not None and len(ordered_headers) > required_count * 2:
-+        if ordered_headers[0][0] < label_col:
-+            first_group = ordered_headers[-required_count * 2 : -required_count]
-+            second_group = ordered_headers[-required_count:]
-+        else:
-+            first_group = ordered_headers[:required_count]
-+            second_group = ordered_headers[required_count : required_count * 2]
-+
-+    return ({metric: col for col, metric in first_group},
-+            {metric: col for col, metric in second_group},
-+            metric_headers)
-+
-+
- def extract_table_by_row_labels(
-     df,
-     section_keyword,
-     row_labels,
-     day_metrics,
-     night_metrics=None,
-     prefix="",
-     max_rows=None,
- ):
-     """
-     Extract two-shift matrix sections such as پخت ها and پساب ها.
- 
--    The Persian report stores the row label in the column immediately after the section
--    label and then writes day metrics followed by night metrics. This helper reads the
--    cell coordinates directly so rows like R1/R2/R3 are not skipped by the simpler
--    section/property finder.
-+    The previous implementation assumed that the section title row was also the
-+    header row and that the row label appeared before the measurement columns.
-+    Real reports can put the section title on a separate row, put نوع at the far
-+    right, and order the measurement columns dynamically. This version finds the
-+    section, finds the actual نوع/BX/POL/Q/PH header row, detects both metric
-+    groups by header text, and then reads only rows whose labels match the table.
-     """
-+    if night_metrics is None:
-+        night_metrics = day_metrics
-+
-     section_row = find_row_containing(df, section_keyword)
-+    debug_name = prefix or section_keyword
-+    print(f"[DEBUG] {debug_name}: section row = {section_row}")
-+
-     if section_row is None:
-         return {}, {}
- 
--    label_col = first_column_containing(df, section_row, "نوع")
-+    header_row = find_table_header_row(df, section_row)
-+    print(f"[DEBUG] {debug_name}: header row = {header_row}")
-+
-+    label_col = first_column_containing(df, header_row, "نوع") if header_row is not None else None
-+
-     if label_col is None:
--        # Wastewater tables do not repeat the "نوع" header; their labels still sit in
--        # the first non-empty column to the right of the section name.
--        section_col = first_column_containing(df, section_row, section_keyword)
--        label_col = section_col + 1 if section_col is not None else 2
-+        # Fallback for malformed sheets: infer the label column from the first
-+        # expected row label found inside this section.
-+        scan_rows = max_rows if max_rows is not None else len(row_labels) + 4
-+        normalized_labels = {normalize_table_label(label) for label in row_labels}
-+        for row_idx in range(section_row, min(section_row + scan_rows + 1, len(df))):
-+            for col_idx, cell in enumerate(df.iloc[row_idx]):
-+                if normalize_table_label(cell) in normalized_labels:
-+                    label_col = col_idx
-+                    break
-+            if label_col is not None:
-+                break
- 
--    day_start_col = label_col + 1
--    night_start_col = day_start_col + len(day_metrics)
--    if night_metrics is None:
--        night_metrics = day_metrics
-+    day_columns, night_columns, all_metric_headers = ({}, {}, [])
-+    if header_row is not None:
-+        day_columns, night_columns, all_metric_headers = detected_metric_columns(
-+            df, header_row, label_col, day_metrics
-+        )
-+
-+    print(f"[DEBUG] {debug_name}: label column = {label_col}")
-+    print(f"[DEBUG] {debug_name}: detected metric headers = {all_metric_headers}")
-+    print(f"[DEBUG] {debug_name}: day columns = {day_columns}")
-+    print(f"[DEBUG] {debug_name}: night columns = {night_columns}")
-+
-+    normalized_row_labels = {
-+        normalize_table_label(label): normalized for label, normalized in row_labels.items()
-+    }
- 
--    rows_to_scan = max_rows if max_rows is not None else len(row_labels) + 3
-     day_values = {}
-     night_values = {}
-+    for normalized_label in row_labels.values():
-+        for metric_name in day_metrics:
-+            day_values[f"{prefix}_{normalized_label}_{metric_name}"] = None
-+        for metric_name in night_metrics:
-+            night_values[f"{prefix}_{normalized_label}_{metric_name}"] = None
-+
-+    if label_col is None or not day_columns or not night_columns:
-+        print(f"[DEBUG] {debug_name}: skipped extraction because columns could not be detected")
-+        return day_values, night_values
-+
-+    if header_row is not None and header_row >= section_row:
-+        first_data_row = header_row + 1
-+    else:
-+        first_data_row = section_row
- 
--    for row_idx in range(section_row + 1, min(section_row + 1 + rows_to_scan, len(df))):
--        label_value = str(df.iloc[row_idx, label_col]).strip()
--        if label_value not in row_labels:
-+    rows_to_scan = max_rows if max_rows is not None else len(row_labels) + 4
-+    last_data_row = min(first_data_row + rows_to_scan, len(df))
-+
-+    for row_idx in range(first_data_row, last_data_row):
-+        if label_col >= len(df.iloc[row_idx]):
++    output_features = set(output_features or [])
++    leakage_columns = []
++    for column in columns:
++        if not include_outputs and column in output_features:
 +            continue
++        if is_name_based_leakage_column(column):
++            leakage_columns.append(column)
++    return leakage_columns
 +
-+        label_value = normalize_table_label(df.iloc[row_idx, label_col])
-+        if label_value not in normalized_row_labels:
-             continue
- 
--        normalized_label = row_labels[label_value]
--        for offset, metric_name in enumerate(day_metrics):
--            value = clean_cell_value(df.iloc[row_idx, day_start_col + offset])
-+        normalized_label = normalized_row_labels[label_value]
-+        extracted_day = {}
-+        extracted_night = {}
 +
-+        for metric_name in day_metrics:
-+            metric_col = day_columns.get(metric_name)
-+            value = clean_cell_value(df.iloc[row_idx, metric_col]) if metric_col is not None else None
-             day_values[f"{prefix}_{normalized_label}_{metric_name}"] = value
-+            extracted_day[metric_name] = value
++def remove_name_based_leakage_inputs(input_features, output_features=None):
++    """Remove automatic name-based leakage columns from an X feature list."""
++    _ = set(output_features or [])  # Final targets are preserved by callers in y, not in X.
++    cleaned_inputs = []
++    removed_inputs = []
++    for column in input_features:
++        if is_name_based_leakage_column(column):
++            removed_inputs.append(column)
++        else:
++            cleaned_inputs.append(column)
++    return cleaned_inputs, removed_inputs
  
--        for offset, metric_name in enumerate(night_metrics):
--            value = clean_cell_value(df.iloc[row_idx, night_start_col + offset])
-+        for metric_name in night_metrics:
-+            metric_col = night_columns.get(metric_name)
-+            value = clean_cell_value(df.iloc[row_idx, metric_col]) if metric_col is not None else None
-             night_values[f"{prefix}_{normalized_label}_{metric_name}"] = value
-+            extracted_night[metric_name] = value
  
--    return day_values, night_values
-+        print(
-+            f"[DEBUG] {debug_name}: row {row_idx}, label {normalized_label}, "
-+            f"day = {extracted_day}, night = {extracted_night}"
-+        )
+ def _canonical_name(name):
+     """Normalize names so pH/PH and punctuation changes do not hide leakage."""
+     return re.sub(r"[^a-z0-9]+", "", str(name).lower())
  
-+    return day_values, night_values
  
- def extract_white_sugar_quality_shift_values(df):
-     """Extract the per-shift white sugar quality/point rows."""
-     section_row = find_row_containing(df, "کیفیت شکر سفید")
-     if section_row is None:
-         return {}, {}
+ _ALLOWED_CANONICAL = {_canonical_name(name) for name in _ALLOWED_INPUTS}
+ _TARGET_CANONICAL = {_canonical_name(name) for name in _TARGETS}
  
-     label_col = first_column_containing(df, section_row, "رطوبت")
-     if label_col is None:
-         label_col = 2
  
-     day_start_col = label_col + 1
-     day_sample_cols = 3
-     night_start_col = day_start_col + day_sample_cols + 1
-     night_sample_cols = 4
-     row_map = {
-         "رطوبت": "moisture",
-         "رنگ محلول": "solution_color",
-         "رنگ ظاهری": "apparent_color",
-         "خاکستر": "ash",
-         "جمع پوئن": "total_points",
+ def base_variable_name(column_name):
+     """Return the source variable for engineered columns such as x__diff_1."""
+     return str(column_name).split(_DERIVED_SEPARATOR, 1)[0]
+ 
+ 
+ def is_target_variable(column_name, output_features=None):
+     """Return True when a column is a selected or known future quality output."""
+     output_features = set(output_features or [])
+     base_name = base_variable_name(column_name)
+     canonical_base = _canonical_name(base_name)
+     canonical_column = _canonical_name(column_name)
+     return (
+         column_name in output_features
+         or base_name in output_features
+         or canonical_base in _TARGET_CANONICAL
+         or canonical_column in _TARGET_CANONICAL
+     )
+ 
+ 
+ def _optional_future_quality_input_set(optional_future_quality_inputs=None):
+     """Normalize opt-in future-quality variables that may be used as inputs."""
+     return {_canonical_name(name) for name in (optional_future_quality_inputs or [])}
+ 
+ 
+ def is_allowed_model_input(column_name, output_features=None, optional_future_quality_inputs=None):
+     """Return True for standard inputs plus explicitly opted-in future-quality inputs."""
+     output_features = set(output_features or [])
+     base_name = base_variable_name(column_name)
+     if column_name in output_features or base_name in output_features:
+         return False
+ 
++    if is_name_based_leakage_column(column_name):
++        return False
++
+     optional_quality_inputs = _optional_future_quality_input_set(optional_future_quality_inputs)
+     if _canonical_name(base_name) in optional_quality_inputs:
+         return True
+ 
+     if is_target_variable(column_name, output_features=output_features):
+         return False
+     return _canonical_name(base_name) in _ALLOWED_CANONICAL
+ 
+ 
+ def filter_allowed_model_inputs(columns, output_features=None, optional_future_quality_inputs=None):
+     """Keep allowed input columns, preserving the incoming order."""
+     return [
+         column for column in columns
+         if is_allowed_model_input(
+             column,
+             output_features=output_features,
+             optional_future_quality_inputs=optional_future_quality_inputs,
+         )
+     ]
+ 
+ 
+ def find_leakage_columns(input_features, output_features=None, optional_future_quality_inputs=None):
+     """Identify selected inputs that would leak future quality information."""
+-    return [
+-        column for column in input_features
++    leakage_columns = []
++    for column in input_features:
++        if column in leakage_columns:
++            continue
++        if is_name_based_leakage_column(column):
++            leakage_columns.append(column)
++            continue
+         if not is_allowed_model_input(
+             column,
+             output_features=output_features,
+             optional_future_quality_inputs=optional_future_quality_inputs,
+-        )
+-    ]
++        ):
++            leakage_columns.append(column)
++    return leakage_columns
+ 
+ 
+ def validate_model_inputs(input_features, output_features=None, optional_future_quality_inputs=None):
+     """Raise a clear error if an input list contains leaked/disallowed variables."""
+     leakage_columns = find_leakage_columns(
+         input_features,
+         output_features=output_features,
+         optional_future_quality_inputs=optional_future_quality_inputs,
+     )
+     if leakage_columns:
+         allowed = list(EARLY_VARIABLES) + list(CONTROL_VARIABLES)
+         targets = list(TARGET_VARIABLES)
+         raise ValueError(
+             "Target-leakage prevention blocked disallowed model inputs: "
+             f"{leakage_columns}. Allowed inputs are EARLY_VARIABLES + "
+             f"CONTROL_VARIABLES only: {allowed}. Future quality variables are "
+             "TARGET_VARIABLES and must be predicted, not used as inputs unless "
+             "explicitly selected in run.py's Future Quality Variables prompt "
+-            f"and not also selected as output targets: {targets}."
++            f"and not also selected as output targets: {targets}. Columns containing "
++            f"automatic leakage markers are always blocked from X: {list(LEAKAGE_NAME_PATTERNS)}."
+         )
+     return list(input_features)
+ 
+ 
+ def refinery_variable_group_metadata():
+     """Return serializable metadata explaining the refinery variable groups."""
+     return {
+         "EARLY_VARIABLES": list(EARLY_VARIABLES),
+         "CONTROL_VARIABLES": list(CONTROL_VARIABLES),
+         "TARGET_VARIABLES": list(TARGET_VARIABLES),
+         "input_rule": "Model inputs = EARLY_VARIABLES + CONTROL_VARIABLES only.",
+-        "leakage_rule": "TARGET_VARIABLES and selected outputs are never allowed as inputs.",
++        "leakage_rule": (
++            "TARGET_VARIABLES, selected outputs, and columns containing "
++            "average_to_date/average_two_shifts/moving_average/future/target "
++            "are never allowed as inputs."
++        ),
      }
-     day_values = {}
-     night_values = {}
- 
