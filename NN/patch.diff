@@ -1,256 +1,457 @@
 diff --git a/NN/run.py b/NN/run.py
-index e4ad812b9bd12af6a140469fb3d335fe0781dfd3..c70806b2a1276c80649ef9d6c1dcca714da1d842 100644
+index c70806b2a1276c80649ef9d6c1dcca714da1d842..5d66533c8b20808884c1abdc86d42c4e1cb302cf 100644
 --- a/NN/run.py
 +++ b/NN/run.py
-@@ -2719,102 +2719,115 @@ def fit_model_on_split(
-             y_test_fold,
-             num_epochs,
-             display_steps=False,
-             run=run,
-             optimization_scope=optimization_scope,
-             optimize_feature_indexes=optimize_feature_indexes,
+@@ -3310,125 +3310,203 @@ def _parse_positive_int_with_default(answer, default_value, name):
+     if not answer:
+         return default_value
+     try:
+         value = int(answer)
+     except ValueError:
+         print(f"Invalid {name} '{answer}'. Using default value {default_value}.")
+         return default_value
+     if value <= 0:
+         print(f"{name} must be > 0. Using default value {default_value}.")
+         return default_value
+     return value
+ 
+ 
+ def _train_model_for_shap(model_class, inputs, num_epochs, hidden_sizes):
+     """Train the selected model type and return fitted model plus SHAP data splits."""
+     if is_torch_model(model_class):
+         model, X_train, X_test, _, _, r2 = train_single_model(
+             model_class, num_epochs, hidden_sizes, features=inputs, run=0
          )
-         return predictions, mse, r2
- 
-     model = model_class(model_seed + run)
-     predictions, mse, r2, _model = fit_sklearn_model(
-         model, X_train_fold, X_test_fold, y_train_fold, y_test_fold
-     )
-     return predictions, mse, r2
- 
- 
- def cross_validate_model(
-     model_class,
-     num_epochs,
-     hidden_sizes,
-     features=None,
-     folds=MODEL_EVALUATION_CV_FOLDS,
-     optimization_scope="weights",
-     optimize_feature_indexes=None,
- ):
--    """Run leakage-safe K-fold CV and report R²/RMSE mean and std."""
-+    """Run leakage-safe 5-fold CV and report R², RMSE, and MAE mean ± std."""
-     X_train, X_test, y_train, y_test = read_prep_data(features)
-     full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
-     full_y = pd.concat([y_train, y_test], axis=0).reset_index(drop=True)
-     if len(full_X) < 2:
-         return None
- 
-     n_splits = min(int(folds), len(full_X))
-     if n_splits < 2:
-         return None
- 
-     kfold = KFold(n_splits=n_splits, shuffle=True, random_state=data_seed)
-     r2_scores = []
-     rmse_scores = []
-+    mae_scores = []
-     for fold_index, (train_idx, val_idx) in enumerate(kfold.split(full_X), start=1):
-         X_train_fold = full_X.iloc[train_idx]
-         X_val_fold = full_X.iloc[val_idx]
-         y_train_fold = full_y.iloc[train_idx]
-         y_val_fold = full_y.iloc[val_idx]
-         try:
--            _predictions, mse, r2 = fit_model_on_split(
-+            predictions, mse, r2 = fit_model_on_split(
-                 model_class,
-                 X_train_fold,
-                 X_val_fold,
-                 y_train_fold,
-                 y_val_fold,
-                 num_epochs,
-                 hidden_sizes,
-                 run=fold_index,
-                 optimization_scope=optimization_scope,
-                 optimize_feature_indexes=optimize_feature_indexes,
-             )
-         except (TypeError, ValueError, RuntimeError) as err:
-             print(f"CV fold {fold_index} failed: {err}")
-             continue
- 
--        if r2 is None or mse is None:
-+        if r2 is None or mse is None or predictions is None:
-+            continue
-+        y_val_values = as_2d_float_array(y_val_fold, "y_val_fold")
-+        prediction_values = as_2d_float_array(predictions, "predictions")
-+        if y_val_values.shape != prediction_values.shape:
-+            print(
-+                f"CV fold {fold_index} skipped: prediction shape {prediction_values.shape} "
-+                f"does not match target shape {y_val_values.shape}."
-+            )
-             continue
-         r2_scores.append(float(r2) * 100.0)
-         rmse_scores.append(float(np.sqrt(mse)))
-+        mae_scores.append(float(np.mean(np.abs(prediction_values - y_val_values))))
- 
-     if not r2_scores:
-         return None
- 
-     return {
-         "folds": len(r2_scores),
-         "mean_r2": float(np.mean(r2_scores)),
-         "std_r2": float(np.std(r2_scores)),
-         "mean_rmse": float(np.mean(rmse_scores)),
-         "std_rmse": float(np.std(rmse_scores)),
-+        "mean_mae": float(np.mean(mae_scores)),
-+        "std_mae": float(np.std(mae_scores)),
-         "r2_scores": r2_scores,
-         "rmse_scores": rmse_scores,
-+        "mae_scores": mae_scores,
-     }
- 
- def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
-     """Fit a scikit-learn regressor with train-only feature scaling."""
-     X_train_df = dataframe_from_tabular(X_train, "X_train")
-     X_test_df = dataframe_from_tabular(X_test, "X_test", columns=X_train_df.columns)
-     y_train_values = as_2d_float_array(y_train, "y_train")
-     y_test_values = as_2d_float_array(y_test, "y_test")
- 
-     scaler_x = StandardScaler()
-     X_train_scaled_df = fit_transform_dataframe(scaler_x, X_train_df)
-     X_test_scaled_df = transform_dataframe(scaler_x, X_test_df)
-     X_train_scaled = X_train_scaled_df.to_numpy()
-     X_test_scaled = X_test_scaled_df.to_numpy()
- 
-     is_multi_output = y_train_values.shape[1] > 1
-     y_train_fit = y_train_values if is_multi_output else y_train_values.ravel()
- 
-     if isinstance(model, RandomizedSearchCV):
-         search_cv_folds = min(int(model.cv), X_train_scaled.shape[0])
-         if search_cv_folds < 2:
-             print("Not enough training rows for ExtraTrees RandomizedSearchCV; fitting base estimator.")
-             model = model.estimator
-         else:
-             model.cv = search_cv_folds
-@@ -4529,102 +4542,128 @@ if answer != "0":
-                     max_model_index = model_index
-                     max_epochs = num_epochs
-                     max_hidden_sizes = hidden_sizes
-                     best_run = max_run
- 
-                 if mean_r2 > best_mean_r2:
-                     best_mean_r2 = mean_r2
-                     best_mse = mean_mse
-                     best_model_index = model_index
-                     best_epochs = num_epochs
-                     best_hidden_sizes = hidden_sizes
- 
-                 total_nodes = sum(hidden_sizes) if hidden_sizes else 0
- 
-                 mean_rmse = float(np.sqrt(mean_mse)) if mean_mse is not None else np.nan
-                 result = {
-                         "model":model_name,
-                         "R2": round(mean_r2,1),
-                         "MSE": round(mean_mse,2),
-                         "R2 std": round(std_r2, 1),
-                         "R2 List": [round(x, 1) for x in r2_list],
-                         "Mean R²": round(cv_metrics["mean_r2"], 3) if cv_metrics else np.nan,
-                         "Std R²": round(cv_metrics["std_r2"], 3) if cv_metrics else np.nan,
-                         "Mean RMSE": round(cv_metrics["mean_rmse"], 3) if cv_metrics else round(mean_rmse, 3),
-                         "Std RMSE": round(cv_metrics["std_rmse"], 3) if cv_metrics else np.nan,
-+                        "Mean MAE": round(cv_metrics["mean_mae"], 3) if cv_metrics else np.nan,
-+                        "Std MAE": round(cv_metrics["std_mae"], 3) if cv_metrics else np.nan,
-                         "CV folds": cv_metrics["folds"] if cv_metrics else 0,
-                         "hidden sizes": hidden_sizes if hidden_sizes else "N/A",
-                         "total hs": total_nodes,
-                         "epochs": num_epochs if is_nn else "N/A",
-                         }
-                 results.append(result)
- 
-     # Create a table for results. Some model/config combinations can fail and return no
-     # valid R2 values, so guard against missing/empty result sets.
-     expected_result_cols = [
-         "model", "R2", "MSE", "R2 std", "R2 List",
--        "Mean R²", "Std R²", "Mean RMSE", "Std RMSE", "CV folds",
-+        "Mean R²", "Std R²", "Mean RMSE", "Std RMSE", "Mean MAE", "Std MAE", "CV folds",
-         "hidden sizes", "total hs", "epochs"
-     ]
-     results_table = pd.DataFrame(data=results)
-     if results_table.empty:
-         results_table = pd.DataFrame(columns=expected_result_cols)
-     else:
-         missing_cols = [col for col in expected_result_cols if col not in results_table.columns]
-         for col in missing_cols:
-             results_table[col] = np.nan
--        # Sort methods by R2 only when the column exists and contains data.
--        if results_table["R2"].notna().any():
-+        # Rank methods by cross-validation R² when available.
-+        if results_table["Mean R²"].notna().any():
-+            results_table = results_table.sort_values(by="Mean R²", ascending=False)
-+            results_table.insert(0, "CV R² Rank", range(1, len(results_table) + 1))
-+        elif results_table["R2"].notna().any():
-             results_table = results_table.sort_values(by="R2", ascending=False)
-         else:
-             print("No valid R2 values were produced for the selected model/config combinations.")
- 
-     if results_table["R2"].isna().all():
-         print("Training finished, but no successful runs produced R2 values. Skipping reporting/plots.")
-         results_table.to_csv("exp.csv", index=False)
-         exit()
- 
-     latex_table = results_table.copy()
-     # Create and save latex code for table
-     latex_table["R2"] = latex_table.apply(lambda row: f"{row['R2']} ± {row['R2 std']}", axis=1)
-     latex_table = latex_table.drop(columns=["R2 List","R2 std"])
-     results_table_latex = generate_latex_table(latex_table,
-             caption="Results of different models", label="models")
-     with open(os.path.join("tables", "results.tex"), 'w', encoding='utf-8') as f:
-         print(results_table_latex, file=f)
- 
-     # Plot the performance of models across different parameters
-     print("Generating plots ...")
-     plot_model_performance(results_table)
- 
-     best_model = models[best_model_index]
-     best_model_name = model_names[best_model_index]
-     # Show results
-     max_model_name = model_names[max_model_index]
- 
--    print("============ Results for models =========================")
-+    print("============ Results for models (ranked by CV R²) =========================")
-     print(results_table)
-+    cv_print_columns = [
-+        col for col in [
-+            "CV R² Rank", "model", "hidden sizes", "epochs",
-+            "Mean R²", "Std R²", "Mean RMSE", "Std RMSE", "Mean MAE", "Std MAE", "CV folds"
-+        ]
-+        if col in results_table.columns
-+    ]
-+    if cv_print_columns:
-+        cv_summary = results_table[cv_print_columns].copy()
-+        if {"Mean R²", "Std R²"}.issubset(cv_summary.columns):
-+            cv_summary["CV R²"] = cv_summary.apply(lambda row: f"{row['Mean R²']} ± {row['Std R²']}", axis=1)
-+        if {"Mean RMSE", "Std RMSE"}.issubset(cv_summary.columns):
-+            cv_summary["CV RMSE"] = cv_summary.apply(lambda row: f"{row['Mean RMSE']} ± {row['Std RMSE']}", axis=1)
-+        if {"Mean MAE", "Std MAE"}.issubset(cv_summary.columns):
-+            cv_summary["CV MAE"] = cv_summary.apply(lambda row: f"{row['Mean MAE']} ± {row['Std MAE']}", axis=1)
-+        cv_summary = cv_summary.drop(
-+            columns=["Mean R²", "Std R²", "Mean RMSE", "Std RMSE", "Mean MAE", "Std MAE"],
-+            errors="ignore",
+         if r2 is None:
+             print("Could not train model for SHAP analysis.")
+             return None, None, None, None, False
+         scaler = getattr(model, "input_scaler_", None)
+         if scaler is None:
+             scaler = StandardScaler().fit(X_train)
+-        X_train_explain = transform_dataframe(scaler, dataframe_from_tabular(X_train, "X_train")).to_numpy()
+-        X_test_explain = transform_dataframe(
+-            scaler,
+-            dataframe_from_tabular(X_test, "X_test", columns=getattr(scaler, "feature_names_in_", X_train.columns)),
+-        ).to_numpy()
++        X_train_explain = _clean_shap_numeric_array(
++            transform_dataframe(scaler, dataframe_from_tabular(X_train, "X_train")),
++            "X_train_explain",
 +        )
-+        print("============ 5-fold CV metrics (mean ± std) =========================")
-+        print(cv_summary)
-     print("========================== Best Mean Model ===============================")
-     print("Best Mean R-Squred:", best_mean_r2)
-     print("Best model with better mean R-Squred:", best_model_name)
-     print("Best Hidden sizes:", best_hidden_sizes)
-     print("Best epochs:", best_epochs)
-     print("=========================== Max Model ================================")
-     print("Best model with better max R-Squred:", max_model_name)
-     print("Best Hidden sizes:", max_hidden_sizes)
-     print("Best epochs:", max_epochs)
-     print("Max R-Squred:", best_r2)
++        X_test_explain = _clean_shap_numeric_array(
++            transform_dataframe(
++                scaler,
++                dataframe_from_tabular(X_test, "X_test", columns=getattr(scaler, "feature_names_in_", X_train.columns)),
++            ),
++            "X_test_explain",
++        )
++        if X_train_explain is None or X_test_explain is None:
++            return None, None, None, None, False
+         return model, X_train, X_train_explain, X_test_explain, True
  
-     results_table.to_csv("exp.csv")
+     X_train, X_test, y_train, y_test = read_prep_data(inputs)
+     try:
+         model = model_class(model_seed)
+         _, _, r2, fitted_model = fit_sklearn_model(model, X_train, X_test, y_train, y_test)
+     except (TypeError, ValueError, RuntimeError) as err:
+         print(f"Could not train sklearn model for SHAP analysis: {err}")
+         return None, None, None, None, False
+     if r2 is None:
+         print("Could not train sklearn model for SHAP analysis.")
+         return None, None, None, None, False
+     scaler = getattr(fitted_model, "feature_scaler_", None)
+     if scaler is None:
+         scaler = StandardScaler().fit(X_train)
+-    X_train_explain = transform_dataframe(scaler, dataframe_from_tabular(X_train, "X_train")).to_numpy()
+-    X_test_explain = transform_dataframe(
+-        scaler,
+-        dataframe_from_tabular(X_test, "X_test", columns=getattr(scaler, "feature_names_in_", X_train.columns)),
+-    ).to_numpy()
++    X_train_explain = _clean_shap_numeric_array(
++        transform_dataframe(scaler, dataframe_from_tabular(X_train, "X_train")),
++        "X_train_explain",
++    )
++    X_test_explain = _clean_shap_numeric_array(
++        transform_dataframe(
++            scaler,
++            dataframe_from_tabular(X_test, "X_test", columns=getattr(scaler, "feature_names_in_", X_train.columns)),
++        ),
++        "X_test_explain",
++    )
++    if X_train_explain is None or X_test_explain is None:
++        return None, None, None, None, False
+     return fitted_model, X_train, X_train_explain, X_test_explain, False
  
-     X_train, X_test, y_train, y_test = read_prep_data(active_features)
-     generate_target_shap_analysis(X_train, X_test, y_train, y_test, targets=outputs)
  
-     # Show and save the plot for best results
-     best_predictions = model_best_predictions.get(max_model_name)
-     if best_predictions is None:
-         print("Best model did not produce predictions. Skipping reporting/plots.")
-         exit()
-     output_title = ", ".join(outputs)
-     title = "Prediction of " + output_title + " with " + max_model_name + " epochs:" + str(max_epochs)
-     file_name = f"R2-{best_r2:.2f}-" + max_model_name + "-" + "-".join(outputs) + ".png"
+ def _unwrap_tree_estimators_for_shap(model):
+     """Return fitted tree estimators that SHAP TreeExplainer can explain directly."""
+     if isinstance(model, MultiOutputRegressor):
+         return list(model.estimators_)
+     if isinstance(model, RandomizedSearchCV):
+         return [model.best_estimator_]
+     return [model]
+ 
+ 
+ def _is_supported_tree_model(model):
+     """Detect tree models requested for fast SHAP support, including wrappers."""
+     tree_type_names = {
+         "ExtraTreesRegressor",
+         "XGBRegressor",
+         "LGBMRegressor",
+         "CatBoostRegressor",
+     }
+     return all(type(estimator).__name__ in tree_type_names for estimator in _unwrap_tree_estimators_for_shap(model))
+ 
+ 
+ def _torch_predict_fn(model):
+     def predict_fn(x):
+         with torch.no_grad():
+             x_tensor = torch.tensor(x, dtype=torch.float32)
+             pred = model(x_tensor).detach().numpy()
+         return pred
+ 
+     return predict_fn
+ 
+ 
+ def _generic_predict_fn(model):
+     def predict_fn(x):
+         pred = model.predict(x)
+         return as_2d_float_array(pred, "SHAP predictions")
+ 
+     return predict_fn
+ 
+ 
+-def _compute_tree_shap_values(shap_module, model, explain_points):
+-    """Compute TreeExplainer SHAP values, preserving multi-output information."""
+-    shap_values_by_output = []
+-    for estimator in _unwrap_tree_estimators_for_shap(model):
+-        explainer = shap_module.TreeExplainer(estimator)
+-        shap_values_by_output.append(explainer.shap_values(explain_points))
+-    if len(shap_values_by_output) == 1:
+-        return shap_values_by_output[0]
+-    return shap_values_by_output
++
++def _clean_malformed_numeric_value(value):
++    """Normalize malformed numeric strings such as '[1.366046E1]' before SHAP."""
++    if isinstance(value, str):
++        cleaned = value.strip()
++        # Some spreadsheets/exporters wrap scalar values in brackets, e.g. "[1.366046E1]".
++        while len(cleaned) >= 2 and cleaned[0] in "([{" and cleaned[-1] in ")]}":
++            cleaned = cleaned[1:-1].strip()
++        cleaned = cleaned.replace(",", "")
++        return cleaned
++    return value
++
++
++def _clean_shap_numeric_frame(data, name, columns=None):
++    """Return SHAP input as a finite float DataFrame, or None if it cannot be used safely."""
++    try:
++        frame = dataframe_from_tabular(data, name, columns=columns).copy()
++    except Exception as err:
++        print(f"Skipping SHAP: could not build {name} DataFrame ({err}).")
++        return None
++
++    if frame.empty or frame.shape[1] == 0:
++        print(f"Skipping SHAP: {name} has no rows or features.")
++        return None
++
++    frame = frame.applymap(_clean_malformed_numeric_value)
++    numeric = frame.apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
++    invalid_columns = [col for col in numeric.columns if numeric[col].isna().all()]
++    if invalid_columns:
++        print(f"Skipping SHAP: {name} has non-numeric feature columns after cleaning: {invalid_columns}.")
++        return None
++
++    fill_values = numeric.median(numeric_only=True).fillna(0.0)
++    numeric = numeric.fillna(fill_values).astype(float)
++    if not all(np.issubdtype(dtype, np.floating) for dtype in numeric.dtypes):
++        print(f"Skipping SHAP: {name} could not be converted to float dtype.")
++        return None
++    return numeric
++
++
++def _clean_shap_numeric_array(data, name):
++    """Return SHAP input as a finite float ndarray, or None if it cannot be used safely."""
++    frame = _clean_shap_numeric_frame(data, name)
++    if frame is None:
++        return None
++    return frame.to_numpy(dtype=float)
++
++
++def _safe_generic_shap_values(shap_module, model, background, explain_points):
++    """Compute model-agnostic SHAP values; return None instead of raising."""
++    try:
++        explainer = shap_module.Explainer(_generic_predict_fn(model), background)
++        explanation = explainer(explain_points)
++        return explanation.values
++    except Exception as err:
++        print(f"Could not calculate fallback shap.Explainer values: {err}")
++        return None
++
++def _compute_tree_shap_values(shap_module, model, background, explain_points):
++    """Compute TreeExplainer SHAP values, falling back to shap.Explainer without raising."""
++    try:
++        shap_values_by_output = []
++        for estimator in _unwrap_tree_estimators_for_shap(model):
++            explainer = shap_module.TreeExplainer(estimator)
++            shap_values_by_output.append(explainer.shap_values(explain_points))
++        if len(shap_values_by_output) == 1:
++            return shap_values_by_output[0]
++        return shap_values_by_output
++    except Exception as err:
++        print(f"TreeExplainer failed; falling back to shap.Explainer ({err}).")
++        return _safe_generic_shap_values(shap_module, model, background, explain_points)
+ 
+ 
+ def _mean_abs_shap_by_feature(shap_values, n_features):
+     """Collapse SHAP output/sample axes into one mean absolute value per feature."""
+     if isinstance(shap_values, list):
+         arrays = [np.asarray(values) for values in shap_values]
+         feature_vectors = [_mean_abs_shap_by_feature(values, n_features) for values in arrays]
+         return np.mean(np.vstack(feature_vectors), axis=0)
+ 
+     shap_abs = np.abs(np.asarray(shap_values))
+     if shap_abs.ndim == 1:
+         return shap_abs.reshape(-1)
+ 
+     feature_axes = [axis for axis, size in enumerate(shap_abs.shape) if size == n_features]
+     if not feature_axes:
+         return shap_abs.reshape(-1)
+ 
+     feature_axis = feature_axes[-1]
+     shap_abs = np.moveaxis(shap_abs, feature_axis, -1)
+     return shap_abs.reshape(-1, n_features).mean(axis=0)
+ 
+ 
+ def _save_shap_plots(shap_module, shap_values, explain_points, feature_names, model_slug):
+     """Save SHAP summary and bar plots for the current model."""
+     os.makedirs("plots", exist_ok=True)
+@@ -3559,52 +3637,52 @@ def _target_shap_tree_model_factories(seed):
+                 "LightGBMRegressor",
+                 lambda: LGBMRegressor(
+                     n_estimators=500,
+                     random_state=seed,
+                     verbose=-1,
+                 ),
+             )
+         )
+     if CatBoostRegressor is not None:
+         factories.append(("CatBoostRegressor", lambda: make_catboost_regressor(seed)))
+ 
+     return factories
+ 
+ 
+ def _prepare_target_shap_data(X_train, X_test, y_train, y_test, target):
+     """Return finite numeric train/test matrices for one target."""
+     X_train_target = X_train.copy().replace([np.inf, -np.inf], np.nan)
+     X_test_target = X_test.copy().replace([np.inf, -np.inf], np.nan)
+     y_train_target = pd.to_numeric(y_train[target], errors="coerce")
+     y_test_target = pd.to_numeric(y_test[target], errors="coerce")
+ 
+     numeric_train_parts = []
+     numeric_test_parts = []
+     kept_features = []
+     for feature in X_train_target.columns:
+-        train_series = pd.to_numeric(X_train_target[feature], errors="coerce")
+-        test_series = pd.to_numeric(X_test_target[feature], errors="coerce")
++        train_series = pd.to_numeric(X_train_target[feature].map(_clean_malformed_numeric_value), errors="coerce")
++        test_series = pd.to_numeric(X_test_target[feature].map(_clean_malformed_numeric_value), errors="coerce")
+         fill_value = train_series.median()
+         if pd.isna(fill_value):
+             continue
+         numeric_train_parts.append(train_series.fillna(fill_value).astype(float).to_frame(feature))
+         numeric_test_parts.append(test_series.fillna(fill_value).astype(float).to_frame(feature))
+         kept_features.append(feature)
+ 
+     if not numeric_train_parts or y_train_target.notna().sum() < 2:
+         return None
+ 
+     X_train_numeric = pd.concat(numeric_train_parts, axis=1)
+     X_test_numeric = pd.concat(numeric_test_parts, axis=1)
+     train_mask = y_train_target.notna()
+     test_mask = y_test_target.notna()
+ 
+     X_train_numeric = X_train_numeric.loc[train_mask]
+     y_train_target = y_train_target.loc[train_mask].astype(float)
+     X_test_numeric = X_test_numeric.loc[test_mask]
+     y_test_target = y_test_target.loc[test_mask].astype(float)
+ 
+     constant_features = [feature for feature in kept_features if X_train_numeric[feature].nunique(dropna=False) <= 1]
+     if constant_features:
+         X_train_numeric = X_train_numeric.drop(columns=constant_features)
+         X_test_numeric = X_test_numeric.drop(columns=constant_features)
+ 
+@@ -3725,57 +3803,66 @@ def _save_target_shap_plots(shap_module, shap_values, explain_points, feature_na
+ 
+ def generate_target_shap_analysis(X_train, X_test, y_train, y_test, targets=None, results_dir=SHAP_RESULTS_DIR):
+     """Train the best tree model per target, save SHAP plots, and print top refinery variables."""
+     import importlib.util
+     shap_spec = importlib.util.find_spec("shap")
+     if shap_spec is None:
+         print("SHAP target analysis skipped: shap is not installed. Install it with: pip install shap")
+         return []
+     import shap
+ 
+     targets = list(targets or y_train.columns)
+     os.makedirs(results_dir, exist_ok=True)
+     generated = []
+     print("\n================= Target SHAP Analysis =================")
+     for target in targets:
+         if target not in y_train.columns or target not in y_test.columns:
+             print(f"Skipping SHAP for {target}: target is not present in train/test targets.")
+             continue
+ 
+         print(f"\nCalculating SHAP analysis for target: {target}")
+         best = _fit_best_tree_model_for_target(X_train, X_test, y_train, y_test, target)
+         if best is None:
+             continue
+ 
+         X_explain = best["X_test"].head(min(SHAP_MAX_EXPLAIN_SAMPLES, len(best["X_test"])))
++        X_explain = _clean_shap_numeric_frame(X_explain, f"X_explain_{target}", columns=best["X_test"].columns)
++        if X_explain is None:
++            print(f"Skipping SHAP plots for {target}: explanation data is not valid numeric input.")
++            continue
+         feature_names = list(X_explain.columns)
+         try:
+-            explainer = shap.TreeExplainer(best["model"])
+-            shap_values = explainer.shap_values(X_explain)
++            try:
++                explainer = shap.TreeExplainer(best["model"])
++                shap_values = explainer.shap_values(X_explain)
++            except Exception as tree_err:
++                print(f"TreeExplainer failed for {target}; falling back to shap.Explainer ({tree_err}).")
++                explainer = shap.Explainer(_generic_predict_fn(best["model"]), best["X_train"].astype(float))
++                shap_values = explainer(X_explain).values
+             shap_values = _coerce_shap_values_for_single_target(shap_values, len(feature_names))
+         except Exception as err:
+-            print(f"Skipping SHAP plots for {target}: could not calculate TreeExplainer values ({err}).")
++            print(f"Skipping SHAP plots for {target}: could not calculate SHAP values ({err}).")
+             continue
+ 
+         if shap_values.shape[1] != len(feature_names):
+             print(
+                 f"Skipping SHAP plots for {target}: got {shap_values.shape[1]} SHAP features "
+                 f"for {len(feature_names)} input features."
+             )
+             continue
+ 
+         mean_abs_shap = np.abs(shap_values).mean(axis=0)
+         total_importance = float(mean_abs_shap.sum())
+         normalized = mean_abs_shap / total_importance if total_importance > 0 else np.zeros_like(mean_abs_shap)
+         top_table = pd.DataFrame(
+             {
+                 "Rank": np.arange(1, len(feature_names) + 1),
+                 "Variable": feature_names,
+                 "Mean(|SHAP|)": mean_abs_shap,
+                 "Normalized Importance": normalized,
+             }
+         ).sort_values(by="Mean(|SHAP|)", ascending=False).reset_index(drop=True)
+         top_table["Rank"] = np.arange(1, len(top_table) + 1)
+         top_10 = top_table.head(10)
+ 
+         target_dir = os.path.join(results_dir, _safe_report_filename_part(target))
+         try:
+@@ -3825,72 +3912,84 @@ def shap_feature_importance(model_class, inputs, num_epochs, hidden_sizes, model
+     )
+     if model is None:
+         return None
+ 
+     background_default = min(25, len(X_train_explain))
+     explain_default = min(20, len(X_test_explain))
+     nsamples_default = 100
+ 
+     background_size = _parse_positive_int_with_default(
+         input(f"Background sample size [{background_default}]:").strip(),
+         background_default,
+         "background sample size",
+     )
+     explain_size = _parse_positive_int_with_default(
+         input(f"Number of test samples to explain [{explain_default}]:").strip(),
+         explain_default,
+         "number of test samples",
+     )
+ 
+     background_size = max(1, min(background_size, len(X_train_explain)))
+     explain_size = max(1, min(explain_size, len(X_test_explain)))
+     background = X_train_explain[:background_size]
+     explain_points = X_test_explain[:explain_size]
+ 
+     print("Computing SHAP values. This may take some time ...")
+-    if is_nn_model:
+-        model.eval()
+-        nsamples = _parse_positive_int_with_default(
+-            input(f"Kernel SHAP nsamples [{nsamples_default}]:").strip(),
+-            nsamples_default,
+-            "Kernel SHAP nsamples",
+-        )
+-        explainer = shap.KernelExplainer(_torch_predict_fn(model), background)
+-        shap_values = explainer.shap_values(explain_points, nsamples=nsamples)
+-    elif _is_supported_tree_model(model):
+-        shap_values = _compute_tree_shap_values(shap, model, explain_points)
+-    else:
+-        nsamples = _parse_positive_int_with_default(
+-            input(f"Kernel SHAP nsamples [{nsamples_default}]:").strip(),
+-            nsamples_default,
+-            "Kernel SHAP nsamples",
+-        )
+-        explainer = shap.KernelExplainer(_generic_predict_fn(model), background)
+-        shap_values = explainer.shap_values(explain_points, nsamples=nsamples)
++    try:
++        if is_nn_model:
++            model.eval()
++            nsamples = _parse_positive_int_with_default(
++                input(f"Kernel SHAP nsamples [{nsamples_default}]:").strip(),
++                nsamples_default,
++                "Kernel SHAP nsamples",
++            )
++            explainer = shap.KernelExplainer(_torch_predict_fn(model), background)
++            shap_values = explainer.shap_values(explain_points, nsamples=nsamples)
++        elif _is_supported_tree_model(model):
++            shap_values = _compute_tree_shap_values(shap, model, background, explain_points)
++        else:
++            nsamples = _parse_positive_int_with_default(
++                input(f"Kernel SHAP nsamples [{nsamples_default}]:").strip(),
++                nsamples_default,
++                "Kernel SHAP nsamples",
++            )
++            explainer = shap.KernelExplainer(_generic_predict_fn(model), background)
++            shap_values = explainer.shap_values(explain_points, nsamples=nsamples)
++    except Exception as err:
++        print(f"SHAP calculation failed; model execution will continue without SHAP outputs ({err}).")
++        return None
++
++    if shap_values is None:
++        print("SHAP values could not be calculated; model execution will continue without SHAP outputs.")
++        return None
+ 
+     feature_names = list(X_train.columns)
+-    mean_abs_shap = _mean_abs_shap_by_feature(shap_values, len(feature_names))
++    try:
++        mean_abs_shap = _mean_abs_shap_by_feature(shap_values, len(feature_names))
++    except Exception as err:
++        print(f"Could not summarize SHAP values; model execution will continue without SHAP outputs ({err}).")
++        return None
+     mean_abs_shap = np.asarray(mean_abs_shap).reshape(-1)
+ 
+     if mean_abs_shap.shape[0] != len(feature_names):
+         print(
+             "Could not build SHAP table because feature and SHAP dimensions do not match. "
+             f"Got {mean_abs_shap.shape[0]} SHAP values for {len(feature_names)} features. "
+             f"Raw SHAP shape: {np.asarray(shap_values, dtype=object).shape}"
+         )
+         return None
+ 
+     total_importance = float(np.sum(mean_abs_shap))
+     if total_importance > 0:
+         normalized_importance = mean_abs_shap / total_importance
+     else:
+         normalized_importance = np.zeros_like(mean_abs_shap)
+ 
+     shap_table = pd.DataFrame(
+         {
+             "Feature": feature_names,
+             "Mean(|SHAP|)": mean_abs_shap,
+             "Normalized Importance": normalized_importance,
+         }
+     ).sort_values(by="Mean(|SHAP|)", ascending=False).reset_index(drop=True)
+     shap_table.insert(0, "Rank", np.arange(1, len(shap_table) + 1))
  

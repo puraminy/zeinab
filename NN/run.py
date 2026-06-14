@@ -3332,11 +3332,19 @@ def _train_model_for_shap(model_class, inputs, num_epochs, hidden_sizes):
         scaler = getattr(model, "input_scaler_", None)
         if scaler is None:
             scaler = StandardScaler().fit(X_train)
-        X_train_explain = transform_dataframe(scaler, dataframe_from_tabular(X_train, "X_train")).to_numpy()
-        X_test_explain = transform_dataframe(
-            scaler,
-            dataframe_from_tabular(X_test, "X_test", columns=getattr(scaler, "feature_names_in_", X_train.columns)),
-        ).to_numpy()
+        X_train_explain = _clean_shap_numeric_array(
+            transform_dataframe(scaler, dataframe_from_tabular(X_train, "X_train")),
+            "X_train_explain",
+        )
+        X_test_explain = _clean_shap_numeric_array(
+            transform_dataframe(
+                scaler,
+                dataframe_from_tabular(X_test, "X_test", columns=getattr(scaler, "feature_names_in_", X_train.columns)),
+            ),
+            "X_test_explain",
+        )
+        if X_train_explain is None or X_test_explain is None:
+            return None, None, None, None, False
         return model, X_train, X_train_explain, X_test_explain, True
 
     X_train, X_test, y_train, y_test = read_prep_data(inputs)
@@ -3352,11 +3360,19 @@ def _train_model_for_shap(model_class, inputs, num_epochs, hidden_sizes):
     scaler = getattr(fitted_model, "feature_scaler_", None)
     if scaler is None:
         scaler = StandardScaler().fit(X_train)
-    X_train_explain = transform_dataframe(scaler, dataframe_from_tabular(X_train, "X_train")).to_numpy()
-    X_test_explain = transform_dataframe(
-        scaler,
-        dataframe_from_tabular(X_test, "X_test", columns=getattr(scaler, "feature_names_in_", X_train.columns)),
-    ).to_numpy()
+    X_train_explain = _clean_shap_numeric_array(
+        transform_dataframe(scaler, dataframe_from_tabular(X_train, "X_train")),
+        "X_train_explain",
+    )
+    X_test_explain = _clean_shap_numeric_array(
+        transform_dataframe(
+            scaler,
+            dataframe_from_tabular(X_test, "X_test", columns=getattr(scaler, "feature_names_in_", X_train.columns)),
+        ),
+        "X_test_explain",
+    )
+    if X_train_explain is None or X_test_explain is None:
+        return None, None, None, None, False
     return fitted_model, X_train, X_train_explain, X_test_explain, False
 
 
@@ -3398,15 +3414,77 @@ def _generic_predict_fn(model):
     return predict_fn
 
 
-def _compute_tree_shap_values(shap_module, model, explain_points):
-    """Compute TreeExplainer SHAP values, preserving multi-output information."""
-    shap_values_by_output = []
-    for estimator in _unwrap_tree_estimators_for_shap(model):
-        explainer = shap_module.TreeExplainer(estimator)
-        shap_values_by_output.append(explainer.shap_values(explain_points))
-    if len(shap_values_by_output) == 1:
-        return shap_values_by_output[0]
-    return shap_values_by_output
+
+def _clean_malformed_numeric_value(value):
+    """Normalize malformed numeric strings such as '[1.366046E1]' before SHAP."""
+    if isinstance(value, str):
+        cleaned = value.strip()
+        # Some spreadsheets/exporters wrap scalar values in brackets, e.g. "[1.366046E1]".
+        while len(cleaned) >= 2 and cleaned[0] in "([{" and cleaned[-1] in ")]}":
+            cleaned = cleaned[1:-1].strip()
+        cleaned = cleaned.replace(",", "")
+        return cleaned
+    return value
+
+
+def _clean_shap_numeric_frame(data, name, columns=None):
+    """Return SHAP input as a finite float DataFrame, or None if it cannot be used safely."""
+    try:
+        frame = dataframe_from_tabular(data, name, columns=columns).copy()
+    except Exception as err:
+        print(f"Skipping SHAP: could not build {name} DataFrame ({err}).")
+        return None
+
+    if frame.empty or frame.shape[1] == 0:
+        print(f"Skipping SHAP: {name} has no rows or features.")
+        return None
+
+    frame = frame.applymap(_clean_malformed_numeric_value)
+    numeric = frame.apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
+    invalid_columns = [col for col in numeric.columns if numeric[col].isna().all()]
+    if invalid_columns:
+        print(f"Skipping SHAP: {name} has non-numeric feature columns after cleaning: {invalid_columns}.")
+        return None
+
+    fill_values = numeric.median(numeric_only=True).fillna(0.0)
+    numeric = numeric.fillna(fill_values).astype(float)
+    if not all(np.issubdtype(dtype, np.floating) for dtype in numeric.dtypes):
+        print(f"Skipping SHAP: {name} could not be converted to float dtype.")
+        return None
+    return numeric
+
+
+def _clean_shap_numeric_array(data, name):
+    """Return SHAP input as a finite float ndarray, or None if it cannot be used safely."""
+    frame = _clean_shap_numeric_frame(data, name)
+    if frame is None:
+        return None
+    return frame.to_numpy(dtype=float)
+
+
+def _safe_generic_shap_values(shap_module, model, background, explain_points):
+    """Compute model-agnostic SHAP values; return None instead of raising."""
+    try:
+        explainer = shap_module.Explainer(_generic_predict_fn(model), background)
+        explanation = explainer(explain_points)
+        return explanation.values
+    except Exception as err:
+        print(f"Could not calculate fallback shap.Explainer values: {err}")
+        return None
+
+def _compute_tree_shap_values(shap_module, model, background, explain_points):
+    """Compute TreeExplainer SHAP values, falling back to shap.Explainer without raising."""
+    try:
+        shap_values_by_output = []
+        for estimator in _unwrap_tree_estimators_for_shap(model):
+            explainer = shap_module.TreeExplainer(estimator)
+            shap_values_by_output.append(explainer.shap_values(explain_points))
+        if len(shap_values_by_output) == 1:
+            return shap_values_by_output[0]
+        return shap_values_by_output
+    except Exception as err:
+        print(f"TreeExplainer failed; falling back to shap.Explainer ({err}).")
+        return _safe_generic_shap_values(shap_module, model, background, explain_points)
 
 
 def _mean_abs_shap_by_feature(shap_values, n_features):
@@ -3581,8 +3659,8 @@ def _prepare_target_shap_data(X_train, X_test, y_train, y_test, target):
     numeric_test_parts = []
     kept_features = []
     for feature in X_train_target.columns:
-        train_series = pd.to_numeric(X_train_target[feature], errors="coerce")
-        test_series = pd.to_numeric(X_test_target[feature], errors="coerce")
+        train_series = pd.to_numeric(X_train_target[feature].map(_clean_malformed_numeric_value), errors="coerce")
+        test_series = pd.to_numeric(X_test_target[feature].map(_clean_malformed_numeric_value), errors="coerce")
         fill_value = train_series.median()
         if pd.isna(fill_value):
             continue
@@ -3747,13 +3825,22 @@ def generate_target_shap_analysis(X_train, X_test, y_train, y_test, targets=None
             continue
 
         X_explain = best["X_test"].head(min(SHAP_MAX_EXPLAIN_SAMPLES, len(best["X_test"])))
+        X_explain = _clean_shap_numeric_frame(X_explain, f"X_explain_{target}", columns=best["X_test"].columns)
+        if X_explain is None:
+            print(f"Skipping SHAP plots for {target}: explanation data is not valid numeric input.")
+            continue
         feature_names = list(X_explain.columns)
         try:
-            explainer = shap.TreeExplainer(best["model"])
-            shap_values = explainer.shap_values(X_explain)
+            try:
+                explainer = shap.TreeExplainer(best["model"])
+                shap_values = explainer.shap_values(X_explain)
+            except Exception as tree_err:
+                print(f"TreeExplainer failed for {target}; falling back to shap.Explainer ({tree_err}).")
+                explainer = shap.Explainer(_generic_predict_fn(best["model"]), best["X_train"].astype(float))
+                shap_values = explainer(X_explain).values
             shap_values = _coerce_shap_values_for_single_target(shap_values, len(feature_names))
         except Exception as err:
-            print(f"Skipping SHAP plots for {target}: could not calculate TreeExplainer values ({err}).")
+            print(f"Skipping SHAP plots for {target}: could not calculate SHAP values ({err}).")
             continue
 
         if shap_values.shape[1] != len(feature_names):
@@ -3847,28 +3934,40 @@ def shap_feature_importance(model_class, inputs, num_epochs, hidden_sizes, model
     explain_points = X_test_explain[:explain_size]
 
     print("Computing SHAP values. This may take some time ...")
-    if is_nn_model:
-        model.eval()
-        nsamples = _parse_positive_int_with_default(
-            input(f"Kernel SHAP nsamples [{nsamples_default}]:").strip(),
-            nsamples_default,
-            "Kernel SHAP nsamples",
-        )
-        explainer = shap.KernelExplainer(_torch_predict_fn(model), background)
-        shap_values = explainer.shap_values(explain_points, nsamples=nsamples)
-    elif _is_supported_tree_model(model):
-        shap_values = _compute_tree_shap_values(shap, model, explain_points)
-    else:
-        nsamples = _parse_positive_int_with_default(
-            input(f"Kernel SHAP nsamples [{nsamples_default}]:").strip(),
-            nsamples_default,
-            "Kernel SHAP nsamples",
-        )
-        explainer = shap.KernelExplainer(_generic_predict_fn(model), background)
-        shap_values = explainer.shap_values(explain_points, nsamples=nsamples)
+    try:
+        if is_nn_model:
+            model.eval()
+            nsamples = _parse_positive_int_with_default(
+                input(f"Kernel SHAP nsamples [{nsamples_default}]:").strip(),
+                nsamples_default,
+                "Kernel SHAP nsamples",
+            )
+            explainer = shap.KernelExplainer(_torch_predict_fn(model), background)
+            shap_values = explainer.shap_values(explain_points, nsamples=nsamples)
+        elif _is_supported_tree_model(model):
+            shap_values = _compute_tree_shap_values(shap, model, background, explain_points)
+        else:
+            nsamples = _parse_positive_int_with_default(
+                input(f"Kernel SHAP nsamples [{nsamples_default}]:").strip(),
+                nsamples_default,
+                "Kernel SHAP nsamples",
+            )
+            explainer = shap.KernelExplainer(_generic_predict_fn(model), background)
+            shap_values = explainer.shap_values(explain_points, nsamples=nsamples)
+    except Exception as err:
+        print(f"SHAP calculation failed; model execution will continue without SHAP outputs ({err}).")
+        return None
+
+    if shap_values is None:
+        print("SHAP values could not be calculated; model execution will continue without SHAP outputs.")
+        return None
 
     feature_names = list(X_train.columns)
-    mean_abs_shap = _mean_abs_shap_by_feature(shap_values, len(feature_names))
+    try:
+        mean_abs_shap = _mean_abs_shap_by_feature(shap_values, len(feature_names))
+    except Exception as err:
+        print(f"Could not summarize SHAP values; model execution will continue without SHAP outputs ({err}).")
+        return None
     mean_abs_shap = np.asarray(mean_abs_shap).reshape(-1)
 
     if mean_abs_shap.shape[0] != len(feature_names):
