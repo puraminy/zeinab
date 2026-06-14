@@ -1,110 +1,256 @@
-diff --git a/NN/model_copy.py b/NN/model_copy.py
-index 9bbd9cc7bc27d34f812826816277ae349617e686..804447ebc5ac378aab12295d39733c8caa10a8ee 100644
---- a/NN/model_copy.py
-+++ b/NN/model_copy.py
-@@ -44,51 +44,51 @@ def dataframe_from_tabular(data, columns=None, index=None):
-     array = np.asarray(data, dtype=float)
-     if array.ndim == 1:
-         array = array.reshape(-1, 1)
-     if columns is None:
-         columns = [f"feature_{idx}" for idx in range(array.shape[1])]
-     return pd.DataFrame(array, columns=columns, index=index)
+diff --git a/NN/run.py b/NN/run.py
+index e4ad812b9bd12af6a140469fb3d335fe0781dfd3..c70806b2a1276c80649ef9d6c1dcca714da1d842 100644
+--- a/NN/run.py
++++ b/NN/run.py
+@@ -2719,102 +2719,115 @@ def fit_model_on_split(
+             y_test_fold,
+             num_epochs,
+             display_steps=False,
+             run=run,
+             optimization_scope=optimization_scope,
+             optimize_feature_indexes=optimize_feature_indexes,
+         )
+         return predictions, mse, r2
  
- 
- def fit_transform_dataframe(scaler, dataframe):
-     return pd.DataFrame(
-         scaler.fit_transform(dataframe),
-         columns=dataframe.columns,
-         index=dataframe.index,
+     model = model_class(model_seed + run)
+     predictions, mse, r2, _model = fit_sklearn_model(
+         model, X_train_fold, X_test_fold, y_train_fold, y_test_fold
      )
+     return predictions, mse, r2
  
  
- def transform_dataframe(scaler, dataframe):
-     return pd.DataFrame(
-         scaler.transform(dataframe),
-         columns=dataframe.columns,
-         index=dataframe.index,
-     )
- lr_plateau_patience = 8
- lr_plateau_factor = 0.5
- min_learning_rate = 1e-5
--max_gradient_norm = 0.5
-+max_gradient_norm = 1.0
- #hidden_size1 = 10
- hidden_size1 = 8
+ def cross_validate_model(
+     model_class,
+     num_epochs,
+     hidden_sizes,
+     features=None,
+     folds=MODEL_EVALUATION_CV_FOLDS,
+     optimization_scope="weights",
+     optimize_feature_indexes=None,
+ ):
+-    """Run leakage-safe K-fold CV and report R²/RMSE mean and std."""
++    """Run leakage-safe 5-fold CV and report R², RMSE, and MAE mean ± std."""
+     X_train, X_test, y_train, y_test = read_prep_data(features)
+     full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
+     full_y = pd.concat([y_train, y_test], axis=0).reset_index(drop=True)
+     if len(full_X) < 2:
+         return None
  
- hidden_size2 = 4
+     n_splits = min(int(folds), len(full_X))
+     if n_splits < 2:
+         return None
  
- hidden_size3 = 2
- # the number of neurons in hidden layers; kept small to limit overfitting.
+     kfold = KFold(n_splits=n_splits, shuffle=True, random_state=data_seed)
+     r2_scores = []
+     rmse_scores = []
++    mae_scores = []
+     for fold_index, (train_idx, val_idx) in enumerate(kfold.split(full_X), start=1):
+         X_train_fold = full_X.iloc[train_idx]
+         X_val_fold = full_X.iloc[val_idx]
+         y_train_fold = full_y.iloc[train_idx]
+         y_val_fold = full_y.iloc[val_idx]
+         try:
+-            _predictions, mse, r2 = fit_model_on_split(
++            predictions, mse, r2 = fit_model_on_split(
+                 model_class,
+                 X_train_fold,
+                 X_val_fold,
+                 y_train_fold,
+                 y_val_fold,
+                 num_epochs,
+                 hidden_sizes,
+                 run=fold_index,
+                 optimization_scope=optimization_scope,
+                 optimize_feature_indexes=optimize_feature_indexes,
+             )
+         except (TypeError, ValueError, RuntimeError) as err:
+             print(f"CV fold {fold_index} failed: {err}")
+             continue
  
- # https://alexlenail.me/NN-SVG/
- # use the site above to draw the following network
- #
- class Linear1HiddenLayer(nn.Module):
-     activation1 = None
-     def __init__(self, input_size):
-         super().__init__()
-         #                          O1
-         #   O1                     O2                  
-         #   ...   5 x 10 edges    ...   10 x 1       O1 ---> y
-         #   ...                   ...                 
-         #   O5                    ...  
-         #                         O10
-         #
-         #  input (5 features)     hidden1           output 
-         #   5 neuron             10 neurons        1 neuron
-         #
-@@ -216,51 +216,51 @@ def fit_model(model_class, X_train, X_test, y_train, y_test, num_epochs,
-         mode="min",
-         factor=lr_plateau_factor,
-         patience=lr_plateau_patience,
-         min_lr=min_learning_rate,
-     )
+-        if r2 is None or mse is None:
++        if r2 is None or mse is None or predictions is None:
++            continue
++        y_val_values = as_2d_float_array(y_val_fold, "y_val_fold")
++        prediction_values = as_2d_float_array(predictions, "predictions")
++        if y_val_values.shape != prediction_values.shape:
++            print(
++                f"CV fold {fold_index} skipped: prediction shape {prediction_values.shape} "
++                f"does not match target shape {y_val_values.shape}."
++            )
+             continue
+         r2_scores.append(float(r2) * 100.0)
+         rmse_scores.append(float(np.sqrt(mse)))
++        mae_scores.append(float(np.mean(np.abs(prediction_values - y_val_values))))
  
-     best_monitor_loss = float("inf")
-     best_epoch = 0
-     best_state_dict = copy.deepcopy(model.state_dict())
-     epochs_without_improvement = 0
+     if not r2_scores:
+         return None
  
-     # Train the model with validation-monitored early stopping.
-     for epoch in range(num_epochs):
-         model.train()
-         optimizer.zero_grad()
-         outputs = model(X_fit_normalized)
+     return {
+         "folds": len(r2_scores),
+         "mean_r2": float(np.mean(r2_scores)),
+         "std_r2": float(np.std(r2_scores)),
+         "mean_rmse": float(np.mean(rmse_scores)),
+         "std_rmse": float(np.std(rmse_scores)),
++        "mean_mae": float(np.mean(mae_scores)),
++        "std_mae": float(np.std(mae_scores)),
+         "r2_scores": r2_scores,
+         "rmse_scores": rmse_scores,
++        "mae_scores": mae_scores,
+     }
  
-         if not torch.isfinite(outputs).all():
-             raise FloatingPointError(f"Non-finite ANN outputs at epoch {epoch + 1}")
+ def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
+     """Fit a scikit-learn regressor with train-only feature scaling."""
+     X_train_df = dataframe_from_tabular(X_train, "X_train")
+     X_test_df = dataframe_from_tabular(X_test, "X_test", columns=X_train_df.columns)
+     y_train_values = as_2d_float_array(y_train, "y_train")
+     y_test_values = as_2d_float_array(y_test, "y_test")
  
-         loss = criterion(outputs, y_fit_normalized)
-         if not torch.isfinite(loss):
-             raise FloatingPointError(f"Non-finite ANN loss at epoch {epoch + 1}")
+     scaler_x = StandardScaler()
+     X_train_scaled_df = fit_transform_dataframe(scaler_x, X_train_df)
+     X_test_scaled_df = transform_dataframe(scaler_x, X_test_df)
+     X_train_scaled = X_train_scaled_df.to_numpy()
+     X_test_scaled = X_test_scaled_df.to_numpy()
  
-         loss.backward()
--        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_gradient_norm)
-+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-         optimizer.step()
+     is_multi_output = y_train_values.shape[1] > 1
+     y_train_fit = y_train_values if is_multi_output else y_train_values.ravel()
  
-         model.eval()
-         with torch.no_grad():
-             if X_val_normalized is not None:
-                 monitor_outputs = model(X_val_normalized)
-                 monitor_loss = criterion(monitor_outputs, y_val_normalized).item()
-             else:
-                 monitor_loss = loss.item()
- 
-         if not np.isfinite(monitor_loss):
-             raise FloatingPointError(f"Non-finite ANN monitor loss at epoch {epoch + 1}")
- 
-         scheduler.step(monitor_loss)
- 
-         if monitor_loss < best_monitor_loss - early_stopping_min_delta:
-             best_monitor_loss = monitor_loss
-             best_epoch = epoch + 1
-             best_state_dict = copy.deepcopy(model.state_dict())
-             epochs_without_improvement = 0
+     if isinstance(model, RandomizedSearchCV):
+         search_cv_folds = min(int(model.cv), X_train_scaled.shape[0])
+         if search_cv_folds < 2:
+             print("Not enough training rows for ExtraTrees RandomizedSearchCV; fitting base estimator.")
+             model = model.estimator
          else:
-             epochs_without_improvement += 1
+             model.cv = search_cv_folds
+@@ -4529,102 +4542,128 @@ if answer != "0":
+                     max_model_index = model_index
+                     max_epochs = num_epochs
+                     max_hidden_sizes = hidden_sizes
+                     best_run = max_run
  
-         if (epoch + 1) % 10 == 0 and display_steps:
-             print(
+                 if mean_r2 > best_mean_r2:
+                     best_mean_r2 = mean_r2
+                     best_mse = mean_mse
+                     best_model_index = model_index
+                     best_epochs = num_epochs
+                     best_hidden_sizes = hidden_sizes
+ 
+                 total_nodes = sum(hidden_sizes) if hidden_sizes else 0
+ 
+                 mean_rmse = float(np.sqrt(mean_mse)) if mean_mse is not None else np.nan
+                 result = {
+                         "model":model_name,
+                         "R2": round(mean_r2,1),
+                         "MSE": round(mean_mse,2),
+                         "R2 std": round(std_r2, 1),
+                         "R2 List": [round(x, 1) for x in r2_list],
+                         "Mean R²": round(cv_metrics["mean_r2"], 3) if cv_metrics else np.nan,
+                         "Std R²": round(cv_metrics["std_r2"], 3) if cv_metrics else np.nan,
+                         "Mean RMSE": round(cv_metrics["mean_rmse"], 3) if cv_metrics else round(mean_rmse, 3),
+                         "Std RMSE": round(cv_metrics["std_rmse"], 3) if cv_metrics else np.nan,
++                        "Mean MAE": round(cv_metrics["mean_mae"], 3) if cv_metrics else np.nan,
++                        "Std MAE": round(cv_metrics["std_mae"], 3) if cv_metrics else np.nan,
+                         "CV folds": cv_metrics["folds"] if cv_metrics else 0,
+                         "hidden sizes": hidden_sizes if hidden_sizes else "N/A",
+                         "total hs": total_nodes,
+                         "epochs": num_epochs if is_nn else "N/A",
+                         }
+                 results.append(result)
+ 
+     # Create a table for results. Some model/config combinations can fail and return no
+     # valid R2 values, so guard against missing/empty result sets.
+     expected_result_cols = [
+         "model", "R2", "MSE", "R2 std", "R2 List",
+-        "Mean R²", "Std R²", "Mean RMSE", "Std RMSE", "CV folds",
++        "Mean R²", "Std R²", "Mean RMSE", "Std RMSE", "Mean MAE", "Std MAE", "CV folds",
+         "hidden sizes", "total hs", "epochs"
+     ]
+     results_table = pd.DataFrame(data=results)
+     if results_table.empty:
+         results_table = pd.DataFrame(columns=expected_result_cols)
+     else:
+         missing_cols = [col for col in expected_result_cols if col not in results_table.columns]
+         for col in missing_cols:
+             results_table[col] = np.nan
+-        # Sort methods by R2 only when the column exists and contains data.
+-        if results_table["R2"].notna().any():
++        # Rank methods by cross-validation R² when available.
++        if results_table["Mean R²"].notna().any():
++            results_table = results_table.sort_values(by="Mean R²", ascending=False)
++            results_table.insert(0, "CV R² Rank", range(1, len(results_table) + 1))
++        elif results_table["R2"].notna().any():
+             results_table = results_table.sort_values(by="R2", ascending=False)
+         else:
+             print("No valid R2 values were produced for the selected model/config combinations.")
+ 
+     if results_table["R2"].isna().all():
+         print("Training finished, but no successful runs produced R2 values. Skipping reporting/plots.")
+         results_table.to_csv("exp.csv", index=False)
+         exit()
+ 
+     latex_table = results_table.copy()
+     # Create and save latex code for table
+     latex_table["R2"] = latex_table.apply(lambda row: f"{row['R2']} ± {row['R2 std']}", axis=1)
+     latex_table = latex_table.drop(columns=["R2 List","R2 std"])
+     results_table_latex = generate_latex_table(latex_table,
+             caption="Results of different models", label="models")
+     with open(os.path.join("tables", "results.tex"), 'w', encoding='utf-8') as f:
+         print(results_table_latex, file=f)
+ 
+     # Plot the performance of models across different parameters
+     print("Generating plots ...")
+     plot_model_performance(results_table)
+ 
+     best_model = models[best_model_index]
+     best_model_name = model_names[best_model_index]
+     # Show results
+     max_model_name = model_names[max_model_index]
+ 
+-    print("============ Results for models =========================")
++    print("============ Results for models (ranked by CV R²) =========================")
+     print(results_table)
++    cv_print_columns = [
++        col for col in [
++            "CV R² Rank", "model", "hidden sizes", "epochs",
++            "Mean R²", "Std R²", "Mean RMSE", "Std RMSE", "Mean MAE", "Std MAE", "CV folds"
++        ]
++        if col in results_table.columns
++    ]
++    if cv_print_columns:
++        cv_summary = results_table[cv_print_columns].copy()
++        if {"Mean R²", "Std R²"}.issubset(cv_summary.columns):
++            cv_summary["CV R²"] = cv_summary.apply(lambda row: f"{row['Mean R²']} ± {row['Std R²']}", axis=1)
++        if {"Mean RMSE", "Std RMSE"}.issubset(cv_summary.columns):
++            cv_summary["CV RMSE"] = cv_summary.apply(lambda row: f"{row['Mean RMSE']} ± {row['Std RMSE']}", axis=1)
++        if {"Mean MAE", "Std MAE"}.issubset(cv_summary.columns):
++            cv_summary["CV MAE"] = cv_summary.apply(lambda row: f"{row['Mean MAE']} ± {row['Std MAE']}", axis=1)
++        cv_summary = cv_summary.drop(
++            columns=["Mean R²", "Std R²", "Mean RMSE", "Std RMSE", "Mean MAE", "Std MAE"],
++            errors="ignore",
++        )
++        print("============ 5-fold CV metrics (mean ± std) =========================")
++        print(cv_summary)
+     print("========================== Best Mean Model ===============================")
+     print("Best Mean R-Squred:", best_mean_r2)
+     print("Best model with better mean R-Squred:", best_model_name)
+     print("Best Hidden sizes:", best_hidden_sizes)
+     print("Best epochs:", best_epochs)
+     print("=========================== Max Model ================================")
+     print("Best model with better max R-Squred:", max_model_name)
+     print("Best Hidden sizes:", max_hidden_sizes)
+     print("Best epochs:", max_epochs)
+     print("Max R-Squred:", best_r2)
+ 
+     results_table.to_csv("exp.csv")
+ 
+     X_train, X_test, y_train, y_test = read_prep_data(active_features)
+     generate_target_shap_analysis(X_train, X_test, y_train, y_test, targets=outputs)
+ 
+     # Show and save the plot for best results
+     best_predictions = model_best_predictions.get(max_model_name)
+     if best_predictions is None:
+         print("Best model did not produce predictions. Skipping reporting/plots.")
+         exit()
+     output_title = ", ".join(outputs)
+     title = "Prediction of " + output_title + " with " + max_model_name + " epochs:" + str(max_epochs)
+     file_name = f"R2-{best_r2:.2f}-" + max_model_name + "-" + "-".join(outputs) + ".png"
+ 

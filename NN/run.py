@@ -2741,7 +2741,7 @@ def cross_validate_model(
     optimization_scope="weights",
     optimize_feature_indexes=None,
 ):
-    """Run leakage-safe K-fold CV and report R²/RMSE mean and std."""
+    """Run leakage-safe 5-fold CV and report R², RMSE, and MAE mean ± std."""
     X_train, X_test, y_train, y_test = read_prep_data(features)
     full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
     full_y = pd.concat([y_train, y_test], axis=0).reset_index(drop=True)
@@ -2755,13 +2755,14 @@ def cross_validate_model(
     kfold = KFold(n_splits=n_splits, shuffle=True, random_state=data_seed)
     r2_scores = []
     rmse_scores = []
+    mae_scores = []
     for fold_index, (train_idx, val_idx) in enumerate(kfold.split(full_X), start=1):
         X_train_fold = full_X.iloc[train_idx]
         X_val_fold = full_X.iloc[val_idx]
         y_train_fold = full_y.iloc[train_idx]
         y_val_fold = full_y.iloc[val_idx]
         try:
-            _predictions, mse, r2 = fit_model_on_split(
+            predictions, mse, r2 = fit_model_on_split(
                 model_class,
                 X_train_fold,
                 X_val_fold,
@@ -2777,10 +2778,19 @@ def cross_validate_model(
             print(f"CV fold {fold_index} failed: {err}")
             continue
 
-        if r2 is None or mse is None:
+        if r2 is None or mse is None or predictions is None:
+            continue
+        y_val_values = as_2d_float_array(y_val_fold, "y_val_fold")
+        prediction_values = as_2d_float_array(predictions, "predictions")
+        if y_val_values.shape != prediction_values.shape:
+            print(
+                f"CV fold {fold_index} skipped: prediction shape {prediction_values.shape} "
+                f"does not match target shape {y_val_values.shape}."
+            )
             continue
         r2_scores.append(float(r2) * 100.0)
         rmse_scores.append(float(np.sqrt(mse)))
+        mae_scores.append(float(np.mean(np.abs(prediction_values - y_val_values))))
 
     if not r2_scores:
         return None
@@ -2791,8 +2801,11 @@ def cross_validate_model(
         "std_r2": float(np.std(r2_scores)),
         "mean_rmse": float(np.mean(rmse_scores)),
         "std_rmse": float(np.std(rmse_scores)),
+        "mean_mae": float(np.mean(mae_scores)),
+        "std_mae": float(np.std(mae_scores)),
         "r2_scores": r2_scores,
         "rmse_scores": rmse_scores,
+        "mae_scores": mae_scores,
     }
 
 def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
@@ -4551,6 +4564,8 @@ if answer != "0":
                         "Std R²": round(cv_metrics["std_r2"], 3) if cv_metrics else np.nan,
                         "Mean RMSE": round(cv_metrics["mean_rmse"], 3) if cv_metrics else round(mean_rmse, 3),
                         "Std RMSE": round(cv_metrics["std_rmse"], 3) if cv_metrics else np.nan,
+                        "Mean MAE": round(cv_metrics["mean_mae"], 3) if cv_metrics else np.nan,
+                        "Std MAE": round(cv_metrics["std_mae"], 3) if cv_metrics else np.nan,
                         "CV folds": cv_metrics["folds"] if cv_metrics else 0,
                         "hidden sizes": hidden_sizes if hidden_sizes else "N/A",
                         "total hs": total_nodes,
@@ -4562,7 +4577,7 @@ if answer != "0":
     # valid R2 values, so guard against missing/empty result sets.
     expected_result_cols = [
         "model", "R2", "MSE", "R2 std", "R2 List",
-        "Mean R²", "Std R²", "Mean RMSE", "Std RMSE", "CV folds",
+        "Mean R²", "Std R²", "Mean RMSE", "Std RMSE", "Mean MAE", "Std MAE", "CV folds",
         "hidden sizes", "total hs", "epochs"
     ]
     results_table = pd.DataFrame(data=results)
@@ -4572,8 +4587,11 @@ if answer != "0":
         missing_cols = [col for col in expected_result_cols if col not in results_table.columns]
         for col in missing_cols:
             results_table[col] = np.nan
-        # Sort methods by R2 only when the column exists and contains data.
-        if results_table["R2"].notna().any():
+        # Rank methods by cross-validation R² when available.
+        if results_table["Mean R²"].notna().any():
+            results_table = results_table.sort_values(by="Mean R²", ascending=False)
+            results_table.insert(0, "CV R² Rank", range(1, len(results_table) + 1))
+        elif results_table["R2"].notna().any():
             results_table = results_table.sort_values(by="R2", ascending=False)
         else:
             print("No valid R2 values were produced for the selected model/config combinations.")
@@ -4601,8 +4619,29 @@ if answer != "0":
     # Show results
     max_model_name = model_names[max_model_index]
 
-    print("============ Results for models =========================")
+    print("============ Results for models (ranked by CV R²) =========================")
     print(results_table)
+    cv_print_columns = [
+        col for col in [
+            "CV R² Rank", "model", "hidden sizes", "epochs",
+            "Mean R²", "Std R²", "Mean RMSE", "Std RMSE", "Mean MAE", "Std MAE", "CV folds"
+        ]
+        if col in results_table.columns
+    ]
+    if cv_print_columns:
+        cv_summary = results_table[cv_print_columns].copy()
+        if {"Mean R²", "Std R²"}.issubset(cv_summary.columns):
+            cv_summary["CV R²"] = cv_summary.apply(lambda row: f"{row['Mean R²']} ± {row['Std R²']}", axis=1)
+        if {"Mean RMSE", "Std RMSE"}.issubset(cv_summary.columns):
+            cv_summary["CV RMSE"] = cv_summary.apply(lambda row: f"{row['Mean RMSE']} ± {row['Std RMSE']}", axis=1)
+        if {"Mean MAE", "Std MAE"}.issubset(cv_summary.columns):
+            cv_summary["CV MAE"] = cv_summary.apply(lambda row: f"{row['Mean MAE']} ± {row['Std MAE']}", axis=1)
+        cv_summary = cv_summary.drop(
+            columns=["Mean R²", "Std R²", "Mean RMSE", "Std RMSE", "Mean MAE", "Std MAE"],
+            errors="ignore",
+        )
+        print("============ 5-fold CV metrics (mean ± std) =========================")
+        print(cv_summary)
     print("========================== Best Mean Model ===============================")
     print("Best Mean R-Squred:", best_mean_r2)
     print("Best model with better mean R-Squred:", best_model_name)
