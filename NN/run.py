@@ -25,6 +25,7 @@ import re
 from sklearn.metrics import make_scorer, r2_score
 from sklearn.inspection import permutation_importance
 from sklearn.feature_selection import mutual_info_regression
+from sklearn.utils import get_tags
 from tabulate import tabulate
 import os
 from latex import *
@@ -60,8 +61,9 @@ import models
 import json
 import copy
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import OrderedDict
+import warnings
 
 from openpyxl.styles import Font, PatternFill, Alignment
 
@@ -79,6 +81,23 @@ try:
     from catboost import CatBoostRegressor
 except ImportError:
     CatBoostRegressor = None
+
+# SHAP releases commonly used with this project may still reference NumPy
+# aliases removed in NumPy 2.x.  Providing the aliases here keeps explanation
+# generation from crashing while avoiding global version pinning.
+for _numpy_alias, _numpy_type in {
+    "bool": bool,
+    "int": int,
+    "float": float,
+}.items():
+    if not hasattr(np, _numpy_alias):
+        setattr(np, _numpy_alias, _numpy_type)
+
+warnings.filterwarnings(
+    "ignore",
+    message="X does not have valid feature names, but .* was fitted with feature names",
+    category=UserWarning,
+)
 
 ANSI_RESET = "\033[0m"
 ANSI_GREEN = "\033[92m"
@@ -282,7 +301,7 @@ def save_leakage_report(removed_columns, output_features=None, context="pre_trai
     summary_rows = [
         {
             "context": context,
-            "created_at_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "created_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
             "removed_from_X_count": len(removed_rows),
             "kept_final_target_count": len(kept_target_rows),
             "report_path": report_path,
@@ -409,6 +428,45 @@ def apply_missing_value_pipeline(X_train, X_test, missing_drop_threshold=50.0, v
     X_train_imputed = X_train_imputed.astype(float)
     X_test_imputed = X_test_imputed.astype(float)
     return X_train_imputed, X_test_imputed, columns_to_drop
+
+
+def apply_target_value_pipeline(y_train, y_test):
+    """Coerce targets to finite floats and drop rows with unusable target values.
+
+    Feature imputation is not appropriate for supervised labels.  This helper
+    keeps target handling explicit: non-numeric, NaN, and infinite target rows
+    are removed from the corresponding split before any model sees the data.
+    """
+    y_train_clean = y_train.copy() if isinstance(y_train, pd.DataFrame) else pd.DataFrame(y_train)
+    if y_train_clean.shape[1] == 0:
+        raise ValueError("y_train must contain at least one target column.")
+    y_test_clean = y_test.copy() if isinstance(y_test, pd.DataFrame) else pd.DataFrame(y_test)
+    y_test_clean = y_test_clean.reindex(columns=y_train_clean.columns)
+    y_train_clean = y_train_clean.apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
+    y_test_clean = y_test_clean.apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
+    train_mask = y_train_clean.notna().all(axis=1)
+    test_mask = y_test_clean.notna().all(axis=1)
+    dropped_train = int((~train_mask).sum())
+    dropped_test = int((~test_mask).sum())
+    if dropped_train or dropped_test:
+        print(
+            "Target-value pipeline dropped rows with NaN/infinite targets: "
+            f"train={dropped_train}, test={dropped_test}."
+        )
+    return y_train_clean.loc[train_mask].astype(float), y_test_clean.loc[test_mask].astype(float), train_mask, test_mask
+
+
+def clean_train_test_for_modeling(X_train, X_test, y_train, y_test, verbose=True):
+    """Apply leakage-safe feature and target cleaning while keeping rows aligned."""
+    y_train_clean, y_test_clean, train_mask, test_mask = apply_target_value_pipeline(y_train, y_test)
+    X_train_aligned = X_train.loc[train_mask].copy() if hasattr(X_train, "loc") else pd.DataFrame(X_train).loc[train_mask].copy()
+    X_test_aligned = X_test.loc[test_mask].copy() if hasattr(X_test, "loc") else pd.DataFrame(X_test).loc[test_mask].copy()
+    X_train_clean, X_test_clean, dropped_columns = apply_missing_value_pipeline(
+        X_train_aligned,
+        X_test_aligned,
+        verbose=verbose,
+    )
+    return X_train_clean, X_test_clean, y_train_clean, y_test_clean, dropped_columns
 
 
 def _safe_excel_sheet_name(name):
@@ -629,7 +687,7 @@ def _build_feature_importance_tables(dataframe, target, seed=None):
                 "source_variables_ranked": int(len(set(encoded_to_original.values()))),
                 "encoded_feature_count": int(X_train_fi.shape[1]),
                 "preprocessing_scope": "fit_on_training_split_only",
-                "created_at_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "created_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
             }
         ]),
     }
@@ -907,7 +965,7 @@ def generate_prescriptive_optimization_report(
                 "reason": reason,
                 "required_control_variables": ", ".join(control_variables),
                 "required_objectives": ", ".join(objectives),
-                "created_at_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "created_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
             }]).to_excel(writer, sheet_name="Summary", index=False)
         print(f"Prescriptive optimization skipped: {reason}")
         print(f"Saved optimization report: {report_path}")
@@ -992,7 +1050,7 @@ def generate_prescriptive_optimization_report(
     ]
     summary_rows = [{
         "status": "completed",
-        "created_at_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "created_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "historical_rows_used": int(len(optimization_df)),
         "control_variables": ", ".join(control_variables),
         "objectives_minimized": ", ".join(objectives),
@@ -1161,7 +1219,7 @@ def save_operator_report(recommendation, report_path=OPERATOR_REPORT_PATH):
         })
 
     summary_rows = [{
-        "Created At UTC": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "Created At UTC": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "Current Predicted Quality": json.dumps(current_prediction, ensure_ascii=False, default=float),
         "Recommended Predicted Quality": json.dumps(future_quality, ensure_ascii=False, default=float),
         "Expected Quality Improvement": improvement,
@@ -1390,7 +1448,7 @@ def save_run_summary(
     saved_dir=SAVED_RUNS_DIR,
 ):
     os.makedirs(saved_dir, exist_ok=True)
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     display_name = f"{model_name}_in{len(inputs)}_out{len(outputs)}_R2-{best_r2:.2f}"
     payload = {
         "display_name": display_name,
@@ -1520,7 +1578,7 @@ def make_catboost_regressor(seed):
 
 SKLEARN_MODEL_FACTORIES = {
     "RandomForestRegressor": lambda seed: RandomForestRegressor(
-        n_estimators=300, random_state=seed
+        n_estimators=500, random_state=seed, n_jobs=-1, min_samples_leaf=2
     ),
     "ExtraTreesRegressor": make_extra_trees_random_search,
     "GradientBoostingRegressor": lambda seed: GradientBoostingRegressor(random_state=seed),
@@ -2590,7 +2648,7 @@ def fit_model(
     model.apply(initialize_linear_weights)
     load_model_state_dict(model, pretrained_state_dict_path)
 
-    criterion = nn.MSELoss()
+    criterion = nn.SmoothL1Loss(beta=0.5)
     optimizer = (
         optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=ann_weight_decay, eps=1e-8)
         if optimize_weights
@@ -2745,8 +2803,11 @@ def sklearn_model_supports_multioutput(model):
     estimator = model.estimator if isinstance(model, RandomizedSearchCV) else model
     if isinstance(estimator, ExtraTreesRegressor):
         return True
-    if hasattr(estimator, "_get_tags"):
-        return bool(estimator._get_tags().get("multioutput", False))
+    try:
+        tags = get_tags(estimator)
+        return bool(getattr(tags.target_tags, "multi_output", False))
+    except Exception:
+        pass
     return False
 
 
@@ -2763,9 +2824,11 @@ def fit_model_on_split(
     optimize_feature_indexes=None,
 ):
     """Fit either an NN or sklearn model on one explicit train/test split."""
-    X_train_fold, X_test_fold, _dropped_missing_columns = apply_missing_value_pipeline(
+    X_train_fold, X_test_fold, y_train_fold, y_test_fold, _dropped_missing_columns = clean_train_test_for_modeling(
         X_train_fold,
         X_test_fold,
+        y_train_fold,
+        y_test_fold,
         verbose=False,
     )
     if is_torch_model(model_class):
@@ -2873,6 +2936,13 @@ def cross_validate_model(
 
 def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
     """Fit a scikit-learn regressor with train-only feature scaling."""
+    X_train, X_test, y_train, y_test, _ = clean_train_test_for_modeling(
+        X_train,
+        X_test,
+        y_train,
+        y_test,
+        verbose=False,
+    )
     validation_report_for_training(X_train, y_train, name="sklearn training data")
 
     X_train_df = dataframe_from_tabular(X_train, "X_train")
@@ -3123,7 +3193,7 @@ def _write_model_comparison_workbook(summary_df, fold_df, report_path):
     metadata_df = pd.DataFrame(
         [
             {
-                "created_at_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "created_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
                 "cv_folds_requested": MODEL_COMPARISON_CV_FOLDS,
                 "sort_rule": "Within each target, models are sorted by highest mean CV R2.",
                 "best_model_rule": "Best for target = rank 1 by mean CV R2.",
@@ -3298,7 +3368,7 @@ def select_epochs_with_cv_early_stopping(
 
         set_model_seed(model_seed + fold_index)
         model.apply(initialize_linear_weights)
-        criterion = nn.MSELoss()
+        criterion = nn.SmoothL1Loss(beta=0.5)
         optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=ann_weight_decay, eps=1e-8)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
@@ -3453,6 +3523,7 @@ def _unwrap_tree_estimators_for_shap(model):
 def _is_supported_tree_model(model):
     """Detect tree models requested for fast SHAP support, including wrappers."""
     tree_type_names = {
+        "RandomForestRegressor",
         "ExtraTreesRegressor",
         "XGBRegressor",
         "LGBMRegressor",
@@ -3504,7 +3575,7 @@ def _clean_shap_numeric_frame(data, name, columns=None):
         print(f"Skipping SHAP: {name} has no rows or features.")
         return None
 
-    frame = frame.applymap(_clean_malformed_numeric_value)
+    frame = frame.map(_clean_malformed_numeric_value)
     numeric = frame.apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
     invalid_columns = [col for col in numeric.columns if numeric[col].isna().all()]
     if invalid_columns:
@@ -4138,7 +4209,7 @@ def evaluate_feature_subset_on_training_split(
         test_size=inner_test_size,
         random_state=data_seed,
     )
-    X_fit, X_val, _ = apply_missing_value_pipeline(X_fit, X_val, verbose=False)
+    X_fit, X_val, y_fit, y_val, _ = clean_train_test_for_modeling(X_fit, X_val, y_fit, y_val, verbose=False)
     if X_fit.empty or X_val.empty:
         return None
 
@@ -4310,9 +4381,11 @@ def repeat_fit_model(
     the optimized-input report from the best run.
     """
     X_train, X_test, y_train, y_test = read_prep_data(features)
-    X_train, X_test, _dropped_missing_columns = apply_missing_value_pipeline(
+    X_train, X_test, y_train, y_test, _dropped_missing_columns = clean_train_test_for_modeling(
         X_train,
         X_test,
+        y_train,
+        y_test,
         verbose=False,
     )
     r2_list = []
@@ -4429,9 +4502,14 @@ if saved_outputs:
 outputs = y_train.columns.tolist()
 output = outputs
 try:
-    X_train, X_test, dropped_missing_columns = apply_missing_value_pipeline(X_train, X_test)
+    X_train, X_test, y_train, y_test, dropped_missing_columns = clean_train_test_for_modeling(
+        X_train,
+        X_test,
+        y_train,
+        y_test,
+    )
 except ValueError as err:
-    print(f"Missing-value pipeline failed: {err}")
+    print(f"Data-cleaning pipeline failed: {err}")
     exit()
 if dropped_missing_columns:
     inputs = X_train.columns.tolist()
