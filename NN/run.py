@@ -177,6 +177,67 @@ def coerce_refinery_numeric_frame(dataframe):
     """Convert every column in a dataframe with the refinery numeric parser."""
     return dataframe.apply(coerce_refinery_numeric_series, axis=0)
 
+
+
+def validation_report(df, name="dataset"):
+    """Print a compact data-quality report before model training."""
+    if not isinstance(df, pd.DataFrame):
+        df = pd.DataFrame(df)
+
+    print("\n")
+    print_divider("=", 76)
+    print(f"VALIDATION REPORT: {name}")
+    print_divider("-", 76)
+    print(f"shape: {df.shape}")
+    print(f"duplicate rows: {int(df.duplicated().sum())}")
+
+    nan_counts = df.isna().sum().sort_values(ascending=False)
+    nan_percentages = (nan_counts / max(len(df), 1) * 100.0).sort_values(ascending=False)
+    print("NaN counts:")
+    print(nan_counts.to_string())
+    print("NaN percentages:")
+    print(nan_percentages.map(lambda value: f"{value:.2f}%").to_string())
+
+    numeric_df = df.select_dtypes(include=[np.number])
+    if numeric_df.empty:
+        infinite_counts = pd.Series(dtype="int64")
+        min_max_values = pd.DataFrame(columns=["min", "max"])
+    else:
+        infinite_counts = np.isinf(numeric_df).sum().sort_values(ascending=False)
+        min_max_values = pd.DataFrame({
+            "min": numeric_df.replace([np.inf, -np.inf], np.nan).min(),
+            "max": numeric_df.replace([np.inf, -np.inf], np.nan).max(),
+        })
+
+    print("infinite values:")
+    print(infinite_counts.to_string() if not infinite_counts.empty else "None")
+
+    non_numeric_columns = df.select_dtypes(exclude=[np.number]).columns.tolist()
+    print("non-numeric columns:")
+    print(", ".join(non_numeric_columns) if non_numeric_columns else "None")
+
+    print("min/max values:")
+    print(min_max_values.to_string() if not min_max_values.empty else "None")
+
+    constant_columns = [
+        column for column in df.columns
+        if df[column].nunique(dropna=False) <= 1
+    ]
+    print("suspicious constant columns:")
+    print(", ".join(constant_columns) if constant_columns else "None")
+    print_divider("=", 76)
+
+
+def validation_report_for_training(X_train, y_train, name="training data"):
+    """Print validation_report on the combined feature/target training table."""
+    X_train_df = X_train if isinstance(X_train, pd.DataFrame) else pd.DataFrame(X_train)
+    y_train_df = y_train if isinstance(y_train, pd.DataFrame) else pd.DataFrame(y_train)
+    combined = pd.concat(
+        [X_train_df.reset_index(drop=True), y_train_df.reset_index(drop=True)],
+        axis=1,
+    )
+    validation_report(combined, name=name)
+
 def color_text(text, color):
     return f"{color}{text}{ANSI_RESET}"
 
@@ -2450,6 +2511,8 @@ def fit_model(
     for optimization and are then reused for validation/test data.
     """
     set_model_seed(model_seed + run)
+    validation_report_for_training(X_train, y_train, name="ANN training data")
+
     try:
         X_train_df = dataframe_from_tabular(X_train, "X_train")
         X_test_df = dataframe_from_tabular(X_test, "X_test", columns=X_train_df.columns)
@@ -2810,6 +2873,8 @@ def cross_validate_model(
 
 def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
     """Fit a scikit-learn regressor with train-only feature scaling."""
+    validation_report_for_training(X_train, y_train, name="sklearn training data")
+
     X_train_df = dataframe_from_tabular(X_train, "X_train")
     X_test_df = dataframe_from_tabular(X_test, "X_test", columns=X_train_df.columns)
     y_train_values = as_2d_float_array(y_train, "y_train")
