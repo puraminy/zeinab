@@ -66,7 +66,7 @@ def transform_dataframe(scaler, dataframe):
 lr_plateau_patience = 8
 lr_plateau_factor = 0.5
 min_learning_rate = 1e-5
-max_gradient_norm = 0.5
+max_gradient_norm = 1.0
 #hidden_size1 = 10
 hidden_size1 = 8
 
@@ -238,7 +238,7 @@ def fit_model(model_class, X_train, X_test, y_train, y_test, num_epochs,
             raise FloatingPointError(f"Non-finite ANN loss at epoch {epoch + 1}")
 
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_gradient_norm)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
 
         model.eval()
