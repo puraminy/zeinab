@@ -63,11 +63,27 @@ LEAKAGE_NAME_PATTERNS = (
     "target",
 )
 
+# These final/QC white-sugar fields are derived from quality scoring or final
+# quality-control calculations. They are hard-blocked from the main predictive
+# model input matrix, even if someone tries to opt them in as future-quality
+# inputs, because they would leak post-process quality information.
+LEAKAGE_RISK_FEATURE_PATTERNS = (
+    "white_total_points",
+    "white_quality_",
+    "white_average_",
+)
+
 
 def leakage_pattern_matches(column_name):
-    """Return leakage marker substrings found in a column name."""
-    lower_name = str(column_name).lower()
-    return [pattern for pattern in LEAKAGE_NAME_PATTERNS if pattern in lower_name]
+    """Return leakage marker substrings/prefixes found in a column name."""
+    lower_name = str(base_variable_name(column_name)).lower()
+    matches = [pattern for pattern in LEAKAGE_NAME_PATTERNS if pattern in lower_name]
+    matches.extend(
+        pattern
+        for pattern in LEAKAGE_RISK_FEATURE_PATTERNS
+        if lower_name == pattern or lower_name.startswith(pattern)
+    )
+    return matches
 
 
 def is_name_based_leakage_column(column_name):
@@ -204,7 +220,8 @@ def validate_model_inputs(input_features, output_features=None, optional_future_
             "TARGET_VARIABLES and must be predicted, not used as inputs unless "
             "explicitly selected in run.py's Future Quality Variables prompt "
             f"and not also selected as output targets: {targets}. Columns containing "
-            f"automatic leakage markers are always blocked from X: {list(LEAKAGE_NAME_PATTERNS)}."
+            f"automatic leakage markers are always blocked from X: "
+            f"{list(LEAKAGE_NAME_PATTERNS) + list(LEAKAGE_RISK_FEATURE_PATTERNS)}."
         )
     return list(input_features)
 
@@ -218,7 +235,8 @@ def refinery_variable_group_metadata():
         "input_rule": "Model inputs = EARLY_VARIABLES + CONTROL_VARIABLES only.",
         "leakage_rule": (
             "TARGET_VARIABLES, selected outputs, and columns containing "
-            "average_to_date/average_two_shifts/moving_average/future/target "
-            "are never allowed as inputs."
+            "average_to_date/average_two_shifts/moving_average/future/target, "
+            "or final white-sugar QC fields (white_total_points, white_quality_*, "
+            "white_average_*) are never allowed as inputs."
         ),
     }

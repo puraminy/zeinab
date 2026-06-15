@@ -81,7 +81,7 @@ The training workflow now follows industrial refinery timing.  Model inputs are 
 
 ### Leakage rule
 
-Only `EARLY_VARIABLES + CONTROL_VARIABLES` are allowed in `X_train` and `X_test`.  `TARGET_VARIABLES` and the selected output columns are blocked as model inputs, including during "all" input selection, automatic feature selection, saved-run reuse, and temporal feature engineering.  This prevents target leakage from future quality measurements into the model.
+Only `EARLY_VARIABLES + CONTROL_VARIABLES` are allowed in `X_train` and `X_test`.  `TARGET_VARIABLES` and the selected output columns are blocked as model inputs, including during "all" input selection, automatic feature selection, saved-run reuse, and temporal feature engineering.  Final white-sugar QC/scoring columns are also hard-blocked from the main predictive model: `white_total_points`, all `white_quality_*` columns, and all `white_average_*` columns.  This prevents target leakage from future quality measurements or final quality scoring into the model.
 
 ## Sequence-aware industrial learning
 

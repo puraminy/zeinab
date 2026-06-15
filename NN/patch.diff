@@ -1,329 +1,57 @@
-diff --git a/NN/read_data.py b/NN/read_data.py
-index 05046cb9a22a3f21c1ffd0eca46b09afcc52de1a..48ba2ed3ba704586d49bde58809202ab936a369b 100644
---- a/NN/read_data.py
-+++ b/NN/read_data.py
-@@ -236,73 +236,152 @@ def resolve_data_columns(data, output_feature=None, input_features=None, optiona
-         )
-     else:
-         input_features = list(input_features)
- 
-     missing_inputs = [col for col in input_features if col not in data.columns]
-     if missing_inputs:
-         raise ValueError(
-             f"Input columns not found in dataset: {missing_inputs}. "
-             f"Available columns: {list(data.columns)}"
-         )
- 
-     validate_model_inputs(input_features, output_features=output_features, optional_future_quality_inputs=optional_future_quality_inputs)
- 
-     if len(input_features) == 0:
-         raise ValueError(
-             "No refinery-safe input columns were selected. Models may only use "
-             "EARLY_VARIABLES + CONTROL_VARIABLES; future quality variables are "
-             "blocked to prevent target leakage."
-         )
- 
-     return output_features, input_features
+diff --git a/NN/README.md b/NN/README.md
+index e16234c85e517800dab5349183533ee7aa5aca5a..ab36c79c02f6d4d29dad809b23f07db17d1e9893 100644
+--- a/NN/README.md
++++ b/NN/README.md
+@@ -59,51 +59,51 @@ pip install tabulate
  
  
- TEMPORAL_DERIVED_COLUMN_PATTERN = re.compile(
-     r".+__(diff|lag|seqdiff|ratio|accel|normchg|roll_mean|roll_std|roll_min|roll_max|roll_range|roll_slope)_\d+$"
-+    r"|sheet_name__(date_ordinal|year|month|day|dayofyear|iso_week|elapsed_days)$"
- )
  
  
- def split_base_and_derived_input_features(data_columns, input_features):
-     """Split user-provided inputs into dataset columns and temporal-derived columns."""
-     if input_features is None:
-         return None, []
+ ## Industrial refinery variable logic and target-leakage prevention
  
-     base_input_features = [col for col in input_features if col in data_columns]
-     derived_input_features = [col for col in input_features if col not in data_columns]
+ The training workflow now follows industrial refinery timing.  Model inputs are no longer selected from every non-target column.  They are limited to variables that are known before downstream quality is measured, plus variables that plant operators can directly adjust.
  
-     invalid_derived = [
-         col for col in derived_input_features if not TEMPORAL_DERIVED_COLUMN_PATTERN.match(col)
-     ]
-     if invalid_derived:
-         raise ValueError(
-             f"Input columns not found in dataset and not recognized as temporal-derived columns: "
-             f"{invalid_derived}. Available columns: {list(data_columns)}"
-         )
+ ### Variable groups
  
-     return base_input_features, derived_input_features
+ 1. `EARLY_VARIABLES`
+    - Variables available early in the refinery process.
+    - Current columns: `sheet_name`, `shift_name`, `raw_sugar_color`, `raw_syrup_brix`, `raw_syrup_color`.
  
+ 2. `CONTROL_VARIABLES`
+    - Operator-adjustable process variables.
+    - Current columns: `lime_alkalinity`, `co2_percent`, `carbonated_alkalinity`, `carbonated_pH`.
+    - These represent controllable items such as lime/alkalinity, CO2, and pH control.
  
-+SHEET_NAME_DATE_FEATURES = (
-+    "sheet_name__date_ordinal",
-+    "sheet_name__year",
-+    "sheet_name__month",
-+    "sheet_name__day",
-+    "sheet_name__dayofyear",
-+    "sheet_name__iso_week",
-+    "sheet_name__elapsed_days",
-+)
-+
-+
-+def add_sheet_name_datetime_features(data, input_features):
-+    """Convert ``sheet_name`` from YYYY.MM.DD text into numeric datetime features.
-+
-+    In the sugar-factory workbook, ``sheet_name`` is a sheet/date label rather
-+    than a nominal category.  Keeping raw date strings in X would later coerce
-+    them to NaN, and one-hot/categorical use would leak arbitrary sheet labels.
-+    This function replaces the raw column in model inputs with calendar and
-+    elapsed-time features that preserve chronological meaning.
-+    """
-+    resolved_inputs = list(input_features)
-+    if "sheet_name" not in data.columns or "sheet_name" not in resolved_inputs:
-+        return data, resolved_inputs, None
-+
-+    transformed = data.copy()
-+    parsed_dates = pd.to_datetime(
-+        transformed["sheet_name"].astype(str).str.strip(),
-+        format="%Y.%m.%d",
-+        errors="coerce",
-+    )
-+    if parsed_dates.isna().all():
-+        raise ValueError(
-+            "sheet_name was selected as an input but no values could be parsed "
-+            "as dates in YYYY.MM.DD format."
-+        )
-+
-+    first_date = parsed_dates.min()
-+    transformed["sheet_name__date_ordinal"] = parsed_dates.map(
-+        lambda value: value.toordinal() if pd.notna(value) else pd.NA
-+    )
-+    transformed["sheet_name__year"] = parsed_dates.dt.year
-+    transformed["sheet_name__month"] = parsed_dates.dt.month
-+    transformed["sheet_name__day"] = parsed_dates.dt.day
-+    transformed["sheet_name__dayofyear"] = parsed_dates.dt.dayofyear
-+    transformed["sheet_name__iso_week"] = parsed_dates.dt.isocalendar().week.astype("Float64")
-+    transformed["sheet_name__elapsed_days"] = (parsed_dates - first_date).dt.days
-+
-+    date_features = [feature for feature in SHEET_NAME_DATE_FEATURES if feature in transformed.columns]
-+    resolved_inputs = [
-+        feature
-+        for input_name in resolved_inputs
-+        for feature in (date_features if input_name == "sheet_name" else [input_name])
-+    ]
-+    return transformed, resolved_inputs, parsed_dates
-+
-+
-+def chronological_train_test_split(data, output_features, input_features, parsed_dates, test_size=0.2):
-+    """Split sugar data chronologically when a valid sheet/date column exists."""
-+    ordered = data.assign(_sheet_name_datetime=parsed_dates).sort_values(
-+        ["_sheet_name_datetime"], kind="mergesort"
-+    )
-+    ordered = ordered.drop(columns=["_sheet_name_datetime"]).reset_index(drop=True)
-+    n_rows = len(ordered)
-+    n_test = max(1, int(round(n_rows * float(test_size))))
-+    if n_test >= n_rows:
-+        raise ValueError(
-+            f"test_size={test_size} leaves no chronological training rows for {n_rows} rows."
-+        )
-+    train_data = ordered.iloc[: n_rows - n_test]
-+    test_data = ordered.iloc[n_rows - n_test :]
-+    return (
-+        train_data[input_features],
-+        test_data[input_features],
-+        train_data[output_features],
-+        test_data[output_features],
-+    )
-+
-+
- def prep_data_file_paths(prep_folder="prep_data"):
-     """Return canonical prep_data file paths."""
-     resolved_prep_folder = resolve_relative_path(prep_folder)
-     return {
-         "X_train": os.path.join(resolved_prep_folder, "X_train.csv"),
-         "X_test": os.path.join(resolved_prep_folder, "X_test.csv"),
-         "y_train": os.path.join(resolved_prep_folder, "y_train.csv"),
-         "y_test": os.path.join(resolved_prep_folder, "y_test.csv"),
-         "metadata": os.path.join(resolved_prep_folder, "metadata.json"),
-     }
+ 3. `TARGET_VARIABLES`
+    - Future or downstream quality outputs.
+    - Current columns: `filtercake_moisture`, `filtercake_sugar`, `sweetwater_brix`, `sulphited_pH`, `sulphited_brix`, `sulphited_color`, `standard_liquor_pH`, `standard_liquor_brix`, `standard_liquor_color`, `white_total_points`.
  
+ ### Leakage rule
  
- def prep_data_exists(prep_folder="prep_data"):
-     """Check whether all required prep_data CSV files exist."""
-     paths = prep_data_file_paths(prep_folder)
-     required = [paths["X_train"], paths["X_test"], paths["y_train"], paths["y_test"]]
-     exists = all(os.path.isfile(path) for path in required)
-     print(f"[path-debug] prep_data folder resolved to: {os.path.dirname(paths['X_train'])}")
-     print(f"[path-debug] prep_data required files exist: {exists}")
-     if not exists:
-         missing = [path for path in required if not os.path.isfile(path)]
-         print(f"[path-debug] prep_data missing required files: {missing}")
-     return exists
+-Only `EARLY_VARIABLES + CONTROL_VARIABLES` are allowed in `X_train` and `X_test`.  `TARGET_VARIABLES` and the selected output columns are blocked as model inputs, including during "all" input selection, automatic feature selection, saved-run reuse, and temporal feature engineering.  This prevents target leakage from future quality measurements into the model.
++Only `EARLY_VARIABLES + CONTROL_VARIABLES` are allowed in `X_train` and `X_test`.  `TARGET_VARIABLES` and the selected output columns are blocked as model inputs, including during "all" input selection, automatic feature selection, saved-run reuse, and temporal feature engineering.  Final white-sugar QC/scoring columns are also hard-blocked from the main predictive model: `white_total_points`, all `white_quality_*` columns, and all `white_average_*` columns.  This prevents target leakage from future quality measurements or final quality scoring into the model.
  
+ ## Sequence-aware industrial learning
  
-@@ -677,86 +756,110 @@ def prepare_data_from_file(
-     difference_order=1,
-     add_ratio_features=False,
-     add_acceleration_features=False,
-     add_normalized_change_features=False,
-     create_rnn_windows=False,
-     rnn_window_size=3,
-     add_rolling_dynamics=False,
-     rolling_window=3,
-     optional_future_quality_inputs=None,
- ):
-     """Prepare prep_data files directly from a raw CSV dataset."""
-     dataset_path = print_path_debug("prepare_data_from_file dataset", dataset_path)
-     dataset_path = ensure_dataset_csv_exists(dataset_path)
+ The refinery workflow can now convert safe early/control inputs into sequence-aware process features without using future target variables as inputs.
  
-     print(f"[path-debug] Reading raw dataset CSV: {dataset_path}")
-     data = pd.read_csv(dataset_path)
-     base_input_features, requested_derived_features = split_base_and_derived_input_features(
-         data.columns, input_features
-     )
-     output_features, input_features = resolve_data_columns(
-         data,
-         output_feature,
-         base_input_features,
-         optional_future_quality_inputs=optional_future_quality_inputs,
-     )
-+    data, input_features, parsed_sheet_dates = add_sheet_name_datetime_features(
-+        data,
-+        input_features,
-+    )
-     data, input_features = apply_temporal_feature_engineering(
-         data=data,
-         input_features=input_features,
-         sequential_features=sequential_features,
-         sequential_groups=sequential_groups,
-         add_differences=add_differences,
-         difference_order=difference_order,
-         add_ratio_features=add_ratio_features,
-         add_acceleration_features=add_acceleration_features,
-         add_normalized_change_features=add_normalized_change_features,
-         create_rnn_windows=create_rnn_windows,
-         rnn_window_size=rnn_window_size,
-         add_rolling_dynamics=add_rolling_dynamics,
-         rolling_window=rolling_window,
-     )
-     if requested_derived_features:
-         missing_requested = [col for col in requested_derived_features if col not in data.columns]
-         if missing_requested:
-             raise ValueError(
-                 f"Requested temporal-derived columns were not generated: {missing_requested}. "
-                 f"Generated columns: {list(data.columns)}"
-             )
-         input_features = list(base_input_features) + list(requested_derived_features)
-     validate_model_inputs(input_features, output_features=output_features, optional_future_quality_inputs=optional_future_quality_inputs)
+ ### Added feature families
  
--    X = data[input_features]
--    y = data[output_features]
--
--    X_train, X_test, y_train, y_test = train_test_split(
--        X, y, test_size=test_size, random_state=random_state
--    )
-+    if parsed_sheet_dates is not None:
-+        split_dates = pd.to_datetime(
-+            data["sheet_name"].astype(str).str.strip(),
-+            format="%Y.%m.%d",
-+            errors="coerce",
-+        )
-+    if parsed_sheet_dates is not None and split_dates.notna().any():
-+        X_train, X_test, y_train, y_test = chronological_train_test_split(
-+            data,
-+            output_features,
-+            input_features,
-+            split_dates,
-+            test_size=test_size,
-+        )
-+        split_strategy = "chronological_by_sheet_name"
-+    else:
-+        X = data[input_features]
-+        y = data[output_features]
-+        X_train, X_test, y_train, y_test = train_test_split(
-+            X, y, test_size=test_size, random_state=random_state
-+        )
-+        split_strategy = "random_train_test_split"
+ 1. **Lag-window features**
+    - For selected sequential columns, the data-preparation step can generate `__lag_1`, `__lag_2`, and `__lag_3` columns by default.
+    - These features expose the recent refinery history to tabular ANN and sklearn models, so the prediction can react to delayed effects from previous batches, shifts, or rows.
  
-     metadata = {
-         "dataset_path": dataset_path,
-         "output_features": list(output_features),
-         "input_features": list(input_features),
-+        "sheet_name_datetime_features": list(SHEET_NAME_DATE_FEATURES)
-+        if "sheet_name" in data.columns
-+        else [],
-+        "split_strategy": split_strategy,
-         "optional_future_quality_inputs": list(optional_future_quality_inputs or []),
-         "sequential_features": list(sequential_features or []),
-         "sequential_groups": [list(group) for group in (sequential_groups or [])],
-         "add_differences": bool(add_differences),
-         "difference_order": int(difference_order),
-         "add_ratio_features": bool(add_ratio_features),
-         "add_acceleration_features": bool(add_acceleration_features),
-         "add_normalized_change_features": bool(add_normalized_change_features),
-         "create_rnn_windows": bool(create_rnn_windows),
-         "rnn_window_size": int(rnn_window_size),
-         "add_rolling_dynamics": bool(add_rolling_dynamics),
-         "rolling_window": int(rolling_window),
-         "test_size": float(test_size),
-         "random_state": int(random_state),
-         "refinery_variable_groups": refinery_variable_group_metadata(),
-     }
-     save_data(prep_folder, X_train, X_test, y_train, y_test, metadata=metadata, after_prepare = True)
-     return X_train, X_test, y_train, y_test
+ 2. **Time-sequence process features**
+    - Difference, ratio, acceleration, and normalized-change features describe how refinery variables move from one observation to the next.
+    - Ordered process groups also describe stage-to-stage movement between related process measurements, for example a downstream control value relative to an upstream value.
  
+ 3. **Rolling process dynamics features**
+    - Rolling mean, standard deviation, min, max, range, and slope features summarize short-window process stability and drift.
+    - These features help the model detect noisy operation, persistent trends, and abrupt transitions rather than treating every row as an independent static sample.
  
- def sync_prep_data_with_dataset(
-     dataset_path="data.csv",
-     prep_folder="prep_data",
-     output_feature="rate",
-     input_features=None,
-@@ -766,50 +869,54 @@ def sync_prep_data_with_dataset(
-     difference_order=1,
-     add_ratio_features=False,
-     add_acceleration_features=False,
-     add_normalized_change_features=False,
-     create_rnn_windows=False,
-     rnn_window_size=3,
-     add_rolling_dynamics=False,
-     rolling_window=3,
-     optional_future_quality_inputs=None,
- ):
-     """Rebuild prep_data if files are missing or schema differs from dataset."""
-     dataset_path = print_path_debug("sync_prep_data_with_dataset dataset", dataset_path)
-     dataset_path = ensure_dataset_csv_exists(dataset_path)
+ ### Why this improves refinery prediction
  
-     print(f"[path-debug] Reading raw dataset CSV for prep_data sync: {dataset_path}")
-     data = pd.read_csv(dataset_path)
-     base_input_features, requested_derived_features = split_base_and_derived_input_features(
-         data.columns, input_features
-     )
-     output_features, input_features = resolve_data_columns(
-         data,
-         output_feature,
-         base_input_features,
-         optional_future_quality_inputs=optional_future_quality_inputs,
-     )
-+    data, input_features, _parsed_sheet_dates = add_sheet_name_datetime_features(
-+        data,
-+        input_features,
-+    )
-     _, input_features = apply_temporal_feature_engineering(
-         data=data,
-         input_features=input_features,
-         sequential_features=sequential_features,
-         sequential_groups=sequential_groups,
-         add_differences=add_differences,
-         difference_order=difference_order,
-         add_ratio_features=add_ratio_features,
-         add_acceleration_features=add_acceleration_features,
-         add_normalized_change_features=add_normalized_change_features,
-         create_rnn_windows=create_rnn_windows,
-         rnn_window_size=rnn_window_size,
-         add_rolling_dynamics=add_rolling_dynamics,
-         rolling_window=rolling_window,
-     )
-     if requested_derived_features:
-         input_features = list(base_input_features) + list(requested_derived_features)
-     validate_model_inputs(input_features, output_features=output_features, optional_future_quality_inputs=optional_future_quality_inputs)
+ Refinery quality is not only controlled by the current value of pH, brix, alkalinity, CO2, or color.  It is also affected by recent operating history, delayed residence-time effects, stage-to-stage movement, and whether the process is stable or drifting.  Lag-window, sequence, and rolling dynamics features therefore give ordinary feed-forward and tree models some of the context normally captured by sequence models, while preserving the existing leakage-prevention rule that targets and downstream quality outputs must not be used as inputs.
  
-     paths = prep_data_file_paths(prep_folder)
-     expected_files = [paths["X_train"], paths["X_test"], paths["y_train"], paths["y_test"]]
+ ## Prescriptive industrial AI recommendation engine
  
-     should_rebuild = not all(os.path.isfile(path) for path in expected_files)
- 
-     if not should_rebuild:
