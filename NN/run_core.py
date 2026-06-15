@@ -25,7 +25,7 @@ import re
 from sklearn.metrics import make_scorer, r2_score
 from sklearn.inspection import permutation_importance
 from sklearn.feature_selection import mutual_info_regression
-from sklearn.utils import get_tags
+from sklearn import utils as sklearn_utils
 from tabulate import tabulate
 import os
 from latex import *
@@ -2803,11 +2803,25 @@ def sklearn_model_supports_multioutput(model):
     estimator = model.estimator if isinstance(model, RandomizedSearchCV) else model
     if isinstance(estimator, ExtraTreesRegressor):
         return True
-    try:
-        tags = get_tags(estimator)
-        return bool(getattr(tags.target_tags, "multi_output", False))
-    except Exception:
-        pass
+
+    get_tags = getattr(sklearn_utils, "get_tags", None)
+    if get_tags is not None:
+        try:
+            tags = get_tags(estimator)
+            target_tags = getattr(tags, "target_tags", None)
+            if target_tags is not None:
+                return bool(getattr(target_tags, "multi_output", False))
+        except Exception:
+            pass
+
+    estimator_get_tags = getattr(estimator, "_get_tags", None)
+    if estimator_get_tags is not None:
+        try:
+            tags = estimator_get_tags()
+            return bool(tags.get("multioutput", False) or tags.get("multi_output", False))
+        except Exception:
+            pass
+
     return False
 
 
