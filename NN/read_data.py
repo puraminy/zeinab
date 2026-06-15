@@ -3,6 +3,7 @@ import json
 import re
 import importlib.util
 from pathlib import Path
+import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from refinery_variables import (
@@ -282,60 +283,84 @@ def split_base_and_derived_input_features(data_columns, input_features):
     return base_input_features, derived_input_features
 
 
+RAW_TIME_COLUMNS = ("sheet_name", "report_date_month", "report_date_day", "work_day")
 SHEET_NAME_DATE_FEATURES = (
-    "sheet_name__date_ordinal",
-    "sheet_name__year",
-    "sheet_name__month",
-    "sheet_name__day",
-    "sheet_name__dayofyear",
-    "sheet_name__iso_week",
-    "sheet_name__elapsed_days",
+    "year",
+    "month",
+    "day",
+    "day_of_week",
+    "month_sin",
+    "month_cos",
+    "day_sin",
+    "day_cos",
 )
 
 
-def add_sheet_name_datetime_features(data, input_features):
-    """Convert ``sheet_name`` from YYYY.MM.DD text into numeric datetime features.
+def preprocess_calendar_features(data):
+    """Build leakage-safe calendar features from ``sheet_name`` and drop raw time columns.
 
-    In the sugar-factory workbook, ``sheet_name`` is a sheet/date label rather
-    than a nominal category.  Keeping raw date strings in X would later coerce
-    them to NaN, and one-hot/categorical use would leak arbitrary sheet labels.
-    This function replaces the raw column in model inputs with calendar and
-    elapsed-time features that preserve chronological meaning.
+    ``sheet_name`` is the report date in the source workbook, not a plant
+    measurement.  The raw sheet label and duplicate raw date/work-day fields are
+    removed before model feature selection so models cannot memorize individual
+    sheets.  Only bounded calendar components and their cyclical encodings are
+    retained as candidate inputs.
     """
-    resolved_inputs = list(input_features)
-    if "sheet_name" not in data.columns or "sheet_name" not in resolved_inputs:
-        return data, resolved_inputs, None
-
     transformed = data.copy()
-    parsed_dates = pd.to_datetime(
-        transformed["sheet_name"].astype(str).str.strip(),
-        format="%Y.%m.%d",
-        errors="coerce",
-    )
-    if parsed_dates.isna().all():
-        raise ValueError(
-            "sheet_name was selected as an input but no values could be parsed "
-            "as dates in YYYY.MM.DD format."
+    parsed_dates = None
+    if "sheet_name" in transformed.columns:
+        parsed_dates = pd.to_datetime(
+            transformed["sheet_name"].astype(str).str.strip(),
+            format="%Y.%m.%d",
+            errors="coerce",
         )
+        if parsed_dates.isna().all():
+            raise ValueError(
+                "sheet_name was present but no values could be parsed as dates "
+                "in YYYY.MM.DD format."
+            )
 
-    first_date = parsed_dates.min()
-    transformed["sheet_name__date_ordinal"] = parsed_dates.map(
-        lambda value: value.toordinal() if pd.notna(value) else pd.NA
+        transformed["date"] = parsed_dates
+        transformed["year"] = parsed_dates.dt.year
+        transformed["month"] = parsed_dates.dt.month
+        transformed["day"] = parsed_dates.dt.day
+        transformed["day_of_week"] = parsed_dates.dt.dayofweek
+        transformed["month_sin"] = np.sin(2.0 * np.pi * transformed["month"] / 12.0)
+        transformed["month_cos"] = np.cos(2.0 * np.pi * transformed["month"] / 12.0)
+        transformed["day_sin"] = np.sin(2.0 * np.pi * transformed["day"] / 31.0)
+        transformed["day_cos"] = np.cos(2.0 * np.pi * transformed["day"] / 31.0)
+
+    transformed = transformed.drop(
+        columns=[column for column in RAW_TIME_COLUMNS if column in transformed.columns],
+        errors="ignore",
     )
-    transformed["sheet_name__year"] = parsed_dates.dt.year
-    transformed["sheet_name__month"] = parsed_dates.dt.month
-    transformed["sheet_name__day"] = parsed_dates.dt.day
-    transformed["sheet_name__dayofyear"] = parsed_dates.dt.dayofyear
-    transformed["sheet_name__iso_week"] = parsed_dates.dt.isocalendar().week.astype("Float64")
-    transformed["sheet_name__elapsed_days"] = (parsed_dates - first_date).dt.days
+    return transformed, parsed_dates
 
-    date_features = [feature for feature in SHEET_NAME_DATE_FEATURES if feature in transformed.columns]
-    resolved_inputs = [
-        feature
-        for input_name in resolved_inputs
-        for feature in (date_features if input_name == "sheet_name" else [input_name])
-    ]
-    return transformed, resolved_inputs, parsed_dates
+
+def replace_legacy_sheet_name_input(input_features, data_columns):
+    """Replace legacy raw ``sheet_name`` requests with encoded calendar inputs."""
+    if input_features is None:
+        return None
+    calendar_features = [feature for feature in SHEET_NAME_DATE_FEATURES if feature in data_columns]
+    replaced = []
+    for feature in input_features:
+        if feature == "sheet_name":
+            replaced.extend(calendar_features)
+        else:
+            replaced.append(feature)
+    return replaced
+
+
+def add_sheet_name_datetime_features(data, input_features):
+    """Map any legacy ``sheet_name`` input request to encoded calendar features."""
+    resolved_inputs = list(input_features)
+    date_features = [feature for feature in SHEET_NAME_DATE_FEATURES if feature in data.columns]
+    if "sheet_name" in resolved_inputs:
+        resolved_inputs = [
+            feature
+            for input_name in resolved_inputs
+            for feature in (date_features if input_name == "sheet_name" else [input_name])
+        ]
+    return data, resolved_inputs, data["date"] if "date" in data.columns else None
 
 
 def chronological_train_test_split(data, output_features, input_features, parsed_dates, test_size=0.2):
@@ -769,6 +794,8 @@ def prepare_data_from_file(
 
     print(f"[path-debug] Reading raw dataset CSV: {dataset_path}")
     data = pd.read_csv(dataset_path)
+    data, parsed_sheet_dates = preprocess_calendar_features(data)
+    input_features = replace_legacy_sheet_name_input(input_features, data.columns)
     base_input_features, requested_derived_features = split_base_and_derived_input_features(
         data.columns, input_features
     )
@@ -778,7 +805,7 @@ def prepare_data_from_file(
         base_input_features,
         optional_future_quality_inputs=optional_future_quality_inputs,
     )
-    data, input_features, parsed_sheet_dates = add_sheet_name_datetime_features(
+    data, input_features, _legacy_parsed_sheet_dates = add_sheet_name_datetime_features(
         data,
         input_features,
     )
@@ -808,11 +835,7 @@ def prepare_data_from_file(
     validate_model_inputs(input_features, output_features=output_features, optional_future_quality_inputs=optional_future_quality_inputs)
 
     if parsed_sheet_dates is not None:
-        split_dates = pd.to_datetime(
-            data["sheet_name"].astype(str).str.strip(),
-            format="%Y.%m.%d",
-            errors="coerce",
-        )
+        split_dates = parsed_sheet_dates
     if parsed_sheet_dates is not None and split_dates.notna().any():
         X_train, X_test, y_train, y_test = chronological_train_test_split(
             data,
@@ -835,7 +858,7 @@ def prepare_data_from_file(
         "output_features": list(output_features),
         "input_features": list(input_features),
         "sheet_name_datetime_features": list(SHEET_NAME_DATE_FEATURES)
-        if "sheet_name" in data.columns
+        if parsed_sheet_dates is not None
         else [],
         "split_strategy": split_strategy,
         "optional_future_quality_inputs": list(optional_future_quality_inputs or []),
@@ -882,6 +905,8 @@ def sync_prep_data_with_dataset(
 
     print(f"[path-debug] Reading raw dataset CSV for prep_data sync: {dataset_path}")
     data = pd.read_csv(dataset_path)
+    data, _parsed_sheet_dates = preprocess_calendar_features(data)
+    input_features = replace_legacy_sheet_name_input(input_features, data.columns)
     base_input_features, requested_derived_features = split_base_and_derived_input_features(
         data.columns, input_features
     )

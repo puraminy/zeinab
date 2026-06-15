@@ -11,8 +11,15 @@ import re
 
 # 1) Variables available early in the process before downstream quality is known.
 EARLY_VARIABLES = (
-    "sheet_name",
     "shift_name",
+    "year",
+    "month",
+    "day",
+    "day_of_week",
+    "month_sin",
+    "month_cos",
+    "day_sin",
+    "day_cos",
     "raw_sugar_color",
     "raw_syrup_brix",
     "raw_syrup_color",

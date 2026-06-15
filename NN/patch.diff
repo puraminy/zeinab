@@ -1,57 +1,53 @@
-diff --git a/NN/README.md b/NN/README.md
-index e16234c85e517800dab5349183533ee7aa5aca5a..ab36c79c02f6d4d29dad809b23f07db17d1e9893 100644
---- a/NN/README.md
-+++ b/NN/README.md
-@@ -59,51 +59,51 @@ pip install tabulate
+diff --git a/NN/refinery_variables.py b/NN/refinery_variables.py
+index fcf4aa12dfb4a8733774f31a0841f8740c4894af..cc2aaf9b7a81fb3adc0583f47ae2e16ce28e172e 100644
+--- a/NN/refinery_variables.py
++++ b/NN/refinery_variables.py
+@@ -1,40 +1,47 @@
+ """Industrial refinery variable definitions and leakage checks.
+ 
+ The model is designed for operational prediction: it may only see variables that
+ are known early in the refinery process plus variables that operators can change.
+ Future/downstream quality measurements are reserved for targets and are blocked
+ from the input matrix to avoid target leakage.
+ """
+ 
+ import re
  
  
+ # 1) Variables available early in the process before downstream quality is known.
+ EARLY_VARIABLES = (
+-    "sheet_name",
+     "shift_name",
++    "year",
++    "month",
++    "day",
++    "day_of_week",
++    "month_sin",
++    "month_cos",
++    "day_sin",
++    "day_cos",
+     "raw_sugar_color",
+     "raw_syrup_brix",
+     "raw_syrup_color",
+ )
  
  
- ## Industrial refinery variable logic and target-leakage prevention
+ # 2) Operator-adjustable variables.  Keep this group limited to actionable
+ # settings/controlled measurements that can be changed before final quality is
+ # observed (for example CO2, pH, lime/alkalinity controls).
+ CONTROL_VARIABLES = (
+     "lime_milk_baume",
+     "lime_alkalinity",
+     "co2_percent",
+     "carbonated_alkalinity",
+     "carbonated_pH",
+     "sulphited_pH",
+     "sulphited_brix",
+     "standard_liquor_pH",
+     "standard_liquor_brix",
+ )
  
- The training workflow now follows industrial refinery timing.  Model inputs are no longer selected from every non-target column.  They are limited to variables that are known before downstream quality is measured, plus variables that plant operators can directly adjust.
  
- ### Variable groups
- 
- 1. `EARLY_VARIABLES`
-    - Variables available early in the refinery process.
-    - Current columns: `sheet_name`, `shift_name`, `raw_sugar_color`, `raw_syrup_brix`, `raw_syrup_color`.
- 
- 2. `CONTROL_VARIABLES`
-    - Operator-adjustable process variables.
-    - Current columns: `lime_alkalinity`, `co2_percent`, `carbonated_alkalinity`, `carbonated_pH`.
-    - These represent controllable items such as lime/alkalinity, CO2, and pH control.
- 
- 3. `TARGET_VARIABLES`
-    - Future or downstream quality outputs.
-    - Current columns: `filtercake_moisture`, `filtercake_sugar`, `sweetwater_brix`, `sulphited_pH`, `sulphited_brix`, `sulphited_color`, `standard_liquor_pH`, `standard_liquor_brix`, `standard_liquor_color`, `white_total_points`.
- 
- ### Leakage rule
- 
--Only `EARLY_VARIABLES + CONTROL_VARIABLES` are allowed in `X_train` and `X_test`.  `TARGET_VARIABLES` and the selected output columns are blocked as model inputs, including during "all" input selection, automatic feature selection, saved-run reuse, and temporal feature engineering.  This prevents target leakage from future quality measurements into the model.
-+Only `EARLY_VARIABLES + CONTROL_VARIABLES` are allowed in `X_train` and `X_test`.  `TARGET_VARIABLES` and the selected output columns are blocked as model inputs, including during "all" input selection, automatic feature selection, saved-run reuse, and temporal feature engineering.  Final white-sugar QC/scoring columns are also hard-blocked from the main predictive model: `white_total_points`, all `white_quality_*` columns, and all `white_average_*` columns.  This prevents target leakage from future quality measurements or final quality scoring into the model.
- 
- ## Sequence-aware industrial learning
- 
- The refinery workflow can now convert safe early/control inputs into sequence-aware process features without using future target variables as inputs.
- 
- ### Added feature families
- 
- 1. **Lag-window features**
-    - For selected sequential columns, the data-preparation step can generate `__lag_1`, `__lag_2`, and `__lag_3` columns by default.
-    - These features expose the recent refinery history to tabular ANN and sklearn models, so the prediction can react to delayed effects from previous batches, shifts, or rows.
- 
- 2. **Time-sequence process features**
-    - Difference, ratio, acceleration, and normalized-change features describe how refinery variables move from one observation to the next.
-    - Ordered process groups also describe stage-to-stage movement between related process measurements, for example a downstream control value relative to an upstream value.
- 
- 3. **Rolling process dynamics features**
-    - Rolling mean, standard deviation, min, max, range, and slope features summarize short-window process stability and drift.
-    - These features help the model detect noisy operation, persistent trends, and abrupt transitions rather than treating every row as an independent static sample.
- 
- ### Why this improves refinery prediction
- 
- Refinery quality is not only controlled by the current value of pH, brix, alkalinity, CO2, or color.  It is also affected by recent operating history, delayed residence-time effects, stage-to-stage movement, and whether the process is stable or drifting.  Lag-window, sequence, and rolling dynamics features therefore give ordinary feed-forward and tree models some of the context normally captured by sequence models, while preserving the existing leakage-prevention rule that targets and downstream quality outputs must not be used as inputs.
- 
- ## Prescriptive industrial AI recommendation engine
- 
+ # 3) Future/downstream quality outputs.  These columns must not be used as
+ # model inputs, even when the user selects "all" or uses automatic feature
+ # selection, because they are measured after the early/control decision point.
