@@ -258,6 +258,7 @@ def resolve_data_columns(data, output_feature=None, input_features=None, optiona
 
 TEMPORAL_DERIVED_COLUMN_PATTERN = re.compile(
     r".+__(diff|lag|seqdiff|ratio|accel|normchg|roll_mean|roll_std|roll_min|roll_max|roll_range|roll_slope)_\d+$"
+    r"|sheet_name__(date_ordinal|year|month|day|dayofyear|iso_week|elapsed_days)$"
 )
 
 
@@ -279,6 +280,84 @@ def split_base_and_derived_input_features(data_columns, input_features):
         )
 
     return base_input_features, derived_input_features
+
+
+SHEET_NAME_DATE_FEATURES = (
+    "sheet_name__date_ordinal",
+    "sheet_name__year",
+    "sheet_name__month",
+    "sheet_name__day",
+    "sheet_name__dayofyear",
+    "sheet_name__iso_week",
+    "sheet_name__elapsed_days",
+)
+
+
+def add_sheet_name_datetime_features(data, input_features):
+    """Convert ``sheet_name`` from YYYY.MM.DD text into numeric datetime features.
+
+    In the sugar-factory workbook, ``sheet_name`` is a sheet/date label rather
+    than a nominal category.  Keeping raw date strings in X would later coerce
+    them to NaN, and one-hot/categorical use would leak arbitrary sheet labels.
+    This function replaces the raw column in model inputs with calendar and
+    elapsed-time features that preserve chronological meaning.
+    """
+    resolved_inputs = list(input_features)
+    if "sheet_name" not in data.columns or "sheet_name" not in resolved_inputs:
+        return data, resolved_inputs, None
+
+    transformed = data.copy()
+    parsed_dates = pd.to_datetime(
+        transformed["sheet_name"].astype(str).str.strip(),
+        format="%Y.%m.%d",
+        errors="coerce",
+    )
+    if parsed_dates.isna().all():
+        raise ValueError(
+            "sheet_name was selected as an input but no values could be parsed "
+            "as dates in YYYY.MM.DD format."
+        )
+
+    first_date = parsed_dates.min()
+    transformed["sheet_name__date_ordinal"] = parsed_dates.map(
+        lambda value: value.toordinal() if pd.notna(value) else pd.NA
+    )
+    transformed["sheet_name__year"] = parsed_dates.dt.year
+    transformed["sheet_name__month"] = parsed_dates.dt.month
+    transformed["sheet_name__day"] = parsed_dates.dt.day
+    transformed["sheet_name__dayofyear"] = parsed_dates.dt.dayofyear
+    transformed["sheet_name__iso_week"] = parsed_dates.dt.isocalendar().week.astype("Float64")
+    transformed["sheet_name__elapsed_days"] = (parsed_dates - first_date).dt.days
+
+    date_features = [feature for feature in SHEET_NAME_DATE_FEATURES if feature in transformed.columns]
+    resolved_inputs = [
+        feature
+        for input_name in resolved_inputs
+        for feature in (date_features if input_name == "sheet_name" else [input_name])
+    ]
+    return transformed, resolved_inputs, parsed_dates
+
+
+def chronological_train_test_split(data, output_features, input_features, parsed_dates, test_size=0.2):
+    """Split sugar data chronologically when a valid sheet/date column exists."""
+    ordered = data.assign(_sheet_name_datetime=parsed_dates).sort_values(
+        ["_sheet_name_datetime"], kind="mergesort"
+    )
+    ordered = ordered.drop(columns=["_sheet_name_datetime"]).reset_index(drop=True)
+    n_rows = len(ordered)
+    n_test = max(1, int(round(n_rows * float(test_size))))
+    if n_test >= n_rows:
+        raise ValueError(
+            f"test_size={test_size} leaves no chronological training rows for {n_rows} rows."
+        )
+    train_data = ordered.iloc[: n_rows - n_test]
+    test_data = ordered.iloc[n_rows - n_test :]
+    return (
+        train_data[input_features],
+        test_data[input_features],
+        train_data[output_features],
+        test_data[output_features],
+    )
 
 
 def prep_data_file_paths(prep_folder="prep_data"):
@@ -699,6 +778,10 @@ def prepare_data_from_file(
         base_input_features,
         optional_future_quality_inputs=optional_future_quality_inputs,
     )
+    data, input_features, parsed_sheet_dates = add_sheet_name_datetime_features(
+        data,
+        input_features,
+    )
     data, input_features = apply_temporal_feature_engineering(
         data=data,
         input_features=input_features,
@@ -724,17 +807,37 @@ def prepare_data_from_file(
         input_features = list(base_input_features) + list(requested_derived_features)
     validate_model_inputs(input_features, output_features=output_features, optional_future_quality_inputs=optional_future_quality_inputs)
 
-    X = data[input_features]
-    y = data[output_features]
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state
-    )
+    if parsed_sheet_dates is not None:
+        split_dates = pd.to_datetime(
+            data["sheet_name"].astype(str).str.strip(),
+            format="%Y.%m.%d",
+            errors="coerce",
+        )
+    if parsed_sheet_dates is not None and split_dates.notna().any():
+        X_train, X_test, y_train, y_test = chronological_train_test_split(
+            data,
+            output_features,
+            input_features,
+            split_dates,
+            test_size=test_size,
+        )
+        split_strategy = "chronological_by_sheet_name"
+    else:
+        X = data[input_features]
+        y = data[output_features]
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=random_state
+        )
+        split_strategy = "random_train_test_split"
 
     metadata = {
         "dataset_path": dataset_path,
         "output_features": list(output_features),
         "input_features": list(input_features),
+        "sheet_name_datetime_features": list(SHEET_NAME_DATE_FEATURES)
+        if "sheet_name" in data.columns
+        else [],
+        "split_strategy": split_strategy,
         "optional_future_quality_inputs": list(optional_future_quality_inputs or []),
         "sequential_features": list(sequential_features or []),
         "sequential_groups": [list(group) for group in (sequential_groups or [])],
@@ -787,6 +890,10 @@ def sync_prep_data_with_dataset(
         output_feature,
         base_input_features,
         optional_future_quality_inputs=optional_future_quality_inputs,
+    )
+    data, input_features, _parsed_sheet_dates = add_sheet_name_datetime_features(
+        data,
+        input_features,
     )
     _, input_features = apply_temporal_feature_engineering(
         data=data,

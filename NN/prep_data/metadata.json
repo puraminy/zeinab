@@ -26,7 +26,13 @@
     "boiling_r2_pol",
     "boiling_r2_q",
     "boiling_r3_pol",
-    "boiling_r3_q"
+    "boiling_r3_q",
+    "wastewater_r1_pol",
+    "wastewater_r1_q",
+    "wastewater_r2_pol",
+    "wastewater_r2_q",
+    "wastewater_r3_pol",
+    "wastewater_r3_q"
   ],
   "optional_future_quality_inputs": [
     "raw_sugar_color",
@@ -51,7 +57,13 @@
     "boiling_r2_pol",
     "boiling_r2_q",
     "boiling_r3_pol",
-    "boiling_r3_q"
+    "boiling_r3_q",
+    "wastewater_r1_pol",
+    "wastewater_r1_q",
+    "wastewater_r2_pol",
+    "wastewater_r2_q",
+    "wastewater_r3_pol",
+    "wastewater_r3_q"
   ],
   "sequential_features": [],
   "sequential_groups": [],

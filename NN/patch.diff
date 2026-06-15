@@ -1,132 +1,329 @@
-diff --git a/NN/run_core.py b/NN/run_core.py
-index bac9db538849ad719dd9ddb315f1988e7c1864e8..c352f97048dbd75167e2cd6507e91402655eb3f6 100644
---- a/NN/run_core.py
-+++ b/NN/run_core.py
-@@ -3,51 +3,51 @@ import torch
- import torch.nn as nn
- import torch.optim as optim
- from sklearn.preprocessing import StandardScaler
- from sklearn.impute import SimpleImputer
- from sklearn.model_selection import KFold, RandomizedSearchCV, train_test_split
- from sklearn.ensemble import (
-     RandomForestRegressor,
-     ExtraTreesRegressor,
-     GradientBoostingRegressor,
-     AdaBoostRegressor,
-     HistGradientBoostingRegressor,
+diff --git a/NN/read_data.py b/NN/read_data.py
+index 05046cb9a22a3f21c1ffd0eca46b09afcc52de1a..48ba2ed3ba704586d49bde58809202ab936a369b 100644
+--- a/NN/read_data.py
++++ b/NN/read_data.py
+@@ -236,73 +236,152 @@ def resolve_data_columns(data, output_feature=None, input_features=None, optiona
+         )
+     else:
+         input_features = list(input_features)
+ 
+     missing_inputs = [col for col in input_features if col not in data.columns]
+     if missing_inputs:
+         raise ValueError(
+             f"Input columns not found in dataset: {missing_inputs}. "
+             f"Available columns: {list(data.columns)}"
+         )
+ 
+     validate_model_inputs(input_features, output_features=output_features, optional_future_quality_inputs=optional_future_quality_inputs)
+ 
+     if len(input_features) == 0:
+         raise ValueError(
+             "No refinery-safe input columns were selected. Models may only use "
+             "EARLY_VARIABLES + CONTROL_VARIABLES; future quality variables are "
+             "blocked to prevent target leakage."
+         )
+ 
+     return output_features, input_features
+ 
+ 
+ TEMPORAL_DERIVED_COLUMN_PATTERN = re.compile(
+     r".+__(diff|lag|seqdiff|ratio|accel|normchg|roll_mean|roll_std|roll_min|roll_max|roll_range|roll_slope)_\d+$"
++    r"|sheet_name__(date_ordinal|year|month|day|dayofyear|iso_week|elapsed_days)$"
  )
- from sklearn.neighbors import KNeighborsRegressor
- from sklearn.svm import SVR
- from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
- from sklearn.tree import DecisionTreeRegressor
- from sklearn.multioutput import MultiOutputRegressor
- from sklearn.gaussian_process import GaussianProcessRegressor
- from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
- import pandas as pd
- import numpy as np
- import re
- from sklearn.metrics import make_scorer, r2_score
- from sklearn.inspection import permutation_importance
- from sklearn.feature_selection import mutual_info_regression
--from sklearn.utils import get_tags
-+from sklearn import utils as sklearn_utils
- from tabulate import tabulate
- import os
- from latex import *
- from plot import *
- from models import *
- from read_data import (
-     read_prep_data,
-     sync_prep_data_with_dataset,
-     prep_data_exists,
-     read_prep_metadata,
-     save_data,
-     print_path_debug,
-     ensure_dataset_csv_exists,
- )
- from refinery_variables import (
-     CONTROL_VARIABLES,
-     EARLY_VARIABLES,
-     TARGET_VARIABLES,
-     filter_allowed_model_inputs,
-     find_leakage_columns,
-     leakage_pattern_matches,
-     refinery_variable_group_metadata,
-     remove_name_based_leakage_inputs,
-     validate_model_inputs,
- )
-@@ -2781,55 +2781,69 @@ def fit_model(
-         mse = float(np.mean((predictions_np - y_test_values) ** 2))
-         r2 = safe_r2_score(y_test_values, predictions_np)
-     except ValueError as err:
-         print(f"Could not compute prediction metrics: {err}")
-         return None, None, None, model, None
- 
-     optimized_inputs_report = None
-     if optimize_inputs:
-         with torch.no_grad():
-             delta = train_inputs.detach() - original_train_inputs
-             optimized_inputs_report = {
-                 "original_inputs": original_train_inputs.detach().cpu().numpy(),
-                 "optimized_inputs": train_inputs.detach().cpu().numpy(),
-                 "delta_inputs": delta.cpu().numpy(),
-                 "mean_abs_delta_per_feature": np.mean(np.abs(delta.cpu().numpy()), axis=0),
-             }
-     return predictions_np, mse, r2, model, optimized_inputs_report
  
  
+ def split_base_and_derived_input_features(data_columns, input_features):
+     """Split user-provided inputs into dataset columns and temporal-derived columns."""
+     if input_features is None:
+         return None, []
  
- def sklearn_model_supports_multioutput(model):
-     """Return whether an sklearn-style estimator can fit a 2D target directly."""
-     estimator = model.estimator if isinstance(model, RandomizedSearchCV) else model
-     if isinstance(estimator, ExtraTreesRegressor):
-         return True
--    try:
--        tags = get_tags(estimator)
--        return bool(getattr(tags.target_tags, "multi_output", False))
--    except Exception:
--        pass
+     base_input_features = [col for col in input_features if col in data_columns]
+     derived_input_features = [col for col in input_features if col not in data_columns]
+ 
+     invalid_derived = [
+         col for col in derived_input_features if not TEMPORAL_DERIVED_COLUMN_PATTERN.match(col)
+     ]
+     if invalid_derived:
+         raise ValueError(
+             f"Input columns not found in dataset and not recognized as temporal-derived columns: "
+             f"{invalid_derived}. Available columns: {list(data_columns)}"
+         )
+ 
+     return base_input_features, derived_input_features
+ 
+ 
++SHEET_NAME_DATE_FEATURES = (
++    "sheet_name__date_ordinal",
++    "sheet_name__year",
++    "sheet_name__month",
++    "sheet_name__day",
++    "sheet_name__dayofyear",
++    "sheet_name__iso_week",
++    "sheet_name__elapsed_days",
++)
 +
-+    get_tags = getattr(sklearn_utils, "get_tags", None)
-+    if get_tags is not None:
-+        try:
-+            tags = get_tags(estimator)
-+            target_tags = getattr(tags, "target_tags", None)
-+            if target_tags is not None:
-+                return bool(getattr(target_tags, "multi_output", False))
-+        except Exception:
-+            pass
 +
-+    estimator_get_tags = getattr(estimator, "_get_tags", None)
-+    if estimator_get_tags is not None:
-+        try:
-+            tags = estimator_get_tags()
-+            return bool(tags.get("multioutput", False) or tags.get("multi_output", False))
-+        except Exception:
-+            pass
++def add_sheet_name_datetime_features(data, input_features):
++    """Convert ``sheet_name`` from YYYY.MM.DD text into numeric datetime features.
 +
-     return False
++    In the sugar-factory workbook, ``sheet_name`` is a sheet/date label rather
++    than a nominal category.  Keeping raw date strings in X would later coerce
++    them to NaN, and one-hot/categorical use would leak arbitrary sheet labels.
++    This function replaces the raw column in model inputs with calendar and
++    elapsed-time features that preserve chronological meaning.
++    """
++    resolved_inputs = list(input_features)
++    if "sheet_name" not in data.columns or "sheet_name" not in resolved_inputs:
++        return data, resolved_inputs, None
++
++    transformed = data.copy()
++    parsed_dates = pd.to_datetime(
++        transformed["sheet_name"].astype(str).str.strip(),
++        format="%Y.%m.%d",
++        errors="coerce",
++    )
++    if parsed_dates.isna().all():
++        raise ValueError(
++            "sheet_name was selected as an input but no values could be parsed "
++            "as dates in YYYY.MM.DD format."
++        )
++
++    first_date = parsed_dates.min()
++    transformed["sheet_name__date_ordinal"] = parsed_dates.map(
++        lambda value: value.toordinal() if pd.notna(value) else pd.NA
++    )
++    transformed["sheet_name__year"] = parsed_dates.dt.year
++    transformed["sheet_name__month"] = parsed_dates.dt.month
++    transformed["sheet_name__day"] = parsed_dates.dt.day
++    transformed["sheet_name__dayofyear"] = parsed_dates.dt.dayofyear
++    transformed["sheet_name__iso_week"] = parsed_dates.dt.isocalendar().week.astype("Float64")
++    transformed["sheet_name__elapsed_days"] = (parsed_dates - first_date).dt.days
++
++    date_features = [feature for feature in SHEET_NAME_DATE_FEATURES if feature in transformed.columns]
++    resolved_inputs = [
++        feature
++        for input_name in resolved_inputs
++        for feature in (date_features if input_name == "sheet_name" else [input_name])
++    ]
++    return transformed, resolved_inputs, parsed_dates
++
++
++def chronological_train_test_split(data, output_features, input_features, parsed_dates, test_size=0.2):
++    """Split sugar data chronologically when a valid sheet/date column exists."""
++    ordered = data.assign(_sheet_name_datetime=parsed_dates).sort_values(
++        ["_sheet_name_datetime"], kind="mergesort"
++    )
++    ordered = ordered.drop(columns=["_sheet_name_datetime"]).reset_index(drop=True)
++    n_rows = len(ordered)
++    n_test = max(1, int(round(n_rows * float(test_size))))
++    if n_test >= n_rows:
++        raise ValueError(
++            f"test_size={test_size} leaves no chronological training rows for {n_rows} rows."
++        )
++    train_data = ordered.iloc[: n_rows - n_test]
++    test_data = ordered.iloc[n_rows - n_test :]
++    return (
++        train_data[input_features],
++        test_data[input_features],
++        train_data[output_features],
++        test_data[output_features],
++    )
++
++
+ def prep_data_file_paths(prep_folder="prep_data"):
+     """Return canonical prep_data file paths."""
+     resolved_prep_folder = resolve_relative_path(prep_folder)
+     return {
+         "X_train": os.path.join(resolved_prep_folder, "X_train.csv"),
+         "X_test": os.path.join(resolved_prep_folder, "X_test.csv"),
+         "y_train": os.path.join(resolved_prep_folder, "y_train.csv"),
+         "y_test": os.path.join(resolved_prep_folder, "y_test.csv"),
+         "metadata": os.path.join(resolved_prep_folder, "metadata.json"),
+     }
  
  
- def fit_model_on_split(
-     model_class,
-     X_train_fold,
-     X_test_fold,
-     y_train_fold,
-     y_test_fold,
-     num_epochs,
-     hidden_sizes,
-     run=0,
-     optimization_scope="weights",
-     optimize_feature_indexes=None,
+ def prep_data_exists(prep_folder="prep_data"):
+     """Check whether all required prep_data CSV files exist."""
+     paths = prep_data_file_paths(prep_folder)
+     required = [paths["X_train"], paths["X_test"], paths["y_train"], paths["y_test"]]
+     exists = all(os.path.isfile(path) for path in required)
+     print(f"[path-debug] prep_data folder resolved to: {os.path.dirname(paths['X_train'])}")
+     print(f"[path-debug] prep_data required files exist: {exists}")
+     if not exists:
+         missing = [path for path in required if not os.path.isfile(path)]
+         print(f"[path-debug] prep_data missing required files: {missing}")
+     return exists
+ 
+ 
+@@ -677,86 +756,110 @@ def prepare_data_from_file(
+     difference_order=1,
+     add_ratio_features=False,
+     add_acceleration_features=False,
+     add_normalized_change_features=False,
+     create_rnn_windows=False,
+     rnn_window_size=3,
+     add_rolling_dynamics=False,
+     rolling_window=3,
+     optional_future_quality_inputs=None,
  ):
-     """Fit either an NN or sklearn model on one explicit train/test split."""
-     X_train_fold, X_test_fold, y_train_fold, y_test_fold, _dropped_missing_columns = clean_train_test_for_modeling(
-         X_train_fold,
-         X_test_fold,
-         y_train_fold,
-         y_test_fold,
-         verbose=False,
+     """Prepare prep_data files directly from a raw CSV dataset."""
+     dataset_path = print_path_debug("prepare_data_from_file dataset", dataset_path)
+     dataset_path = ensure_dataset_csv_exists(dataset_path)
+ 
+     print(f"[path-debug] Reading raw dataset CSV: {dataset_path}")
+     data = pd.read_csv(dataset_path)
+     base_input_features, requested_derived_features = split_base_and_derived_input_features(
+         data.columns, input_features
      )
-     if is_torch_model(model_class):
-         input_size = X_train_fold.shape[1]
+     output_features, input_features = resolve_data_columns(
+         data,
+         output_feature,
+         base_input_features,
+         optional_future_quality_inputs=optional_future_quality_inputs,
+     )
++    data, input_features, parsed_sheet_dates = add_sheet_name_datetime_features(
++        data,
++        input_features,
++    )
+     data, input_features = apply_temporal_feature_engineering(
+         data=data,
+         input_features=input_features,
+         sequential_features=sequential_features,
+         sequential_groups=sequential_groups,
+         add_differences=add_differences,
+         difference_order=difference_order,
+         add_ratio_features=add_ratio_features,
+         add_acceleration_features=add_acceleration_features,
+         add_normalized_change_features=add_normalized_change_features,
+         create_rnn_windows=create_rnn_windows,
+         rnn_window_size=rnn_window_size,
+         add_rolling_dynamics=add_rolling_dynamics,
+         rolling_window=rolling_window,
+     )
+     if requested_derived_features:
+         missing_requested = [col for col in requested_derived_features if col not in data.columns]
+         if missing_requested:
+             raise ValueError(
+                 f"Requested temporal-derived columns were not generated: {missing_requested}. "
+                 f"Generated columns: {list(data.columns)}"
+             )
+         input_features = list(base_input_features) + list(requested_derived_features)
+     validate_model_inputs(input_features, output_features=output_features, optional_future_quality_inputs=optional_future_quality_inputs)
+ 
+-    X = data[input_features]
+-    y = data[output_features]
+-
+-    X_train, X_test, y_train, y_test = train_test_split(
+-        X, y, test_size=test_size, random_state=random_state
+-    )
++    if parsed_sheet_dates is not None:
++        split_dates = pd.to_datetime(
++            data["sheet_name"].astype(str).str.strip(),
++            format="%Y.%m.%d",
++            errors="coerce",
++        )
++    if parsed_sheet_dates is not None and split_dates.notna().any():
++        X_train, X_test, y_train, y_test = chronological_train_test_split(
++            data,
++            output_features,
++            input_features,
++            split_dates,
++            test_size=test_size,
++        )
++        split_strategy = "chronological_by_sheet_name"
++    else:
++        X = data[input_features]
++        y = data[output_features]
++        X_train, X_test, y_train, y_test = train_test_split(
++            X, y, test_size=test_size, random_state=random_state
++        )
++        split_strategy = "random_train_test_split"
+ 
+     metadata = {
+         "dataset_path": dataset_path,
+         "output_features": list(output_features),
+         "input_features": list(input_features),
++        "sheet_name_datetime_features": list(SHEET_NAME_DATE_FEATURES)
++        if "sheet_name" in data.columns
++        else [],
++        "split_strategy": split_strategy,
+         "optional_future_quality_inputs": list(optional_future_quality_inputs or []),
+         "sequential_features": list(sequential_features or []),
+         "sequential_groups": [list(group) for group in (sequential_groups or [])],
+         "add_differences": bool(add_differences),
+         "difference_order": int(difference_order),
+         "add_ratio_features": bool(add_ratio_features),
+         "add_acceleration_features": bool(add_acceleration_features),
+         "add_normalized_change_features": bool(add_normalized_change_features),
+         "create_rnn_windows": bool(create_rnn_windows),
+         "rnn_window_size": int(rnn_window_size),
+         "add_rolling_dynamics": bool(add_rolling_dynamics),
+         "rolling_window": int(rolling_window),
+         "test_size": float(test_size),
+         "random_state": int(random_state),
+         "refinery_variable_groups": refinery_variable_group_metadata(),
+     }
+     save_data(prep_folder, X_train, X_test, y_train, y_test, metadata=metadata, after_prepare = True)
+     return X_train, X_test, y_train, y_test
+ 
+ 
+ def sync_prep_data_with_dataset(
+     dataset_path="data.csv",
+     prep_folder="prep_data",
+     output_feature="rate",
+     input_features=None,
+@@ -766,50 +869,54 @@ def sync_prep_data_with_dataset(
+     difference_order=1,
+     add_ratio_features=False,
+     add_acceleration_features=False,
+     add_normalized_change_features=False,
+     create_rnn_windows=False,
+     rnn_window_size=3,
+     add_rolling_dynamics=False,
+     rolling_window=3,
+     optional_future_quality_inputs=None,
+ ):
+     """Rebuild prep_data if files are missing or schema differs from dataset."""
+     dataset_path = print_path_debug("sync_prep_data_with_dataset dataset", dataset_path)
+     dataset_path = ensure_dataset_csv_exists(dataset_path)
+ 
+     print(f"[path-debug] Reading raw dataset CSV for prep_data sync: {dataset_path}")
+     data = pd.read_csv(dataset_path)
+     base_input_features, requested_derived_features = split_base_and_derived_input_features(
+         data.columns, input_features
+     )
+     output_features, input_features = resolve_data_columns(
+         data,
+         output_feature,
+         base_input_features,
+         optional_future_quality_inputs=optional_future_quality_inputs,
+     )
++    data, input_features, _parsed_sheet_dates = add_sheet_name_datetime_features(
++        data,
++        input_features,
++    )
+     _, input_features = apply_temporal_feature_engineering(
+         data=data,
+         input_features=input_features,
+         sequential_features=sequential_features,
+         sequential_groups=sequential_groups,
+         add_differences=add_differences,
+         difference_order=difference_order,
+         add_ratio_features=add_ratio_features,
+         add_acceleration_features=add_acceleration_features,
+         add_normalized_change_features=add_normalized_change_features,
+         create_rnn_windows=create_rnn_windows,
+         rnn_window_size=rnn_window_size,
+         add_rolling_dynamics=add_rolling_dynamics,
+         rolling_window=rolling_window,
+     )
+     if requested_derived_features:
+         input_features = list(base_input_features) + list(requested_derived_features)
+     validate_model_inputs(input_features, output_features=output_features, optional_future_quality_inputs=optional_future_quality_inputs)
+ 
+     paths = prep_data_file_paths(prep_folder)
+     expected_files = [paths["X_train"], paths["X_test"], paths["y_train"], paths["y_test"]]
+ 
+     should_rebuild = not all(os.path.isfile(path) for path in expected_files)
+ 
+     if not should_rebuild:
