@@ -115,6 +115,8 @@ OPTIMIZATION_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "optimization_rep
 OPERATOR_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "operator_report.xlsx")
 MODEL_DESIGN_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_design_experiments.xlsx")
 MODEL_B_FEATURE_IMPORTANCE_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_b_feature_importance_analysis.xlsx")
+DRIFT_ANALYSIS_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "drift_analysis_white_total_points.xlsx")
+DRIFT_ANALYSIS_PLOT_PATH = os.path.join(MODULE_DIR, "reports", "drift_analysis_white_total_points.png")
 
 
 FEATURE_IMPORTANCE_TARGETS = (
@@ -3753,6 +3755,163 @@ def generate_model_design_experiments_report(
     return report_path
 
 
+
+def _build_drift_analysis_dates(dataframe):
+    """Return best-effort observation dates for monthly drift analysis."""
+    if "date" in dataframe.columns:
+        parsed_dates = pd.to_datetime(dataframe["date"], errors="coerce")
+        if parsed_dates.notna().any():
+            return parsed_dates, "date"
+
+    if "sheet_name" in dataframe.columns:
+        parsed_dates = pd.to_datetime(
+            dataframe["sheet_name"].astype(str).str.strip(),
+            format="%Y.%m.%d",
+            errors="coerce",
+        )
+        if parsed_dates.notna().any():
+            return parsed_dates, "sheet_name"
+
+    year_candidates = ["year", "report_date_year"]
+    month_candidates = ["month", "report_date_month"]
+    day_candidates = ["day", "report_date_day", "work_day"]
+    year_column = next((column for column in year_candidates if column in dataframe.columns), None)
+    month_column = next((column for column in month_candidates if column in dataframe.columns), None)
+    if year_column and month_column:
+        date_parts = pd.DataFrame({
+            "year": coerce_refinery_numeric_series(dataframe[year_column]),
+            "month": coerce_refinery_numeric_series(dataframe[month_column]),
+            "day": 1,
+        })
+        day_column = next((column for column in day_candidates if column in dataframe.columns), None)
+        if day_column:
+            date_parts["day"] = coerce_refinery_numeric_series(dataframe[day_column]).fillna(1)
+        parsed_dates = pd.to_datetime(date_parts, errors="coerce")
+        if parsed_dates.notna().any():
+            return parsed_dates, f"{year_column}+{month_column}"
+
+    return pd.Series(pd.NaT, index=dataframe.index), None
+
+
+def _write_drift_analysis_plot(monthly_summary, plot_path, rolling_window):
+    """Save the Step 6 monthly mean/std trend chart."""
+    os.makedirs(os.path.dirname(plot_path), exist_ok=True)
+    plot_df = monthly_summary.copy()
+    plot_df["Month Start"] = pd.to_datetime(plot_df["Month"].astype(str) + "-01", errors="coerce")
+    plot_df = plot_df.dropna(subset=["Month Start"]).sort_values("Month Start")
+    if plot_df.empty:
+        return None
+
+    plt.figure(figsize=(11, 6))
+    plt.plot(
+        plot_df["Month Start"],
+        plot_df["Mean white_total_points"],
+        marker="o",
+        linewidth=2,
+        label="Monthly mean",
+    )
+    if "Rolling Mean white_total_points" in plot_df.columns and plot_df["Rolling Mean white_total_points"].notna().any():
+        plt.plot(
+            plot_df["Month Start"],
+            plot_df["Rolling Mean white_total_points"],
+            marker="",
+            linewidth=2,
+            linestyle="--",
+            label=f"{rolling_window}-month rolling mean",
+        )
+    if plot_df["Std white_total_points"].notna().any():
+        lower = plot_df["Mean white_total_points"] - plot_df["Std white_total_points"].fillna(0)
+        upper = plot_df["Mean white_total_points"] + plot_df["Std white_total_points"].fillna(0)
+        plt.fill_between(
+            plot_df["Month Start"],
+            lower,
+            upper,
+            alpha=0.18,
+            label="±1 monthly std",
+        )
+    plt.xlabel("Month")
+    plt.ylabel("white_total_points")
+    plt.title("Step 6 Drift Analysis: white_total_points by Month")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(plot_path, dpi=160)
+    plt.close()
+    return plot_path
+
+
+def generate_drift_analysis_report(
+    dataframe,
+    target="white_total_points",
+    rolling_window=3,
+    report_path=DRIFT_ANALYSIS_REPORT_PATH,
+    plot_path=DRIFT_ANALYSIS_PLOT_PATH,
+):
+    """Run Step 6 drift analysis by month for white_total_points.
+
+    The report groups observations by calendar month, computes the monthly mean
+    and standard deviation of ``white_total_points``, and saves a trend chart
+    with an optional rolling mean when at least one monthly value is available.
+    """
+    print("\n================= Step 6 Drift Analysis =================")
+    if target not in dataframe.columns:
+        print(f"Drift analysis skipped: {target} column was not found.")
+        return None
+
+    dates, date_source = _build_drift_analysis_dates(dataframe)
+    if date_source is None or dates.notna().sum() == 0:
+        print("Drift analysis skipped: no usable date, sheet_name, or year/month columns were found.")
+        return None
+
+    values = coerce_refinery_numeric_series(dataframe[target])
+    analysis_df = pd.DataFrame({"Date": dates, target: values}).dropna(subset=["Date", target])
+    if analysis_df.empty:
+        print("Drift analysis skipped: no rows have both a valid month and white_total_points value.")
+        return None
+
+    analysis_df["Month"] = analysis_df["Date"].dt.to_period("M").astype(str)
+    monthly_summary = (
+        analysis_df.groupby("Month", as_index=False)
+        .agg(
+            **{
+                "Mean white_total_points": (target, "mean"),
+                "Std white_total_points": (target, "std"),
+                "Observation Count": (target, "count"),
+            }
+        )
+        .sort_values("Month")
+        .reset_index(drop=True)
+    )
+    monthly_summary["Rolling Mean white_total_points"] = monthly_summary["Mean white_total_points"].rolling(
+        window=max(int(rolling_window), 1),
+        min_periods=1,
+    ).mean()
+
+    saved_plot_path = _write_drift_analysis_plot(monthly_summary, plot_path, rolling_window)
+    metadata_df = pd.DataFrame([
+        {
+            "created_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "target": target,
+            "date_source": date_source,
+            "rolling_window_months": int(rolling_window),
+            "valid_observations": int(len(analysis_df)),
+            "monthly_groups": int(len(monthly_summary)),
+            "plot_path": saved_plot_path or "not generated",
+        }
+    ])
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+    with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
+        monthly_summary.to_excel(writer, sheet_name="Monthly Drift", index=False)
+        analysis_df.sort_values("Date").to_excel(writer, sheet_name="Source Rows", index=False)
+        metadata_df.to_excel(writer, sheet_name="Metadata", index=False)
+
+    print(monthly_summary.to_string(index=False))
+    print(f"Saved drift analysis report: {report_path}")
+    if saved_plot_path:
+        print(f"Saved drift analysis plot: {saved_plot_path}")
+    print("=========================================================\n")
+    return report_path
+
 def generate_model_comparison_report(X_train, X_test, y_train, y_test, report_path=MODEL_COMPARISON_REPORT_PATH):
     """Compare requested regressors with 5-fold CV and save reports/model_comparison.xlsx."""
     full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
@@ -5048,6 +5207,7 @@ def main():
     generate_model_comparison_report(X_train, X_test, y_train, y_test)
     generate_model_design_experiments_report(X_train, X_test, y_train, y_test)
     generate_model_b_feature_importance_analysis(X_train, X_test, y_train, y_test)
+    generate_drift_analysis_report(feature_importance_source_df)
     active_features = list(inputs)
     if selected_saved_run:
         print("Loaded saved run metadata; reusing prepared inputs/outputs.")
