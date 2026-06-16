@@ -11,16 +11,7 @@
     "lime_alkalinity",
     "co2_percent",
     "carbonated_alkalinity",
-    "carbonated_pH",
-    "filtercake_moisture",
-    "filtercake_sugar",
-    "sweetwater_brix",
-    "sulphited_pH",
-    "sulphited_brix",
-    "sulphited_color",
-    "standard_liquor_pH",
-    "standard_liquor_brix",
-    "standard_liquor_color"
+    "carbonated_pH"
   ],
   "sheet_name_datetime_features": [
     "year",
@@ -41,16 +32,7 @@
     "lime_alkalinity",
     "co2_percent",
     "carbonated_alkalinity",
-    "carbonated_pH",
-    "filtercake_moisture",
-    "filtercake_sugar",
-    "sweetwater_brix",
-    "sulphited_pH",
-    "sulphited_brix",
-    "sulphited_color",
-    "standard_liquor_pH",
-    "standard_liquor_brix",
-    "standard_liquor_color"
+    "carbonated_pH"
   ],
   "sequential_features": [],
   "sequential_groups": [],
