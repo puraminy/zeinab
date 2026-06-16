@@ -1,0 +1,134 @@
+"""Preprocessing helpers for refinery ML pipelines."""
+
+import inspect
+import logging
+import re
+
+import numpy as np
+import pandas as pd
+from sklearn.impute import SimpleImputer
+
+LOGGER = logging.getLogger(__name__)
+
+_NUMERIC_TOKEN_RE = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)")
+
+
+def coerce_refinery_numeric_series(series, column_name=None, logger=None, max_logged_rows=20):
+    """Convert refinery values to floats with robust numeric extraction.
+
+    Persian/other text-only values such as ``بومه شیرآهک`` become NaN. Mixed
+    strings with numbers keep the first numeric token, and simple numeric ranges
+    such as ``10-12`` are converted to their midpoint.
+    """
+    logger = logger or LOGGER
+    column_label = column_name or getattr(series, "name", None) or "<unnamed>"
+    problematic = []
+
+    def _convert(index, value):
+        if pd.isna(value):
+            return np.nan
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            return float(value)
+
+        text = str(value).strip()
+        if not text:
+            return np.nan
+
+        normalized = (
+            text.replace("−", "-")
+            .replace("–", "-")
+            .replace("—", "-")
+            .replace("٫", ".")
+            .replace("٬", "")
+            .replace(",", "")
+        )
+        direct_value = pd.to_numeric(normalized, errors="coerce")
+        if pd.notna(direct_value):
+            return float(direct_value)
+
+        range_match = re.fullmatch(
+            r"\s*([+-]?\d+(?:\.\d+)?)\s*-\s*([+-]?\d+(?:\.\d+)?)\s*",
+            normalized,
+        )
+        if range_match:
+            low, high = map(float, range_match.groups())
+            return (low + high) / 2.0
+
+        tokens = _NUMERIC_TOKEN_RE.findall(normalized)
+        if tokens:
+            return float(tokens[0])
+
+        problematic.append((index, value))
+        return np.nan
+
+    converted = pd.Series(
+        (_convert(index, value) for index, value in series.items()),
+        index=series.index,
+        name=series.name,
+        dtype="float64",
+    )
+    if problematic:
+        preview = problematic[:max_logged_rows]
+        logger.warning(
+            "Column %s: converted %s non-numeric value(s) to NaN. Sample rows: %s",
+            column_label,
+            len(problematic),
+            preview,
+        )
+    return converted
+
+
+def coerce_refinery_numeric_frame(dataframe, logger=None):
+    """Convert every dataframe column with the refinery numeric parser."""
+    logger = logger or LOGGER
+    return pd.DataFrame(
+        {
+            column: coerce_refinery_numeric_series(dataframe[column], column_name=column, logger=logger)
+            for column in dataframe.columns
+        },
+        index=dataframe.index,
+    )
+
+
+def make_median_imputer():
+    """Create a median imputer that preserves empty columns when supported."""
+    kwargs = {"strategy": "median"}
+    if "keep_empty_features" in inspect.signature(SimpleImputer).parameters:
+        kwargs["keep_empty_features"] = True
+    return SimpleImputer(**kwargs)
+
+
+def median_impute_train_test(X_train, X_test, logger=None):
+    """Fit median imputation on training data and guarantee no NaNs remain."""
+    logger = logger or LOGGER
+    X_train_numeric = coerce_refinery_numeric_frame(X_train, logger=logger).replace([np.inf, -np.inf], np.nan)
+    X_test_numeric = coerce_refinery_numeric_frame(X_test, logger=logger).replace([np.inf, -np.inf], np.nan)
+    X_test_numeric = X_test_numeric.reindex(columns=X_train_numeric.columns)
+
+    all_missing = X_train_numeric.columns[X_train_numeric.isna().all()].tolist()
+    if all_missing:
+        logger.warning(
+            "Columns with all training values missing will be filled with 0.0 before median imputation: %s",
+            all_missing,
+        )
+        X_train_numeric.loc[:, all_missing] = 0.0
+        X_test_numeric.loc[:, all_missing] = X_test_numeric.loc[:, all_missing].fillna(0.0)
+
+    imputer = make_median_imputer()
+    train_arr = imputer.fit_transform(X_train_numeric)
+    test_arr = imputer.transform(X_test_numeric)
+    X_train_imputed = pd.DataFrame(train_arr, columns=X_train_numeric.columns, index=X_train_numeric.index)
+    X_test_imputed = pd.DataFrame(test_arr, columns=X_train_numeric.columns, index=X_test_numeric.index)
+
+    remaining_train = int(X_train_imputed.isna().sum().sum())
+    remaining_test = int(X_test_imputed.isna().sum().sum())
+    if remaining_train or remaining_test:
+        logger.warning(
+            "Median imputation left NaNs (train=%s, test=%s); filling remaining values with 0.0.",
+            remaining_train,
+            remaining_test,
+        )
+        X_train_imputed = X_train_imputed.fillna(0.0)
+        X_test_imputed = X_test_imputed.fillna(0.0)
+
+    return X_train_imputed.astype(float), X_test_imputed.astype(float), imputer

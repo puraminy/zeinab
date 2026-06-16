@@ -39,6 +39,14 @@ CONTROL_VARIABLES = (
     "sulphited_brix",
     "standard_liquor_pH",
     "standard_liquor_brix",
+    "boiler_pH",
+    "boiling_r1_pol",
+)
+
+PROCESS_CONTROL_PREFIXES = (
+    "boiler",
+    "boiling",
+    "wastewater",
 )
 
 
@@ -49,11 +57,7 @@ TARGET_VARIABLES = (
     "filtercake_moisture",
     "filtercake_sugar",
     "sweetwater_brix",
-    "sulphited_pH",
-    "sulphited_brix",
     "sulphited_color",
-    "standard_liquor_pH",
-    "standard_liquor_brix",
     "standard_liquor_color",
     "white_total_points",
 )
@@ -188,6 +192,7 @@ def _canonical_name(name):
 
 
 _ALLOWED_CANONICAL = {_canonical_name(name) for name in _ALLOWED_INPUTS}
+_PROCESS_CONTROL_PREFIX_CANONICAL = tuple(_canonical_name(name) for name in PROCESS_CONTROL_PREFIXES)
 _TARGET_CANONICAL = {_canonical_name(name) for name in _TARGETS}
 
 
@@ -234,7 +239,8 @@ def is_allowed_model_input(column_name, output_features=None, optional_future_qu
     if _canonical_name(base_name) in optional_quality_inputs:
         return True
 
-    return _canonical_name(base_name) in _ALLOWED_CANONICAL
+    canonical_base = _canonical_name(base_name)
+    return canonical_base in _ALLOWED_CANONICAL or canonical_base.startswith(_PROCESS_CONTROL_PREFIX_CANONICAL)
 
 
 def filter_allowed_model_inputs(columns, output_features=None, optional_future_quality_inputs=None):
@@ -336,6 +342,7 @@ def refinery_variable_group_metadata():
     return {
         "EARLY_VARIABLES": list(EARLY_VARIABLES),
         "CONTROL_VARIABLES": list(CONTROL_VARIABLES),
+        "PROCESS_CONTROL_PREFIXES": list(PROCESS_CONTROL_PREFIXES),
         "TARGET_VARIABLES": list(TARGET_VARIABLES),
         "MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS": list(MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS),
         "DIAGNOSTIC_ONLY_FEATURE_PATTERNS": list(DIAGNOSTIC_ONLY_FEATURE_PATTERNS),
@@ -343,7 +350,7 @@ def refinery_variable_group_metadata():
             target: list(inputs)
             for target, inputs in PRE_TARGET_FEATURE_IMPORTANCE_INPUTS.items()
         },
-        "input_rule": "Model inputs = EARLY_VARIABLES + CONTROL_VARIABLES only.",
+        "input_rule": "Model inputs = EARLY_VARIABLES + CONTROL_VARIABLES plus process-control prefixes (boiler, boiling, wastewater).",
         "main_model_exclusion_rule": (
             "Remove white_total_points plus every column whose base name starts "
             "with white_quality_ or white_average_ from the main model input set."

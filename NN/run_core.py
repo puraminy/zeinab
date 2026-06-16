@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
-from sklearn.impute import SimpleImputer
 from sklearn.model_selection import KFold, RandomizedSearchCV, train_test_split
 from sklearn.ensemble import (
     RandomForestRegressor,
@@ -31,6 +30,11 @@ import os
 from latex import *
 from plot import *
 from models import *
+from preprocessing import (
+    coerce_refinery_numeric_frame,
+    coerce_refinery_numeric_series,
+    median_impute_train_test,
+)
 from read_data import (
     read_prep_data,
     sync_prep_data_with_dataset,
@@ -62,7 +66,7 @@ from recommendation_engine import (
     recommend_operating_conditions,
 )
 import inspect
-import models
+import models as models_module
 import json
 import copy
 import math
@@ -173,42 +177,6 @@ FUTURE_QUALITY_INPUT_CANDIDATES = [
 ]
 
 
-
-
-def coerce_refinery_numeric_series(series):
-    """Convert numeric-like refinery strings, including ranges such as 10-12, to floats."""
-    def _convert(value):
-        if pd.isna(value):
-            return np.nan
-        if isinstance(value, (int, float, np.integer, np.floating)):
-            return float(value)
-        text = str(value).strip()
-        if not text:
-            return np.nan
-        normalized = (
-            text.replace("−", "-")
-            .replace("–", "-")
-            .replace("—", "-")
-            .replace(",", "")
-        )
-        direct_value = pd.to_numeric(normalized, errors="coerce")
-        if pd.notna(direct_value):
-            return float(direct_value)
-        range_match = re.fullmatch(
-            r"\s*([+-]?\d+(?:\.\d+)?)\s*-\s*([+-]?\d+(?:\.\d+)?)\s*",
-            normalized,
-        )
-        if range_match:
-            low, high = map(float, range_match.groups())
-            return (low + high) / 2.0
-        return np.nan
-
-    return series.map(_convert).astype(float)
-
-
-def coerce_refinery_numeric_frame(dataframe):
-    """Convert every column in a dataframe with the refinery numeric parser."""
-    return dataframe.apply(coerce_refinery_numeric_series, axis=0)
 
 
 
@@ -404,19 +372,13 @@ def apply_missing_value_pipeline(X_train, X_test, missing_drop_threshold=50.0, v
     if X_train_clean.empty:
         raise ValueError("No input columns remain after dropping columns with >50% missing training values.")
 
-    imputer = SimpleImputer(strategy="median")
-    X_train_imputed = pd.DataFrame(
-        imputer.fit_transform(X_train_clean),
-        columns=X_train_clean.columns,
-        index=X_train_clean.index,
+    X_train_imputed, X_test_imputed, _imputer = median_impute_train_test(
+        X_train_clean,
+        X_test_clean.reindex(columns=X_train_clean.columns),
+        logger=LOGGER,
     )
-    X_test_imputed = pd.DataFrame(
-        imputer.transform(X_test_clean.reindex(columns=X_train_clean.columns)),
-        columns=X_train_clean.columns,
-        index=X_test_clean.index,
-    )
-    X_train_imputed = X_train_imputed.astype(float)
-    X_test_imputed = X_test_imputed.astype(float)
+    if X_train_imputed.isna().any().any() or X_test_imputed.isna().any().any():
+        raise ValueError("Feature imputation failed: NaNs remain in X_train or X_test.")
     return X_train_imputed, X_test_imputed, columns_to_drop
 
 
@@ -5435,14 +5397,19 @@ def main():
 
     # Dynamically collect all neural-network model classes from the module
     nn_models = [
-        member for name, member in inspect.getmembers(models, inspect.isclass)
-        if issubclass(member, models.nn.Module) and member.__module__ == models.__name__
+        member for name, member in inspect.getmembers(models_module, inspect.isclass)
+        if issubclass(member, models_module.nn.Module) and member.__module__ == models_module.__name__
     ]
     sklearn_models = [
         (name, factory) for name, factory in SKLEARN_MODEL_FACTORIES.items()
     ]
-    models = nn_models + [factory for _, factory in sklearn_models]
-    model_names = [model.__name__ for model in nn_models] + [name for name, _ in sklearn_models]
+    registered_models = nn_models + [factory for _, factory in sklearn_models]
+    if not registered_models:
+        print("No model classes/factories were available; falling back to RandomForestRegressor.")
+        registered_models = [SKLEARN_MODEL_FACTORIES.get("RandomForestRegressor", lambda seed: RandomForestRegressor(n_estimators=100, random_state=seed))]
+        model_names = ["RandomForestRegressor"]
+    else:
+        model_names = [model.__name__ for model in nn_models] + [name for name, _ in sklearn_models]
     if selected_saved_run and selected_saved_run.get("model_name") in model_names:
         selected_models = [model_names.index(selected_saved_run["model_name"])]
         print(f"Using saved model: {selected_saved_run['model_name']}")
@@ -5461,14 +5428,14 @@ def main():
             exit()
 
         if selected_model_names is None:
-            selected_models = list(range(len(models)))
+            selected_models = list(range(len(registered_models)))
         else:
             selected_models = [model_names.index(name) for name in selected_model_names]
 
     print("Selected Models:", [model_names[i] for i in selected_models])
     best_model_index = selected_models[0]
     max_model_index = best_model_index
-    has_nn_model = any(is_torch_model(models[i]) for i in selected_models)
+    has_nn_model = any(is_torch_model(registered_models[i]) for i in selected_models)
     if has_nn_model:
         print_ann_training_robustness_notes()
 
@@ -5561,7 +5528,7 @@ def main():
             print("2. Forward Feature Selection")
             auto_method = input("Select method [1]: ").strip() or "1"
 
-            reference_model = models[selected_models[0]]
+            reference_model = registered_models[selected_models[0]]
             reference_model_name = model_names[selected_models[0]]
             reference_epochs = list_epochs[0] if list_epochs else best_epochs
             reference_hidden_sizes = list_hidden_sizes[0] if is_torch_model(reference_model) else []
@@ -5608,7 +5575,7 @@ def main():
         best_optimized_inputs_report = None
         # for all models
         for model_index in selected_models:
-            model_class = models[model_index]
+            model_class = registered_models[model_index]
             model_name = model_names[model_index]
             is_nn = is_torch_model(model_class)
             hidden_size_candidates = list_hidden_sizes if is_nn else [[]]
@@ -5751,7 +5718,7 @@ def main():
         print("Generating plots ...")
         plot_model_performance(results_table)
 
-        best_model = models[best_model_index]
+        best_model = registered_models[best_model_index]
         best_model_name = model_names[best_model_index]
         # Show results
         max_model_name = model_names[max_model_index]
@@ -5912,13 +5879,13 @@ def main():
         results_df.to_csv("results.csv", index=False)
         print("Predictions of best model were saved in results.csv")
         weights_path = None
-        if is_torch_model(models[max_model_index]):
+        if is_torch_model(registered_models[max_model_index]):
             os.makedirs(CHECKPOINTS_DIR, exist_ok=True)
             checkpoint_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{max_model_name}_R2-{best_r2:.2f}_run-{best_run}.pt")
             weights_path = os.path.join(CHECKPOINTS_DIR, checkpoint_name)
             input_size = X_train.shape[1]
             output_size = as_2d_float_array(y_train, "y_train").shape[1]
-            best_model_instance = make_torch_model(models[max_model_index], input_size, max_hidden_sizes, output_size)
+            best_model_instance = make_torch_model(registered_models[max_model_index], input_size, max_hidden_sizes, output_size)
             checkpoint_predictions, checkpoint_mse, checkpoint_r2, best_model_instance, _ = fit_model(
                 best_model_instance,
                 X_train,
@@ -5986,7 +5953,7 @@ def main():
             outputs=outputs,
             best_r2=best_r2,
             epoch_candidates=list_epochs,
-            hidden_size_groups=list_hidden_sizes if is_torch_model(models[max_model_index]) else [],
+            hidden_size_groups=list_hidden_sizes if is_torch_model(registered_models[max_model_index]) else [],
             repeat_count=num_repeats,
             optimization_scope=optimization_scope,
             weights_path=weights_path,
@@ -5996,7 +5963,7 @@ def main():
            print("======= Predictions of best model:", best_model_name)
            print(results_df)
 
-    best_model = models[best_model_index]
+    best_model = registered_models[best_model_index]
     best_model_name = model_names[best_model_index]
     if is_torch_model(best_model):
         while True:
