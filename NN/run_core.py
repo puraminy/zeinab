@@ -3470,16 +3470,30 @@ def _load_full_design_split_from_prep_data(X_train, X_test, y_train, y_test, pre
 
 
 def _prepare_model_design_feature_frame(train_df, test_df, feature_columns):
-    """Coerce selected experiment features to numeric and drop unusable columns consistently."""
+    """Coerce and impute selected experiment features for sklearn estimators.
+
+    Step 3 and Step 5 both fit RandomForestRegressor models, which reject NaN
+    values.  The prepared refinery data can legitimately contain missing process
+    measurements, so this helper applies the same train-fitted missing-value
+    pipeline used by the main training path before returning model-design
+    matrices.
+    """
     selected_train = train_df[list(feature_columns)].copy()
     selected_test = test_df[list(feature_columns)].copy()
     selected_train = coerce_refinery_numeric_frame(selected_train)
     selected_test = coerce_refinery_numeric_frame(selected_test)
     combined = pd.concat([selected_train, selected_test], axis=0, ignore_index=True)
-    usable_columns = [column for column in combined.columns if combined[column].notna().any()]
+    usable_columns = [column for column in combined.columns if selected_train[column].notna().any()]
     if not usable_columns:
         raise ValueError("No usable numeric features remain for the experiment.")
-    return selected_train[usable_columns], selected_test[usable_columns], usable_columns
+
+    imputed_train, imputed_test, dropped_columns = apply_missing_value_pipeline(
+        selected_train[usable_columns],
+        selected_test[usable_columns],
+        verbose=False,
+    )
+    usable_columns = [column for column in usable_columns if column not in dropped_columns]
+    return imputed_train, imputed_test, usable_columns
 
 
 

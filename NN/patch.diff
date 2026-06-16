@@ -1,220 +1,82 @@
 diff --git a/NN/run_core.py b/NN/run_core.py
-index 9e7b12b1a8111ec1e736ba06ecbd6f8954a874f2..46332049a8a0a47406797a8b14af8c49c2b76c0b 100644
+index 46332049a8a0a47406797a8b14af8c49c2b76c0b..7343576b7db85497ebaebb0fafdaeef42882ad69 100644
 --- a/NN/run_core.py
 +++ b/NN/run_core.py
-@@ -27,50 +27,51 @@ from sklearn.inspection import permutation_importance
- from sklearn.feature_selection import mutual_info_regression
- from sklearn import utils as sklearn_utils
- from tabulate import tabulate
- import os
- from latex import *
- from plot import *
- from models import *
- from read_data import (
-     read_prep_data,
-     sync_prep_data_with_dataset,
-     prep_data_exists,
-     read_prep_metadata,
-     save_data,
-     print_path_debug,
-     ensure_dataset_csv_exists,
- )
- from refinery_variables import (
-     CONTROL_VARIABLES,
-     DIAGNOSTIC_ONLY_FEATURE_PATTERNS,
-     EARLY_VARIABLES,
-     MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS,
-     TARGET_VARIABLES,
-     base_variable_name,
-     filter_allowed_model_inputs,
-     find_leakage_columns,
-+    feature_importance_inputs_for_target,
-     leakage_pattern_matches,
-     refinery_variable_group_metadata,
-     remove_name_based_leakage_inputs,
-     validate_model_inputs,
- )
- from recommendation_engine import (
-     DEFAULT_RECOMMENDED_CONTROLS,
-     RecommendationError,
-     recommend_operating_conditions,
- )
- import inspect
- import models
- import json
- import copy
- import math
- from datetime import datetime, timezone
- from collections import OrderedDict
- import warnings
- import logging
- 
- from openpyxl.styles import Font, PatternFill, Alignment
- 
- try:
-     from xgboost import XGBRegressor
- except ImportError:
-@@ -109,55 +110,50 @@ if not logging.getLogger().handlers:
- DEBUG_PATHS = os.getenv("RUN_CORE_DEBUG_PATHS", "").strip().lower() in {"1", "true", "yes", "debug"}
- _PREP_DATA_CACHE = {}
- _VALIDATION_CACHE = set()
- _NAN_REPORT_CACHE = set()
+@@ -3448,60 +3448,74 @@ def _fit_model_design_random_forest(X_train_df, X_test_df, y_train_df, y_test_df
+     return predictions, estimator
  
  
- ANSI_RESET = "\033[0m"
- ANSI_GREEN = "\033[92m"
- ANSI_BLUE = "\033[94m"
- SAVED_RUNS_DIR = "saved_runs"
- CHECKPOINTS_DIR = "checkpoints"
- MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
- LEAKAGE_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "leakage_report.xlsx")
- FEATURE_IMPORTANCE_REPORTS_DIR = os.path.join(MODULE_DIR, "reports")
- MODEL_COMPARISON_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_comparison.xlsx")
- OPTIMIZATION_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "optimization_report.xlsx")
- OPERATOR_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "operator_report.xlsx")
- MODEL_DESIGN_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_design_experiments.xlsx")
- MODEL_B_FEATURE_IMPORTANCE_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_b_feature_importance_analysis.xlsx")
- DRIFT_ANALYSIS_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "drift_analysis_white_total_points.xlsx")
- DRIFT_ANALYSIS_PLOT_PATH = os.path.join(MODULE_DIR, "reports", "drift_analysis_white_total_points.png")
+ def _load_full_design_split_from_prep_data(X_train, X_test, y_train, y_test, prep_folder="prep_data"):
+     """Load full prepared train/test tables when available, otherwise reconstruct from current split."""
+     train_path = os.path.join(prep_folder, "train.csv")
+     test_path = os.path.join(prep_folder, "test.csv")
+     if not (os.path.isfile(train_path) and os.path.isfile(test_path)):
+         module_prep_folder = os.path.join(MODULE_DIR, prep_folder)
+         module_train_path = os.path.join(module_prep_folder, "train.csv")
+         module_test_path = os.path.join(module_prep_folder, "test.csv")
+         if os.path.isfile(module_train_path) and os.path.isfile(module_test_path):
+             train_path = module_train_path
+             test_path = module_test_path
+     outputs = list(y_train.columns)
+     if os.path.isfile(train_path) and os.path.isfile(test_path):
+         train_df = pd.read_csv(train_path)
+         test_df = pd.read_csv(test_path)
+         if all(column in train_df.columns for column in outputs) and all(column in test_df.columns for column in outputs):
+             candidate_features = [column for column in train_df.columns if column not in outputs and column in test_df.columns]
+             return train_df[candidate_features], test_df[candidate_features], train_df[outputs], test_df[outputs]
+     return X_train.copy(), X_test.copy(), y_train.copy(), y_test.copy()
  
  
- FEATURE_IMPORTANCE_TARGETS = (
-     "white_total_points",
--    "white_solution_color",
--    "white_apparent_color",
--    "white_ash",
--    "white_moisture",
--    "white_invert",
- )
+ def _prepare_model_design_feature_frame(train_df, test_df, feature_columns):
+-    """Coerce selected experiment features to numeric and drop unusable columns consistently."""
++    """Coerce and impute selected experiment features for sklearn estimators.
++
++    Step 3 and Step 5 both fit RandomForestRegressor models, which reject NaN
++    values.  The prepared refinery data can legitimately contain missing process
++    measurements, so this helper applies the same train-fitted missing-value
++    pipeline used by the main training path before returning model-design
++    matrices.
++    """
+     selected_train = train_df[list(feature_columns)].copy()
+     selected_test = test_df[list(feature_columns)].copy()
+     selected_train = coerce_refinery_numeric_frame(selected_train)
+     selected_test = coerce_refinery_numeric_frame(selected_test)
+     combined = pd.concat([selected_train, selected_test], axis=0, ignore_index=True)
+-    usable_columns = [column for column in combined.columns if combined[column].notna().any()]
++    usable_columns = [column for column in combined.columns if selected_train[column].notna().any()]
+     if not usable_columns:
+         raise ValueError("No usable numeric features remain for the experiment.")
+-    return selected_train[usable_columns], selected_test[usable_columns], usable_columns
++
++    imputed_train, imputed_test, dropped_columns = apply_missing_value_pipeline(
++        selected_train[usable_columns],
++        selected_test[usable_columns],
++        verbose=False,
++    )
++    usable_columns = [column for column in usable_columns if column not in dropped_columns]
++    return imputed_train, imputed_test, usable_columns
  
  
  
+ def _model_b_feature_importance_summary(target, model, X_test_df, y_test_series, method_name="Random Forest Importance"):
+     """Return ranked feature and category importance rows for one Model B target."""
+     raw_importance = np.asarray(model.feature_importances_, dtype=float)
+     total_importance = float(raw_importance.sum())
+     normalized = raw_importance / total_importance if total_importance > 0 else np.zeros_like(raw_importance)
+     feature_rows = []
+     for feature, importance, normalized_importance in zip(X_test_df.columns, raw_importance, normalized):
+         feature_rows.append({
+             "Target": target,
+             "Method": method_name,
+             "Feature": feature,
+             "Base Feature": base_variable_name(feature),
+             "Category": "Time" if _is_time_related_feature(feature) else "Process",
+             "Importance": float(importance),
+             "Normalized Importance": float(normalized_importance),
+         })
+     feature_table = pd.DataFrame(feature_rows).sort_values(
+         by=["Importance", "Feature"], ascending=[False, True]
+     ).reset_index(drop=True)
+     feature_table.insert(2, "Rank", np.arange(1, len(feature_table) + 1))
  
- PRESCRIPTIVE_OPTIMIZATION_VARIABLES = (
-     "lime_milk_baume",
-     "lime_alkalinity",
-     "co2_percent",
-     "carbonated_pH",
-     "sulphited_pH",
-     "sulphited_brix",
-     "standard_liquor_pH",
-     "standard_liquor_brix",
- )
- 
- OPERATOR_RECOMMENDATION_VARIABLES = DEFAULT_RECOMMENDED_CONTROLS
- 
- PRESCRIPTIVE_OPTIMIZATION_OBJECTIVES = (
-     "white_total_points",
-     "white_solution_color",
-     "white_apparent_color",
-     "white_ash",
- )
- 
-@@ -467,54 +463,51 @@ def _safe_excel_sheet_name(name):
-     cleaned = re.sub(r"[\\/*?:\[\]]+", "_", str(name)).strip() or "Sheet"
-     return cleaned[:31]
- 
- 
- def _safe_report_filename_part(name):
-     """Return a filesystem-safe filename part for a target variable."""
-     return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(name)).strip("_") or "target"
- 
- 
- def _coerce_feature_importance_source(raw_df, target, seed=None, test_size=0.25):
-     """Prepare train/holdout feature matrices without fitting on holdout rows.
- 
-     Numeric medians, categorical levels, and constant-column filtering are learned
-     from the feature-importance training split only, then applied to the
-     permutation holdout split.  This keeps preprocessing consistent with the
-     model-evaluation path and avoids letting holdout rows influence imputation
-     or encoding.
-     """
-     if seed is None:
-         seed = model_seed
-     if target not in raw_df.columns:
-         return None, None, None, None, None
- 
-     working_df = raw_df.copy().replace([np.inf, -np.inf], np.nan)
-     y = coerce_refinery_numeric_series(working_df[target])
--    feature_columns = [
--        column for column in working_df.columns
--        if column != target and not leakage_pattern_matches(column)
--    ]
-+    feature_columns = feature_importance_inputs_for_target(working_df.columns, target)
-     if not feature_columns:
-         return None, None, None, None, None
- 
-     X_raw = working_df[feature_columns].copy()
-     valid_rows = y.notna()
-     X_raw = X_raw.loc[valid_rows]
-     y = y.loc[valid_rows].astype(float)
-     if len(y) < 3:
-         return None, None, None, None, None
- 
-     if len(y) >= 8:
-         X_train_raw, X_perm_raw, y_train, y_perm = train_test_split(
-             X_raw,
-             y,
-             test_size=test_size,
-             random_state=seed,
-         )
-     else:
-         # Very small report-only datasets cannot spare a holdout; no separate
-         # test preprocessing is fitted because train and permutation data are
-         # intentionally identical in this fallback.
-         X_train_raw, X_perm_raw, y_train, y_perm = X_raw, X_raw, y, y
- 
-     encoded_train_parts = []
-     encoded_perm_parts = []
-@@ -657,50 +650,51 @@ def _build_feature_importance_tables(dataframe, target, seed=None):
-     permutation_table = _rank_importance_table(permutation_table)
-     permutation_table = permutation_table.merge(
-         permutation_std_table,
-         on="Variable",
-         how="left",
-     )[["Rank", "Variable", "Importance", "Permutation Std"]]
- 
-     mutual_information = mutual_info_regression(X_train_fi, y_train_fi, random_state=seed)
-     mi_table = _rank_importance_table(
-         _aggregate_encoded_importance(mutual_information, X_train_fi.columns, encoded_to_original)
-     )
- 
-     return {
-         "Random Forest Importance": rf_table,
-         "Extra Trees Importance": et_table,
-         "Permutation Importance": permutation_table,
-         "Mutual Information": mi_table,
-         "metadata": pd.DataFrame([
-             {
-                 "target": target,
-                 "rows_used": int(len(y_train_fi.index.union(y_perm.index))),
-                 "training_rows_used": int(len(y_train_fi)),
-                 "permutation_rows_used": int(len(y_perm)),
-                 "source_variables_ranked": int(len(set(encoded_to_original.values()))),
-                 "encoded_feature_count": int(X_train_fi.shape[1]),
-+                "feature_leakage_policy": "target_chronology_safe_inputs_only",
-                 "preprocessing_scope": "fit_on_training_split_only",
-                 "created_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-             }
-         ]),
-     }
- 
- 
- def _combine_feature_importance_ranks(tables):
-     """Create one combined table with scores/ranks from all requested methods."""
-     method_names = [
-         "Random Forest Importance",
-         "Extra Trees Importance",
-         "Permutation Importance",
-         "Mutual Information",
-     ]
-     combined = None
-     for method_name in method_names:
-         method_table = tables[method_name][["Variable", "Importance", "Rank"]].rename(
-             columns={
-                 "Importance": f"{method_name} Score",
-                 "Rank": f"{method_name} Rank",
-             }
-         )
-         combined = method_table if combined is None else combined.merge(method_table, on="Variable", how="outer")
- 
+     category_rows = []
