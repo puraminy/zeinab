@@ -1,132 +1,179 @@
-diff --git a/NN/run_core.py b/NN/run_core.py
-index bac9db538849ad719dd9ddb315f1988e7c1864e8..c352f97048dbd75167e2cd6507e91402655eb3f6 100644
---- a/NN/run_core.py
-+++ b/NN/run_core.py
-@@ -3,51 +3,51 @@ import torch
- import torch.nn as nn
- import torch.optim as optim
- from sklearn.preprocessing import StandardScaler
- from sklearn.impute import SimpleImputer
- from sklearn.model_selection import KFold, RandomizedSearchCV, train_test_split
- from sklearn.ensemble import (
-     RandomForestRegressor,
-     ExtraTreesRegressor,
-     GradientBoostingRegressor,
-     AdaBoostRegressor,
-     HistGradientBoostingRegressor,
- )
- from sklearn.neighbors import KNeighborsRegressor
- from sklearn.svm import SVR
- from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
- from sklearn.tree import DecisionTreeRegressor
- from sklearn.multioutput import MultiOutputRegressor
- from sklearn.gaussian_process import GaussianProcessRegressor
- from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
- import pandas as pd
- import numpy as np
+diff --git a/NN/preprocessing.py b/NN/preprocessing.py
+index f5872812fc86609c3373707cce137185fd62eb36..a1226b2a1224a21bd4ebad381fb63ee871d816fe 100644
+--- a/NN/preprocessing.py
++++ b/NN/preprocessing.py
+@@ -1,69 +1,76 @@
+ """Preprocessing helpers for refinery ML pipelines."""
+ 
+ import inspect
+ import logging
  import re
- from sklearn.metrics import make_scorer, r2_score
- from sklearn.inspection import permutation_importance
- from sklearn.feature_selection import mutual_info_regression
--from sklearn.utils import get_tags
-+from sklearn import utils as sklearn_utils
- from tabulate import tabulate
- import os
- from latex import *
- from plot import *
- from models import *
- from read_data import (
-     read_prep_data,
-     sync_prep_data_with_dataset,
-     prep_data_exists,
-     read_prep_metadata,
-     save_data,
-     print_path_debug,
-     ensure_dataset_csv_exists,
- )
- from refinery_variables import (
-     CONTROL_VARIABLES,
-     EARLY_VARIABLES,
-     TARGET_VARIABLES,
-     filter_allowed_model_inputs,
-     find_leakage_columns,
-     leakage_pattern_matches,
-     refinery_variable_group_metadata,
-     remove_name_based_leakage_inputs,
-     validate_model_inputs,
- )
-@@ -2781,55 +2781,69 @@ def fit_model(
-         mse = float(np.mean((predictions_np - y_test_values) ** 2))
-         r2 = safe_r2_score(y_test_values, predictions_np)
-     except ValueError as err:
-         print(f"Could not compute prediction metrics: {err}")
-         return None, None, None, model, None
  
-     optimized_inputs_report = None
-     if optimize_inputs:
-         with torch.no_grad():
-             delta = train_inputs.detach() - original_train_inputs
-             optimized_inputs_report = {
-                 "original_inputs": original_train_inputs.detach().cpu().numpy(),
-                 "optimized_inputs": train_inputs.detach().cpu().numpy(),
-                 "delta_inputs": delta.cpu().numpy(),
-                 "mean_abs_delta_per_feature": np.mean(np.abs(delta.cpu().numpy()), axis=0),
-             }
-     return predictions_np, mse, r2, model, optimized_inputs_report
+ import numpy as np
+ import pandas as pd
+ from sklearn.impute import SimpleImputer
+ 
+ LOGGER = logging.getLogger(__name__)
+ 
+-_NUMERIC_TOKEN_RE = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)")
++_NUMERIC_TOKEN_RE = re.compile(r"[+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)")
  
  
+ def coerce_refinery_numeric_series(series, column_name=None, logger=None, max_logged_rows=20):
+     """Convert refinery values to floats with robust numeric extraction.
  
- def sklearn_model_supports_multioutput(model):
-     """Return whether an sklearn-style estimator can fit a 2D target directly."""
-     estimator = model.estimator if isinstance(model, RandomizedSearchCV) else model
-     if isinstance(estimator, ExtraTreesRegressor):
-         return True
--    try:
--        tags = get_tags(estimator)
--        return bool(getattr(tags.target_tags, "multi_output", False))
--    except Exception:
--        pass
-+
-+    get_tags = getattr(sklearn_utils, "get_tags", None)
-+    if get_tags is not None:
-+        try:
-+            tags = get_tags(estimator)
-+            target_tags = getattr(tags, "target_tags", None)
-+            if target_tags is not None:
-+                return bool(getattr(target_tags, "multi_output", False))
-+        except Exception:
-+            pass
-+
-+    estimator_get_tags = getattr(estimator, "_get_tags", None)
-+    if estimator_get_tags is not None:
-+        try:
-+            tags = estimator_get_tags()
-+            return bool(tags.get("multioutput", False) or tags.get("multi_output", False))
-+        except Exception:
-+            pass
-+
-     return False
+     Persian/other text-only values such as ``بومه شیرآهک`` become NaN. Mixed
+     strings with numbers keep the first numeric token, and simple numeric ranges
+     such as ``10-12`` are converted to their midpoint.
+     """
+     logger = logger or LOGGER
+     column_label = column_name or getattr(series, "name", None) or "<unnamed>"
+     problematic = []
  
+     def _convert(index, value):
+         if pd.isna(value):
+             return np.nan
+         if isinstance(value, (int, float, np.integer, np.floating)):
+             return float(value)
  
- def fit_model_on_split(
-     model_class,
-     X_train_fold,
-     X_test_fold,
-     y_train_fold,
-     y_test_fold,
-     num_epochs,
-     hidden_sizes,
-     run=0,
-     optimization_scope="weights",
-     optimize_feature_indexes=None,
- ):
-     """Fit either an NN or sklearn model on one explicit train/test split."""
-     X_train_fold, X_test_fold, y_train_fold, y_test_fold, _dropped_missing_columns = clean_train_test_for_modeling(
-         X_train_fold,
-         X_test_fold,
-         y_train_fold,
-         y_test_fold,
-         verbose=False,
+         text = str(value).strip()
+         if not text:
+             return np.nan
+ 
+         normalized = (
+             text.replace("−", "-")
+             .replace("–", "-")
+             .replace("—", "-")
+             .replace("٫", ".")
+             .replace("٬", "")
+             .replace(",", "")
++            .strip()
+         )
++        # Common spreadsheet/export artifacts: [1.366046E1], (1.23), etc.
++        if re.fullmatch(r"\[\s*[^\[\]]+\s*\]", normalized):
++            normalized = normalized[1:-1].strip()
++        negative_parenthesized = re.fullmatch(r"\(\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*\)", normalized)
++        if negative_parenthesized:
++            return -float(negative_parenthesized.group(1))
+         direct_value = pd.to_numeric(normalized, errors="coerce")
+         if pd.notna(direct_value):
+             return float(direct_value)
+ 
+         range_match = re.fullmatch(
+             r"\s*([+-]?\d+(?:\.\d+)?)\s*-\s*([+-]?\d+(?:\.\d+)?)\s*",
+             normalized,
+         )
+         if range_match:
+             low, high = map(float, range_match.groups())
+             return (low + high) / 2.0
+ 
+         tokens = _NUMERIC_TOKEN_RE.findall(normalized)
+         if tokens:
+             return float(tokens[0])
+ 
+         problematic.append((index, value))
+         return np.nan
+ 
+     converted = pd.Series(
+         (_convert(index, value) for index, value in series.items()),
+         index=series.index,
+         name=series.name,
+         dtype="float64",
      )
-     if is_torch_model(model_class):
-         input_size = X_train_fold.shape[1]
+@@ -110,25 +117,96 @@ def median_impute_train_test(X_train, X_test, logger=None):
+         logger.warning(
+             "Columns with all training values missing will be filled with 0.0 before median imputation: %s",
+             all_missing,
+         )
+         X_train_numeric.loc[:, all_missing] = 0.0
+         X_test_numeric.loc[:, all_missing] = X_test_numeric.loc[:, all_missing].fillna(0.0)
+ 
+     imputer = make_median_imputer()
+     train_arr = imputer.fit_transform(X_train_numeric)
+     test_arr = imputer.transform(X_test_numeric)
+     X_train_imputed = pd.DataFrame(train_arr, columns=X_train_numeric.columns, index=X_train_numeric.index)
+     X_test_imputed = pd.DataFrame(test_arr, columns=X_train_numeric.columns, index=X_test_numeric.index)
+ 
+     remaining_train = int(X_train_imputed.isna().sum().sum())
+     remaining_test = int(X_test_imputed.isna().sum().sum())
+     if remaining_train or remaining_test:
+         logger.warning(
+             "Median imputation left NaNs (train=%s, test=%s); filling remaining values with 0.0.",
+             remaining_train,
+             remaining_test,
+         )
+         X_train_imputed = X_train_imputed.fillna(0.0)
+         X_test_imputed = X_test_imputed.fillna(0.0)
+ 
+     return X_train_imputed.astype(float), X_test_imputed.astype(float), imputer
++
++
++def _offending_rows_dataframe(df, mask, max_rows=5):
++    rows = df.loc[mask].head(max_rows).copy()
++    rows.insert(0, "__row_index__", rows.index)
++    return rows
++
++
++def validate_dataframe(df, name, require_numeric=True, max_rows=5):
++    """Validate a DataFrame and report shape, dtypes, NaN/inf counts, and offenders."""
++    frame = df if isinstance(df, pd.DataFrame) else pd.DataFrame(df)
++    numeric_df = frame.select_dtypes(include=[np.number])
++    non_numeric_columns = frame.columns.difference(numeric_df.columns).tolist()
++    nan_mask = frame.isna().any(axis=1)
++    inf_counts = pd.Series(dtype=int)
++    inf_mask = pd.Series(False, index=frame.index)
++    if not numeric_df.empty:
++        inf_frame = np.isinf(numeric_df.to_numpy(dtype=float))
++        inf_counts = pd.Series(inf_frame.sum(axis=0), index=numeric_df.columns)
++        inf_counts = inf_counts[inf_counts > 0]
++        inf_mask = pd.Series(inf_frame.any(axis=1), index=frame.index)
++    report = {
++        "name": name,
++        "shape": frame.shape,
++        "dtypes": {column: str(dtype) for column, dtype in frame.dtypes.items()},
++        "nan_count": int(frame.isna().sum().sum()),
++        "inf_count": int(inf_counts.sum()) if not inf_counts.empty else 0,
++        "non_numeric_columns": non_numeric_columns,
++        "sample_offending_rows": _offending_rows_dataframe(frame, nan_mask | inf_mask, max_rows=max_rows),
++    }
++    LOGGER.info(
++        "Validation %s: shape=%s nan_count=%s inf_count=%s non_numeric_columns=%s",
++        name, report["shape"], report["nan_count"], report["inf_count"], non_numeric_columns,
++    )
++    if not report["sample_offending_rows"].empty:
++        LOGGER.warning("Sample offending rows for %s:\n%s", name, report["sample_offending_rows"].to_string(index=False))
++    if require_numeric and non_numeric_columns:
++        raise ValueError(f"{name} contains non-numeric columns: {non_numeric_columns}")
++    if report["nan_count"]:
++        raise ValueError(f"{name} contains {report['nan_count']} NaN value(s).")
++    if report["inf_count"]:
++        raise ValueError(f"{name} contains {report['inf_count']} infinite value(s).")
++    return report
++
++
++def validate_numpy(arr, name, max_rows=5):
++    """Validate a numpy-like array and report shape, dtype, NaN/inf counts, and offenders."""
++    array = np.asarray(arr)
++    numeric = np.issubdtype(array.dtype, np.number)
++    coerced = array.astype(float) if numeric else pd.DataFrame(array.reshape(array.shape[0], -1) if array.ndim else [array]).apply(pd.to_numeric, errors="coerce").to_numpy()
++    nan_mask_flat = pd.isna(coerced)
++    inf_mask_flat = np.isinf(coerced) if numeric or coerced.dtype.kind in "fc" else np.zeros_like(nan_mask_flat, dtype=bool)
++    LOGGER.info("Validation %s: shape=%s dtype=%s nan_count=%s inf_count=%s", name, array.shape, array.dtype, int(nan_mask_flat.sum()), int(inf_mask_flat.sum()))
++    if (not numeric) or nan_mask_flat.any() or inf_mask_flat.any():
++        rows = np.unique(np.where((nan_mask_flat | inf_mask_flat).reshape(coerced.shape))[0])[:max_rows].tolist() if coerced.ndim else [0]
++        raise ValueError(f"{name} invalid: numeric={numeric}, offending row indexes={rows}")
++    return {"name": name, "shape": array.shape, "dtype": str(array.dtype), "nan_count": int(nan_mask_flat.sum()), "inf_count": int(inf_mask_flat.sum()), "non_numeric_columns": []}
++
++
++def validate_tensor(tensor, name, max_rows=5):
++    """Validate a torch tensor and report shape, dtype, NaN/inf counts, and offenders."""
++    import torch
++    if not torch.is_tensor(tensor):
++        raise ValueError(f"{name} is not a torch tensor.")
++    finite = torch.isfinite(tensor) if tensor.is_floating_point() or tensor.is_complex() else torch.ones_like(tensor, dtype=torch.bool)
++    bad_count = int((~finite).sum().item())
++    LOGGER.info("Validation %s: shape=%s dtype=%s nan_or_inf_count=%s", name, tuple(tensor.shape), tensor.dtype, bad_count)
++    if bad_count:
++        bad_rows = torch.unique(torch.nonzero(~finite, as_tuple=False)[:, 0])[:max_rows].cpu().tolist() if tensor.ndim else [0]
++        raise ValueError(f"{name} contains NaN or infinite values; offending row indexes={bad_rows}")
++    return {"name": name, "shape": tuple(tensor.shape), "dtype": str(tensor.dtype), "nan_count": bad_count, "inf_count": bad_count, "non_numeric_columns": []}

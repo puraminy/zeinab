@@ -81,7 +81,7 @@ The training workflow now follows industrial refinery timing.  Model inputs are 
 
 ### Leakage rule
 
-Only `EARLY_VARIABLES + CONTROL_VARIABLES` are allowed in `X_train` and `X_test`.  `TARGET_VARIABLES` and the selected output columns are blocked as model inputs, including during "all" input selection, automatic feature selection, saved-run reuse, and temporal feature engineering.  This prevents target leakage from future quality measurements into the model.
+Only `EARLY_VARIABLES + CONTROL_VARIABLES` are allowed in `X_train` and `X_test`.  `TARGET_VARIABLES` and the selected output columns are blocked as model inputs, including during "all" input selection, automatic feature selection, saved-run reuse, and temporal feature engineering.  Final white-sugar QC/scoring columns are also hard-blocked from the main predictive model: `white_total_points`, all `white_quality_*` columns, and all `white_average_*` columns.  This prevents target leakage from future quality measurements or final quality scoring into the model.
 
 ## Sequence-aware industrial learning
 
@@ -173,3 +173,13 @@ candidate, add leakage-safe temporal features where justified, and test a small
 GRU/LSTM only as a controlled benchmark after grouped time-series validation is
 available.
 
+
+## Step 3 model-design experiments
+
+The workflow now creates a dedicated Step 3 workbook at `reports/model_design_experiments.xlsx` using the same model type for all three experiments: `RandomForestRegressor`.
+
+* **Model A — FULL (leaky baseline):** uses every available prepared non-output feature and is labelled diagnostic/comparison only because target leakage may be present.
+* **Model B — CLEAN PROCESS MODEL (MAIN MODEL):** uses only leakage-safe refinery process variables plus encoded calendar/time features after applying the existing refinery leakage rules.
+* **Model C — NO TIME MODEL:** starts from Model B and removes all raw or encoded time-related columns, so the result isolates process variables without time information.
+
+The report includes experiment metadata, overall metrics, per-target metrics, and the exact feature set used by each experiment.

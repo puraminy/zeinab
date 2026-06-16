@@ -2,7 +2,9 @@ import os
 import json
 import re
 import importlib.util
+import logging
 from pathlib import Path
+import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from refinery_variables import (
@@ -16,6 +18,7 @@ ANSI_YELLOW = "\033[93m"
 ANSI_RESET = "\033[0m"
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOGGER = logging.getLogger(__name__)
 
 
 def _normalize_numeric_text(value):
@@ -96,6 +99,65 @@ def safe_numeric_conversion(df):
     return numeric_df
 
 
+
+def detect_repeated_header_rows(df):
+    """Return row indexes that exactly repeat the CSV header inside data."""
+    header = [str(col).strip() for col in df.columns]
+    repeated = []
+    for idx, row in df.iterrows():
+        values = [str(value).strip() for value in row.tolist()]
+        if values == header:
+            repeated.append(idx)
+    return repeated
+
+
+def build_data_quality_report(df, name, max_samples=5):
+    """Detect text contamination in numeric tables and repeated embedded headers."""
+    rows = []
+    repeated_headers = detect_repeated_header_rows(df)
+    if repeated_headers:
+        rows.append({
+            "table": name,
+            "column": "<row>",
+            "issue": "repeated_header_row",
+            "invalid_count": len(repeated_headers),
+            "sample_values": ["|".join(map(str, df.columns.tolist()))],
+            "row_indexes": repeated_headers[:max_samples],
+        })
+
+    for column in df.columns:
+        original = df[column]
+        normalized = original.map(_normalize_numeric_text)
+        converted = pd.to_numeric(normalized, errors="coerce")
+        invalid_mask = original.notna() & converted.isna()
+        if invalid_mask.any():
+            rows.append({
+                "table": name,
+                "column": column,
+                "issue": "non_numeric_value",
+                "invalid_count": int(invalid_mask.sum()),
+                "sample_values": original[invalid_mask].astype(str).drop_duplicates().head(max_samples).tolist(),
+                "row_indexes": original.index[invalid_mask].tolist()[:max_samples],
+            })
+    return rows
+
+
+def write_data_quality_report(report_rows, prep_folder="prep_data"):
+    """Persist a compact data-quality report for invalid numeric conversions."""
+    if not report_rows:
+        return None
+    report_dir = resolve_relative_path(os.path.join(prep_folder, "reports"))
+    os.makedirs(report_dir, exist_ok=True)
+    report_path = os.path.join(report_dir, "data_quality_report.csv")
+    pd.DataFrame(report_rows).to_csv(report_path, index=False)
+    print(f"{ANSI_YELLOW}Data-quality report written to: {report_path}{ANSI_RESET}")
+    for row in report_rows:
+        print(
+            f"{ANSI_YELLOW}  - {row['table']}.{row['column']}: {row['issue']} "
+            f"count={row['invalid_count']} samples={row['sample_values']} rows={row['row_indexes']}{ANSI_RESET}"
+        )
+    return report_path
+
 def _coerce_numeric_table(df, name):
     """Return a numeric copy of a prep-data table and report non-numeric cleanups."""
     numeric_df = safe_numeric_conversion(df)
@@ -161,9 +223,9 @@ def ensure_dataset_csv_exists(dataset_path, source_excel_path=None):
             f"file '{resolved_excel_path}' was not found to rebuild it."
         )
 
-    print(
-        "[path-debug] Dataset CSV is missing; rebuilding default sugar dataset "
-        f"from Excel report: {resolved_excel_path}"
+    LOGGER.debug(
+        "Dataset CSV is missing; rebuilding default sugar dataset from Excel report: %s",
+        resolved_excel_path,
     )
 
     try:
@@ -178,12 +240,12 @@ def ensure_dataset_csv_exists(dataset_path, source_excel_path=None):
 
     os.makedirs(os.path.dirname(resolved_dataset_path), exist_ok=True)
     data.to_csv(resolved_dataset_path, index=False)
-    print(f"[path-debug] Rebuilt dataset CSV: {resolved_dataset_path}")
+    LOGGER.debug("Rebuilt dataset CSV: %s", resolved_dataset_path)
     return resolved_dataset_path
 
 
 def print_path_debug(label, path, resolved_path=None):
-    """Print debug information for a path that may depend on the working directory."""
+    """Log debug information for a path that may depend on the working directory."""
     path_text = os.fspath(path)
     if resolved_path is None:
         resolved_path = resolve_relative_path(path_text)
@@ -191,13 +253,13 @@ def print_path_debug(label, path, resolved_path=None):
     module_candidate = (
         path_text if os.path.isabs(path_text) else os.path.abspath(os.path.join(MODULE_DIR, path_text))
     )
-    print(f"[path-debug] {label}")
-    print(f"[path-debug]   cwd: {os.getcwd()}")
-    print(f"[path-debug]   module_dir: {MODULE_DIR}")
-    print(f"[path-debug]   requested: {path_text}")
-    print(f"[path-debug]   cwd candidate: {cwd_candidate} (exists={os.path.exists(cwd_candidate)})")
-    print(f"[path-debug]   module candidate: {module_candidate} (exists={os.path.exists(module_candidate)})")
-    print(f"[path-debug]   resolved: {resolved_path} (exists={os.path.exists(resolved_path)})")
+    LOGGER.debug("%s", label)
+    LOGGER.debug("  cwd: %s", os.getcwd())
+    LOGGER.debug("  module_dir: %s", MODULE_DIR)
+    LOGGER.debug("  requested: %s", path_text)
+    LOGGER.debug("  cwd candidate: %s (exists=%s)", cwd_candidate, os.path.exists(cwd_candidate))
+    LOGGER.debug("  module candidate: %s (exists=%s)", module_candidate, os.path.exists(module_candidate))
+    LOGGER.debug("  resolved: %s (exists=%s)", resolved_path, os.path.exists(resolved_path))
     return resolved_path
 
 
@@ -258,6 +320,7 @@ def resolve_data_columns(data, output_feature=None, input_features=None, optiona
 
 TEMPORAL_DERIVED_COLUMN_PATTERN = re.compile(
     r".+__(diff|lag|seqdiff|ratio|accel|normchg|roll_mean|roll_std|roll_min|roll_max|roll_range|roll_slope)_\d+$"
+    r"|sheet_name__(date_ordinal|year|month|day|dayofyear|iso_week|elapsed_days)$"
 )
 
 
@@ -281,6 +344,139 @@ def split_base_and_derived_input_features(data_columns, input_features):
     return base_input_features, derived_input_features
 
 
+RAW_TIME_COLUMNS = ("sheet_name", "report_date_year", "report_date_month", "report_date_day", "work_day")
+SHEET_NAME_DATE_FEATURES = (
+    "year",
+    "month",
+    "day",
+    "day_of_week",
+    "month_sin",
+    "month_cos",
+    "day_sin",
+    "day_cos",
+)
+
+
+def _parse_report_date_columns(data):
+    """Return dates built from report date columns when sheet labels are not dates."""
+    year_column = next(
+        (column for column in ("report_date_year", "report_year", "year") if column in data.columns),
+        None,
+    )
+    month_column = next(
+        (column for column in ("report_date_month", "month") if column in data.columns),
+        None,
+    )
+    day_column = next(
+        (column for column in ("report_date_day", "work_day", "day") if column in data.columns),
+        None,
+    )
+    if not (year_column and month_column and day_column):
+        return None
+
+    date_parts = pd.DataFrame({
+        "year": pd.to_numeric(data[year_column], errors="coerce"),
+        "month": pd.to_numeric(data[month_column], errors="coerce"),
+        "day": pd.to_numeric(data[day_column], errors="coerce"),
+    })
+    return pd.to_datetime(date_parts, errors="coerce")
+
+
+def preprocess_calendar_features(data):
+    """Build leakage-safe calendar features and drop raw time columns.
+
+    ``sheet_name`` is the report date in some source workbooks, not a plant
+    measurement.  Newer converted CSVs may instead keep non-date sheet labels
+    plus explicit ``report_date_*`` fields.  The raw labels/date fields are
+    removed before model feature selection so models cannot memorize individual
+    sheets.  Only bounded calendar components and their cyclical encodings are
+    retained as candidate inputs.
+    """
+    transformed = data.copy()
+    parsed_dates = None
+    if "sheet_name" in transformed.columns:
+        parsed_dates = pd.to_datetime(
+            transformed["sheet_name"].astype(str).str.strip(),
+            format="%Y.%m.%d",
+            errors="coerce",
+        )
+
+    if parsed_dates is None or parsed_dates.isna().all():
+        parsed_dates = _parse_report_date_columns(transformed)
+
+    if parsed_dates is not None and parsed_dates.notna().any():
+        transformed["date"] = parsed_dates
+        transformed["year"] = parsed_dates.dt.year
+        transformed["month"] = parsed_dates.dt.month
+        transformed["day"] = parsed_dates.dt.day
+        transformed["day_of_week"] = parsed_dates.dt.dayofweek
+        transformed["month_sin"] = np.sin(2.0 * np.pi * transformed["month"] / 12.0)
+        transformed["month_cos"] = np.cos(2.0 * np.pi * transformed["month"] / 12.0)
+        transformed["day_sin"] = np.sin(2.0 * np.pi * transformed["day"] / 31.0)
+        transformed["day_cos"] = np.cos(2.0 * np.pi * transformed["day"] / 31.0)
+    elif "sheet_name" in transformed.columns:
+        print(
+            "Warning: sheet_name was present but not parseable as YYYY.MM.DD, "
+            "and no complete report_date_year/month/day fallback was available; "
+            "calendar features will be skipped."
+        )
+
+    transformed = transformed.drop(
+        columns=[column for column in RAW_TIME_COLUMNS if column in transformed.columns],
+        errors="ignore",
+    )
+    return transformed, parsed_dates
+
+
+def replace_legacy_sheet_name_input(input_features, data_columns):
+    """Replace legacy raw ``sheet_name`` requests with encoded calendar inputs."""
+    if input_features is None:
+        return None
+    calendar_features = [feature for feature in SHEET_NAME_DATE_FEATURES if feature in data_columns]
+    replaced = []
+    for feature in input_features:
+        if feature == "sheet_name":
+            replaced.extend(calendar_features)
+        else:
+            replaced.append(feature)
+    return replaced
+
+
+def add_sheet_name_datetime_features(data, input_features):
+    """Map any legacy ``sheet_name`` input request to encoded calendar features."""
+    resolved_inputs = list(input_features)
+    date_features = [feature for feature in SHEET_NAME_DATE_FEATURES if feature in data.columns]
+    if "sheet_name" in resolved_inputs:
+        resolved_inputs = [
+            feature
+            for input_name in resolved_inputs
+            for feature in (date_features if input_name == "sheet_name" else [input_name])
+        ]
+    return data, resolved_inputs, data["date"] if "date" in data.columns else None
+
+
+def chronological_train_test_split(data, output_features, input_features, parsed_dates, test_size=0.2):
+    """Split sugar data chronologically when a valid sheet/date column exists."""
+    ordered = data.assign(_sheet_name_datetime=parsed_dates).sort_values(
+        ["_sheet_name_datetime"], kind="mergesort"
+    )
+    ordered = ordered.drop(columns=["_sheet_name_datetime"]).reset_index(drop=True)
+    n_rows = len(ordered)
+    n_test = max(1, int(round(n_rows * float(test_size))))
+    if n_test >= n_rows:
+        raise ValueError(
+            f"test_size={test_size} leaves no chronological training rows for {n_rows} rows."
+        )
+    train_data = ordered.iloc[: n_rows - n_test]
+    test_data = ordered.iloc[n_rows - n_test :]
+    return (
+        train_data[input_features],
+        test_data[input_features],
+        train_data[output_features],
+        test_data[output_features],
+    )
+
+
 def prep_data_file_paths(prep_folder="prep_data"):
     """Return canonical prep_data file paths."""
     resolved_prep_folder = resolve_relative_path(prep_folder)
@@ -298,11 +494,11 @@ def prep_data_exists(prep_folder="prep_data"):
     paths = prep_data_file_paths(prep_folder)
     required = [paths["X_train"], paths["X_test"], paths["y_train"], paths["y_test"]]
     exists = all(os.path.isfile(path) for path in required)
-    print(f"[path-debug] prep_data folder resolved to: {os.path.dirname(paths['X_train'])}")
-    print(f"[path-debug] prep_data required files exist: {exists}")
+    LOGGER.debug("prep_data folder resolved to: %s", os.path.dirname(paths['X_train']))
+    LOGGER.debug("prep_data required files exist: %s", exists)
     if not exists:
         missing = [path for path in required if not os.path.isfile(path)]
-        print(f"[path-debug] prep_data missing required files: {missing}")
+        LOGGER.debug("prep_data missing required files: %s", missing)
     return exists
 
 
@@ -688,8 +884,10 @@ def prepare_data_from_file(
     dataset_path = print_path_debug("prepare_data_from_file dataset", dataset_path)
     dataset_path = ensure_dataset_csv_exists(dataset_path)
 
-    print(f"[path-debug] Reading raw dataset CSV: {dataset_path}")
+    LOGGER.debug("Reading raw dataset CSV: %s", dataset_path)
     data = pd.read_csv(dataset_path)
+    data, parsed_sheet_dates = preprocess_calendar_features(data)
+    input_features = replace_legacy_sheet_name_input(input_features, data.columns)
     base_input_features, requested_derived_features = split_base_and_derived_input_features(
         data.columns, input_features
     )
@@ -698,6 +896,10 @@ def prepare_data_from_file(
         output_feature,
         base_input_features,
         optional_future_quality_inputs=optional_future_quality_inputs,
+    )
+    data, input_features, _legacy_parsed_sheet_dates = add_sheet_name_datetime_features(
+        data,
+        input_features,
     )
     data, input_features = apply_temporal_feature_engineering(
         data=data,
@@ -724,17 +926,33 @@ def prepare_data_from_file(
         input_features = list(base_input_features) + list(requested_derived_features)
     validate_model_inputs(input_features, output_features=output_features, optional_future_quality_inputs=optional_future_quality_inputs)
 
-    X = data[input_features]
-    y = data[output_features]
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state
-    )
+    if parsed_sheet_dates is not None:
+        split_dates = parsed_sheet_dates
+    if parsed_sheet_dates is not None and split_dates.notna().any():
+        X_train, X_test, y_train, y_test = chronological_train_test_split(
+            data,
+            output_features,
+            input_features,
+            split_dates,
+            test_size=test_size,
+        )
+        split_strategy = "chronological_by_sheet_name"
+    else:
+        X = data[input_features]
+        y = data[output_features]
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=random_state
+        )
+        split_strategy = "random_train_test_split"
 
     metadata = {
         "dataset_path": dataset_path,
         "output_features": list(output_features),
         "input_features": list(input_features),
+        "sheet_name_datetime_features": list(SHEET_NAME_DATE_FEATURES)
+        if parsed_sheet_dates is not None
+        else [],
+        "split_strategy": split_strategy,
         "optional_future_quality_inputs": list(optional_future_quality_inputs or []),
         "sequential_features": list(sequential_features or []),
         "sequential_groups": [list(group) for group in (sequential_groups or [])],
@@ -777,8 +995,10 @@ def sync_prep_data_with_dataset(
     dataset_path = print_path_debug("sync_prep_data_with_dataset dataset", dataset_path)
     dataset_path = ensure_dataset_csv_exists(dataset_path)
 
-    print(f"[path-debug] Reading raw dataset CSV for prep_data sync: {dataset_path}")
+    LOGGER.debug("Reading raw dataset CSV for prep_data sync: %s", dataset_path)
     data = pd.read_csv(dataset_path)
+    data, _parsed_sheet_dates = preprocess_calendar_features(data)
+    input_features = replace_legacy_sheet_name_input(input_features, data.columns)
     base_input_features, requested_derived_features = split_base_and_derived_input_features(
         data.columns, input_features
     )
@@ -787,6 +1007,10 @@ def sync_prep_data_with_dataset(
         output_feature,
         base_input_features,
         optional_future_quality_inputs=optional_future_quality_inputs,
+    )
+    data, input_features, _parsed_sheet_dates = add_sheet_name_datetime_features(
+        data,
+        input_features,
     )
     _, input_features = apply_temporal_feature_engineering(
         data=data,
@@ -874,14 +1098,40 @@ def read_prep_data(inputs=None, prep_folder="prep_data", optional_future_quality
         if not os.path.isfile(file_path):
             raise FileNotFoundError(f"Required file '{file_path}' not found in '{prep_folder}'.")
 
-    print(f"[path-debug] Reading prep_data CSV: {X_train_path}")
+    LOGGER.debug("Reading prep_data CSV: %s", X_train_path)
     X_train_full = pd.read_csv(X_train_path)
-    print(f"[path-debug] Reading prep_data CSV: {X_test_path}")
+    LOGGER.debug("Reading prep_data CSV: %s", X_test_path)
     X_test_full = pd.read_csv(X_test_path)
-    print(f"[path-debug] Reading prep_data CSV: {y_train_path}")
+    LOGGER.debug("Reading prep_data CSV: %s", y_train_path)
     y_train = pd.read_csv(y_train_path)
-    print(f"[path-debug] Reading prep_data CSV: {y_test_path}")
+    LOGGER.debug("Reading prep_data CSV: %s", y_test_path)
     y_test = pd.read_csv(y_test_path)
+
+    quality_rows = []
+    quality_rows.extend(build_data_quality_report(X_train_full, "X_train"))
+    quality_rows.extend(build_data_quality_report(X_test_full, "X_test"))
+    quality_rows.extend(build_data_quality_report(y_train, "y_train"))
+    quality_rows.extend(build_data_quality_report(y_test, "y_test"))
+    repeated_indexes_by_table = {
+        "X_train": detect_repeated_header_rows(X_train_full),
+        "X_test": detect_repeated_header_rows(X_test_full),
+        "y_train": detect_repeated_header_rows(y_train),
+        "y_test": detect_repeated_header_rows(y_test),
+    }
+    if quality_rows:
+        write_data_quality_report(quality_rows, prep_folder=prep_folder)
+    train_repeated_indexes = sorted(
+        set(repeated_indexes_by_table["X_train"]).union(repeated_indexes_by_table["y_train"])
+    )
+    test_repeated_indexes = sorted(
+        set(repeated_indexes_by_table["X_test"]).union(repeated_indexes_by_table["y_test"])
+    )
+    if train_repeated_indexes:
+        X_train_full = X_train_full.drop(index=train_repeated_indexes, errors="ignore").reset_index(drop=True)
+        y_train = y_train.drop(index=train_repeated_indexes, errors="ignore").reset_index(drop=True)
+    if test_repeated_indexes:
+        X_test_full = X_test_full.drop(index=test_repeated_indexes, errors="ignore").reset_index(drop=True)
+        y_test = y_test.drop(index=test_repeated_indexes, errors="ignore").reset_index(drop=True)
 
     if list(X_train_full.columns) != list(X_test_full.columns):
         train_only = [col for col in X_train_full.columns if col not in X_test_full.columns]

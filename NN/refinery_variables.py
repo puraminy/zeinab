@@ -11,8 +11,15 @@ import re
 
 # 1) Variables available early in the process before downstream quality is known.
 EARLY_VARIABLES = (
-    "sheet_name",
     "shift_name",
+    "year",
+    "month",
+    "day",
+    "day_of_week",
+    "month_sin",
+    "month_cos",
+    "day_sin",
+    "day_cos",
     "raw_sugar_color",
     "raw_syrup_brix",
     "raw_syrup_color",
@@ -32,6 +39,14 @@ CONTROL_VARIABLES = (
     "sulphited_brix",
     "standard_liquor_pH",
     "standard_liquor_brix",
+    "boiler_pH",
+    "boiling_r1_pol",
+)
+
+PROCESS_CONTROL_PREFIXES = (
+    "boiler",
+    "boiling",
+    "wastewater",
 )
 
 
@@ -42,11 +57,7 @@ TARGET_VARIABLES = (
     "filtercake_moisture",
     "filtercake_sugar",
     "sweetwater_brix",
-    "sulphited_pH",
-    "sulphited_brix",
     "sulphited_color",
-    "standard_liquor_pH",
-    "standard_liquor_brix",
     "standard_liquor_color",
     "white_total_points",
 )
@@ -63,11 +74,81 @@ LEAKAGE_NAME_PATTERNS = (
     "target",
 )
 
+# 4) Leakage-prone feature set for the main model.
+#
+# These final/QC white-sugar fields are derived from quality scoring or final
+# quality-control calculations. They are hard-blocked from the main predictive
+# model input matrix, even if someone tries to opt them in as future-quality
+# inputs, because they would leak post-process quality information.
+MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS = (
+    "white_total_points",
+    "white_quality_",
+    "white_average_",
+)
+
+# 5) Optional diagnostic-only feature set.
+#
+# These columns may be used only in a separate diagnostic/comparison model that
+# is explicitly labeled as leakage-prone. Keeping this alias separate from the
+# main-model exclusion rule makes the policy visible to callers without allowing
+# these columns through normal training validation.
+DIAGNOSTIC_ONLY_FEATURE_PATTERNS = MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS
+
+
+
+# 6) Target-specific feature-importance chronology.
+#
+# Feature-importance reports must explain a target only with measurements that
+# would already exist before that target is measured.  For white_total_points,
+# this intentionally stops at evaporation/boiling and excludes any final white
+# sugar QC/scoring fields or other contemporaneous/downstream targets.
+PRE_TARGET_FEATURE_IMPORTANCE_INPUTS = {
+    "white_total_points": (
+        # Raw material
+        "raw_sugar_color",
+        "raw_sugar_purity",
+        "raw_sugar_moisture",
+        # Stage 2: Clarification
+        "lime_alkalinity",
+        "carbonated_pH",
+        "co2_percent",
+        # Stage 3: Sulphitation
+        "sulphited_color",
+        # Stage 4: Evaporation/Boiling
+        "boiler_pH",
+    ),
+}
+
+# Backward-compatible name used by the existing leakage checks.
+LEAKAGE_RISK_FEATURE_PATTERNS = MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS
+
+
+def _matches_exact_or_prefix(column_name, patterns):
+    """Return True when a base column equals an exact rule or starts with a prefix rule."""
+    lower_name = str(base_variable_name(column_name)).lower()
+    return any(lower_name == pattern or lower_name.startswith(pattern) for pattern in patterns)
+
+
+def is_main_model_excluded_feature(column_name):
+    """Return True for features that must be removed from the main model."""
+    return _matches_exact_or_prefix(column_name, MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS)
+
+
+def is_diagnostic_only_feature(column_name):
+    """Return True for optional leakage-prone features reserved for diagnostics."""
+    return _matches_exact_or_prefix(column_name, DIAGNOSTIC_ONLY_FEATURE_PATTERNS)
+
 
 def leakage_pattern_matches(column_name):
-    """Return leakage marker substrings found in a column name."""
-    lower_name = str(column_name).lower()
-    return [pattern for pattern in LEAKAGE_NAME_PATTERNS if pattern in lower_name]
+    """Return leakage marker substrings/prefixes found in a column name."""
+    lower_name = str(base_variable_name(column_name)).lower()
+    matches = [pattern for pattern in LEAKAGE_NAME_PATTERNS if pattern in lower_name]
+    matches.extend(
+        pattern
+        for pattern in LEAKAGE_RISK_FEATURE_PATTERNS
+        if lower_name == pattern or lower_name.startswith(pattern)
+    )
+    return matches
 
 
 def is_name_based_leakage_column(column_name):
@@ -111,6 +192,7 @@ def _canonical_name(name):
 
 
 _ALLOWED_CANONICAL = {_canonical_name(name) for name in _ALLOWED_INPUTS}
+_PROCESS_CONTROL_PREFIX_CANONICAL = tuple(_canonical_name(name) for name in PROCESS_CONTROL_PREFIXES)
 _TARGET_CANONICAL = {_canonical_name(name) for name in _TARGETS}
 
 
@@ -138,6 +220,42 @@ def _optional_future_quality_input_set(optional_future_quality_inputs=None):
     return {_canonical_name(name) for name in (optional_future_quality_inputs or [])}
 
 
+SAFE_INPUT_VARIABLES = tuple(EARLY_VARIABLES) + tuple(CONTROL_VARIABLES)
+FUTURE_INFORMATION_LEAKAGE_VARIABLES = (
+    "filtercake_moisture",
+    "filtercake_sugar",
+    "sweetwater_brix",
+    "sulphited_color",
+    "standard_liquor_color",
+    "white_total_points",
+)
+BORDERLINE_CONFIRMATION_VARIABLES = ()
+VARIABLE_CHRONOLOGY_CLASSIFICATION = {
+    **{name: "A_safe_input" for name in SAFE_INPUT_VARIABLES},
+    **{name: "B_future_information_leakage" for name in FUTURE_INFORMATION_LEAKAGE_VARIABLES},
+    **{name: "C_borderline_requires_user_confirmation" for name in BORDERLINE_CONFIRMATION_VARIABLES},
+}
+
+
+def classify_refinery_variable(column_name):
+    """Classify a process variable by refinery chronology for leakage prevention.
+
+    A = safe early/control input. B = future/downstream information that must be
+    blocked from X. C = borderline, requiring explicit user confirmation before
+    diagnostic-only use. Engineered columns inherit the base variable class.
+    """
+    base_name = base_variable_name(column_name)
+    canonical_base = _canonical_name(base_name)
+    for variable, classification in VARIABLE_CHRONOLOGY_CLASSIFICATION.items():
+        if _canonical_name(variable) == canonical_base:
+            return classification
+    if canonical_base.startswith(_PROCESS_CONTROL_PREFIX_CANONICAL):
+        return "A_safe_input"
+    if leakage_pattern_matches(column_name) or is_main_model_excluded_feature(column_name):
+        return "B_future_information_leakage"
+    return "C_borderline_requires_user_confirmation"
+
+
 def is_allowed_model_input(column_name, output_features=None, optional_future_quality_inputs=None):
     """Return True for standard inputs plus explicitly opted-in future-quality inputs."""
     output_features = set(output_features or [])
@@ -148,13 +266,19 @@ def is_allowed_model_input(column_name, output_features=None, optional_future_qu
     if is_name_based_leakage_column(column_name):
         return False
 
+    # Known TARGET_VARIABLES are never allowed into the main model, even if
+    # they also appear in a legacy control list or an optional input override.
+    if is_target_variable(column_name, output_features=output_features):
+        return False
+
+    if classify_refinery_variable(column_name) == "B_future_information_leakage":
+        return False
+
     optional_quality_inputs = _optional_future_quality_input_set(optional_future_quality_inputs)
     if _canonical_name(base_name) in optional_quality_inputs:
         return True
 
-    if is_target_variable(column_name, output_features=output_features):
-        return False
-    return _canonical_name(base_name) in _ALLOWED_CANONICAL
+    return classify_refinery_variable(column_name) == "A_safe_input"
 
 
 def filter_allowed_model_inputs(columns, output_features=None, optional_future_quality_inputs=None):
@@ -168,6 +292,50 @@ def filter_allowed_model_inputs(columns, output_features=None, optional_future_q
         )
     ]
 
+
+def feature_importance_inputs_for_target(columns, target):
+    """Return target-chronology-safe feature-importance inputs.
+
+    For targets with an explicit chronology policy, only columns listed for that
+    target are eligible.  Matching is done against base variable names so future
+    engineered variants inherit the same before-target restriction.  Other
+    targets keep the existing generic leakage-name filtering behavior.
+    """
+    allowed_for_target = PRE_TARGET_FEATURE_IMPORTANCE_INPUTS.get(target)
+    if not allowed_for_target:
+        return [column for column in columns if column != target and not leakage_pattern_matches(column)]
+
+    allowed_canonical = {_canonical_name(name) for name in allowed_for_target}
+    return [
+        column for column in columns
+        if column != target
+        and _canonical_name(base_variable_name(column)) in allowed_canonical
+        and not leakage_pattern_matches(column)
+    ]
+
+
+
+def leakage_block_reasons(column_name, output_features=None, optional_future_quality_inputs=None):
+    """Return exact policy reasons that would block a feature from main-model X."""
+    reasons = []
+    base_name = base_variable_name(column_name)
+    output_features = set(output_features or [])
+    pattern_matches = leakage_pattern_matches(column_name)
+    if pattern_matches:
+        reasons.append("name pattern: " + ", ".join(pattern_matches))
+    if column_name in output_features or base_name in output_features:
+        reasons.append("selected output target")
+    elif is_target_variable(column_name, output_features=output_features):
+        reasons.append("TARGET_VARIABLES future/process output")
+    chronology_class = classify_refinery_variable(column_name)
+    if chronology_class == "B_future_information_leakage" and "TARGET_VARIABLES future/process output" not in reasons:
+        reasons.append("future/downstream refinery chronology leakage")
+    optional_quality_inputs = _optional_future_quality_input_set(optional_future_quality_inputs)
+    if _canonical_name(base_name) in optional_quality_inputs and not reasons:
+        return ["explicitly allowed non-target diagnostic input"]
+    if chronology_class == "C_borderline_requires_user_confirmation" and not pattern_matches and not is_target_variable(column_name, output_features=output_features):
+        reasons.append("borderline or unknown chronology; requires explicit confirmation")
+    return reasons
 
 def find_leakage_columns(input_features, output_features=None, optional_future_quality_inputs=None):
     """Identify selected inputs that would leak future quality information."""
@@ -204,7 +372,8 @@ def validate_model_inputs(input_features, output_features=None, optional_future_
             "TARGET_VARIABLES and must be predicted, not used as inputs unless "
             "explicitly selected in run.py's Future Quality Variables prompt "
             f"and not also selected as output targets: {targets}. Columns containing "
-            f"automatic leakage markers are always blocked from X: {list(LEAKAGE_NAME_PATTERNS)}."
+            f"automatic leakage markers are always blocked from X: "
+            f"{list(LEAKAGE_NAME_PATTERNS) + list(LEAKAGE_RISK_FEATURE_PATTERNS)}."
         )
     return list(input_features)
 
@@ -214,11 +383,31 @@ def refinery_variable_group_metadata():
     return {
         "EARLY_VARIABLES": list(EARLY_VARIABLES),
         "CONTROL_VARIABLES": list(CONTROL_VARIABLES),
+        "PROCESS_CONTROL_PREFIXES": list(PROCESS_CONTROL_PREFIXES),
         "TARGET_VARIABLES": list(TARGET_VARIABLES),
-        "input_rule": "Model inputs = EARLY_VARIABLES + CONTROL_VARIABLES only.",
+        "SAFE_INPUT_VARIABLES": list(SAFE_INPUT_VARIABLES),
+        "FUTURE_INFORMATION_LEAKAGE_VARIABLES": list(FUTURE_INFORMATION_LEAKAGE_VARIABLES),
+        "BORDERLINE_CONFIRMATION_VARIABLES": list(BORDERLINE_CONFIRMATION_VARIABLES),
+        "MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS": list(MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS),
+        "DIAGNOSTIC_ONLY_FEATURE_PATTERNS": list(DIAGNOSTIC_ONLY_FEATURE_PATTERNS),
+        "PRE_TARGET_FEATURE_IMPORTANCE_INPUTS": {
+            target: list(inputs)
+            for target, inputs in PRE_TARGET_FEATURE_IMPORTANCE_INPUTS.items()
+        },
+        "input_rule": "Model inputs = EARLY_VARIABLES + CONTROL_VARIABLES plus process-control prefixes (boiler, boiling, wastewater).",
+        "main_model_exclusion_rule": (
+            "Remove white_total_points plus every column whose base name starts "
+            "with white_quality_ or white_average_ from the main model input set."
+        ),
+        "diagnostic_only_rule": (
+            "The excluded white-sugar scoring/average fields may be used only in "
+            "a separate diagnostic comparison model that is clearly labeled as "
+            "leakage-prone; they are never allowed through main training validation."
+        ),
         "leakage_rule": (
             "TARGET_VARIABLES, selected outputs, and columns containing "
-            "average_to_date/average_two_shifts/moving_average/future/target "
-            "are never allowed as inputs."
+            "average_to_date/average_two_shifts/moving_average/future/target, "
+            "or final white-sugar QC fields (white_total_points, white_quality_*, "
+            "white_average_*) are never allowed as inputs."
         ),
     }
