@@ -1,303 +1,373 @@
 diff --git a/NN/run_core.py b/NN/run_core.py
-index f47e7a6e6a594a1b1af20c3f9f522eec69fd0009..d962344d201bf6c64547fcb15f29ee257e6be777 100644
+index d962344d201bf6c64547fcb15f29ee257e6be777..0107c20375545bfe716a0bd359e8fa6f490c6887 100644
 --- a/NN/run_core.py
 +++ b/NN/run_core.py
-@@ -2939,50 +2939,125 @@ def cross_validate_model(
-             print(
-                 f"CV fold {fold_index} skipped: prediction shape {prediction_values.shape} "
-                 f"does not match target shape {y_val_values.shape}."
-             )
-             continue
-         r2_scores.append(float(r2) * 100.0)
-         rmse_scores.append(float(np.sqrt(mse)))
-         mae_scores.append(float(np.mean(np.abs(prediction_values - y_val_values))))
+@@ -92,50 +92,51 @@ for _numpy_alias, _numpy_type in {
+     "bool": bool,
+     "int": int,
+     "float": float,
+ }.items():
+     if not hasattr(np, _numpy_alias):
+         setattr(np, _numpy_alias, _numpy_type)
  
-     if not r2_scores:
-         return None
+ warnings.filterwarnings(
+     "ignore",
+     message="X does not have valid feature names, but .* was fitted with feature names",
+     category=UserWarning,
+ )
  
-     return {
-         "folds": len(r2_scores),
-         "mean_r2": float(np.mean(r2_scores)),
-         "std_r2": float(np.std(r2_scores)),
-         "mean_rmse": float(np.mean(rmse_scores)),
-         "std_rmse": float(np.std(rmse_scores)),
-         "mean_mae": float(np.mean(mae_scores)),
-         "std_mae": float(np.std(mae_scores)),
-         "r2_scores": r2_scores,
-         "rmse_scores": rmse_scores,
-         "mae_scores": mae_scores,
-     }
+ ANSI_RESET = "\033[0m"
+ ANSI_GREEN = "\033[92m"
+ ANSI_BLUE = "\033[94m"
+ SAVED_RUNS_DIR = "saved_runs"
+ CHECKPOINTS_DIR = "checkpoints"
+ MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+ LEAKAGE_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "leakage_report.xlsx")
+ FEATURE_IMPORTANCE_REPORTS_DIR = os.path.join(MODULE_DIR, "reports")
+ MODEL_COMPARISON_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_comparison.xlsx")
+ OPTIMIZATION_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "optimization_report.xlsx")
+ OPERATOR_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "operator_report.xlsx")
+ MODEL_DESIGN_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_design_experiments.xlsx")
++MODEL_B_FEATURE_IMPORTANCE_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_b_feature_importance_analysis.xlsx")
+ 
+ 
+ FEATURE_IMPORTANCE_TARGETS = (
+     "white_total_points",
+     "white_solution_color",
+     "white_apparent_color",
+     "white_ash",
+     "white_moisture",
+     "white_invert",
+ )
+ 
+ 
+ 
+ 
+ PRESCRIPTIVE_OPTIMIZATION_VARIABLES = (
+     "lime_milk_baume",
+     "lime_alkalinity",
+     "co2_percent",
+     "carbonated_pH",
+     "sulphited_pH",
+     "sulphited_brix",
+     "standard_liquor_pH",
+     "standard_liquor_brix",
+ )
+ 
+@@ -3407,50 +3408,264 @@ def _load_full_design_split_from_prep_data(X_train, X_test, y_train, y_test, pre
+             train_path = module_train_path
+             test_path = module_test_path
+     outputs = list(y_train.columns)
+     if os.path.isfile(train_path) and os.path.isfile(test_path):
+         train_df = pd.read_csv(train_path)
+         test_df = pd.read_csv(test_path)
+         if all(column in train_df.columns for column in outputs) and all(column in test_df.columns for column in outputs):
+             candidate_features = [column for column in train_df.columns if column not in outputs and column in test_df.columns]
+             return train_df[candidate_features], test_df[candidate_features], train_df[outputs], test_df[outputs]
+     return X_train.copy(), X_test.copy(), y_train.copy(), y_test.copy()
+ 
+ 
+ def _prepare_model_design_feature_frame(train_df, test_df, feature_columns):
+     """Coerce selected experiment features to numeric and drop unusable columns consistently."""
+     selected_train = train_df[list(feature_columns)].copy()
+     selected_test = test_df[list(feature_columns)].copy()
+     selected_train = coerce_refinery_numeric_frame(selected_train)
+     selected_test = coerce_refinery_numeric_frame(selected_test)
+     combined = pd.concat([selected_train, selected_test], axis=0, ignore_index=True)
+     usable_columns = [column for column in combined.columns if combined[column].notna().any()]
+     if not usable_columns:
+         raise ValueError("No usable numeric features remain for the experiment.")
+     return selected_train[usable_columns], selected_test[usable_columns], usable_columns
+ 
  
 +
-+def compute_holdout_metrics(y_true, y_pred):
-+    """Compute required holdout regression metrics: R² (%), RMSE, and MAE."""
-+    y_true_values = as_2d_float_array(y_true, "y_true")
-+    prediction_values = as_2d_float_array(y_pred, "y_pred")
-+    if y_true_values.shape != prediction_values.shape:
-+        raise ValueError(
-+            f"Prediction shape {prediction_values.shape} does not match target shape {y_true_values.shape}."
++def _model_b_feature_importance_summary(target, model, X_test_df, y_test_series, method_name="Random Forest Importance"):
++    """Return ranked feature and category importance rows for one Model B target."""
++    raw_importance = np.asarray(model.feature_importances_, dtype=float)
++    total_importance = float(raw_importance.sum())
++    normalized = raw_importance / total_importance if total_importance > 0 else np.zeros_like(raw_importance)
++    feature_rows = []
++    for feature, importance, normalized_importance in zip(X_test_df.columns, raw_importance, normalized):
++        feature_rows.append({
++            "Target": target,
++            "Method": method_name,
++            "Feature": feature,
++            "Base Feature": base_variable_name(feature),
++            "Category": "Time" if _is_time_related_feature(feature) else "Process",
++            "Importance": float(importance),
++            "Normalized Importance": float(normalized_importance),
++        })
++    feature_table = pd.DataFrame(feature_rows).sort_values(
++        by=["Importance", "Feature"], ascending=[False, True]
++    ).reset_index(drop=True)
++    feature_table.insert(2, "Rank", np.arange(1, len(feature_table) + 1))
++
++    category_rows = []
++    for category, category_table in feature_table.groupby("Category", dropna=False):
++        category_rows.append({
++            "Target": target,
++            "Method": method_name,
++            "Category": category,
++            "Feature Count": int(len(category_table)),
++            "Total Importance": float(category_table["Importance"].sum()),
++            "Normalized Importance": float(category_table["Normalized Importance"].sum()),
++        })
++    category_table = pd.DataFrame(category_rows)
++
++    permutation_table = pd.DataFrame()
++    try:
++        permutation = permutation_importance(
++            model,
++            X_test_df,
++            y_test_series,
++            n_repeats=10,
++            random_state=model_seed,
++            n_jobs=-1,
++            scoring="r2",
 +        )
-+    r2 = safe_r2_score(y_true_values, prediction_values)
-+    mse = float(np.mean((prediction_values - y_true_values) ** 2))
-+    return {
-+        "r2": float(r2) * 100.0 if r2 is not None else np.nan,
-+        "rmse": float(np.sqrt(mse)),
-+        "mae": float(np.mean(np.abs(prediction_values - y_true_values))),
-+    }
++        permutation_total = float(np.abs(permutation.importances_mean).sum())
++        permutation_normalized = (
++            np.abs(permutation.importances_mean) / permutation_total
++            if permutation_total > 0
++            else np.zeros_like(permutation.importances_mean)
++        )
++        permutation_table = pd.DataFrame({
++            "Target": target,
++            "Method": "Permutation Importance",
++            "Feature": list(X_test_df.columns),
++            "Base Feature": [base_variable_name(feature) for feature in X_test_df.columns],
++            "Category": ["Time" if _is_time_related_feature(feature) else "Process" for feature in X_test_df.columns],
++            "Importance": permutation.importances_mean,
++            "Permutation Std": permutation.importances_std,
++            "Normalized Absolute Importance": permutation_normalized,
++        }).sort_values(by=["Importance", "Feature"], ascending=[False, True]).reset_index(drop=True)
++        permutation_table.insert(2, "Rank", np.arange(1, len(permutation_table) + 1))
++    except Exception as err:
++        permutation_table = pd.DataFrame([{
++            "Target": target,
++            "Method": "Permutation Importance",
++            "Feature": "SKIPPED",
++            "Importance": np.nan,
++            "Permutation Std": np.nan,
++            "Normalized Absolute Importance": np.nan,
++            "Error": str(err),
++        }])
++
++    return feature_table, category_table, permutation_table
 +
 +
-+def evaluation_split_indices(n_rows, test_size=0.2):
-+    """Return identical random and chronological train/test indexes for all models."""
-+    if n_rows < 2:
-+        raise ValueError("At least two rows are required for train/test evaluation.")
-+    row_indexes = np.arange(n_rows)
-+    random_train_idx, random_test_idx = train_test_split(
-+        row_indexes,
-+        test_size=test_size,
-+        random_state=data_seed,
-+        shuffle=True,
-+    )
-+    n_test = max(1, int(round(n_rows * float(test_size))))
-+    if n_test >= n_rows:
-+        raise ValueError(f"test_size={test_size} leaves no chronological training rows for {n_rows} rows.")
-+    time_train_idx = row_indexes[: n_rows - n_test]
-+    time_test_idx = row_indexes[n_rows - n_test :]
-+    return {
-+        "random": (random_train_idx, random_test_idx),
-+        "time": (time_train_idx, time_test_idx),
-+    }
++def _try_model_b_shap_summary(target, model, X_test_df):
++    """Compute a compact Model B SHAP importance table when shap is installed."""
++    import importlib.util
++    if importlib.util.find_spec("shap") is None:
++        return pd.DataFrame([{"Target": target, "Status": "skipped - shap is not installed"}])
++    try:
++        import shap
++        X_explain = X_test_df.head(min(SHAP_MAX_EXPLAIN_SAMPLES, len(X_test_df)))
++        explainer = shap.TreeExplainer(model)
++        shap_values = _coerce_shap_values_for_single_target(
++            explainer.shap_values(X_explain),
++            len(X_explain.columns),
++        )
++        mean_abs_shap = np.abs(shap_values).mean(axis=0)
++        total = float(mean_abs_shap.sum())
++        normalized = mean_abs_shap / total if total > 0 else np.zeros_like(mean_abs_shap)
++        table = pd.DataFrame({
++            "Target": target,
++            "Method": "SHAP Mean Absolute Value",
++            "Feature": list(X_explain.columns),
++            "Base Feature": [base_variable_name(feature) for feature in X_explain.columns],
++            "Category": ["Time" if _is_time_related_feature(feature) else "Process" for feature in X_explain.columns],
++            "Mean(|SHAP|)": mean_abs_shap,
++            "Normalized Importance": normalized,
++        }).sort_values(by=["Mean(|SHAP|)", "Feature"], ascending=[False, True]).reset_index(drop=True)
++        table.insert(2, "Rank", np.arange(1, len(table) + 1))
++        return table
++    except Exception as err:
++        return pd.DataFrame([{"Target": target, "Status": f"skipped - {err}"}])
 +
 +
-+def evaluate_model_on_required_splits(
-+    model_class,
-+    num_epochs,
-+    hidden_sizes,
-+    features=None,
-+    optimization_scope="weights",
-+    optimize_feature_indexes=None,
-+    test_size=0.2,
++def generate_model_b_feature_importance_analysis(
++    X_train,
++    X_test,
++    y_train,
++    y_test,
++    report_path=MODEL_B_FEATURE_IMPORTANCE_REPORT_PATH,
 +):
-+    """Evaluate one model/configuration on identical random and time-based splits."""
-+    X_train, X_test, y_train, y_test = read_prep_data(features)
-+    full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
-+    full_y = pd.concat([y_train, y_test], axis=0).reset_index(drop=True)
-+    split_indexes = evaluation_split_indices(len(full_X), test_size=test_size)
-+    metrics = {}
-+    for split_name, (train_idx, test_idx) in split_indexes.items():
-+        predictions, _mse, _r2 = fit_model_on_split(
-+            model_class,
-+            full_X.iloc[train_idx],
-+            full_X.iloc[test_idx],
-+            full_y.iloc[train_idx],
-+            full_y.iloc[test_idx],
-+            num_epochs,
-+            hidden_sizes,
-+            run=0 if split_name == "random" else 1,
-+            optimization_scope=optimization_scope,
-+            optimize_feature_indexes=optimize_feature_indexes,
++    """Compute Step 5 feature importance for Model B and test time-vs-process dominance.
++
++    Model B is the leakage-safe process feature set plus encoded time features.
++    The report ranks feature importance per target, aggregates importance into
++    Time and Process categories, and marks the category with the larger share as
++    dominant for each target.
++    """
++    full_X_train, full_X_test, full_y_train, full_y_test = _load_full_design_split_from_prep_data(
++        X_train, X_test, y_train, y_test
++    )
++    all_full_features = [column for column in full_X_train.columns if column in full_X_test.columns]
++    model_b_features = filter_allowed_model_inputs(
++        all_full_features,
++        output_features=list(full_y_train.columns),
++        optional_future_quality_inputs=None,
++    )
++    if not model_b_features:
++        print("Model B feature-importance analysis skipped: no Model B features are available.")
++        return None
++    exp_X_train, exp_X_test, usable_features = _prepare_model_design_feature_frame(
++        full_X_train, full_X_test, model_b_features
++    )
++
++    feature_tables = []
++    category_tables = []
++    permutation_tables = []
++    shap_tables = []
++    conclusion_rows = []
++    print("\n================= Step 5 Model B Feature Importance =================")
++    for target in full_y_train.columns:
++        y_train_target = coerce_refinery_numeric_series(full_y_train[target])
++        y_test_target = coerce_refinery_numeric_series(full_y_test[target])
++        train_mask = y_train_target.notna()
++        test_mask = y_test_target.notna()
++        if train_mask.sum() < 2 or test_mask.sum() < 1:
++            conclusion_rows.append({"Target": target, "Status": "skipped - insufficient valid target rows"})
++            continue
++        model = RandomForestRegressor(
++            n_estimators=500,
++            random_state=model_seed,
++            n_jobs=-1,
++            min_samples_leaf=2,
 +        )
-+        if predictions is None:
-+            metrics[split_name] = {"r2": np.nan, "rmse": np.nan, "mae": np.nan}
-+        else:
-+            metrics[split_name] = compute_holdout_metrics(full_y.iloc[test_idx], predictions)
-+    return metrics
++        model.fit(exp_X_train.loc[train_mask], y_train_target.loc[train_mask].astype(float))
++        target_X_test = exp_X_test.loc[test_mask]
++        target_y_test = y_test_target.loc[test_mask].astype(float)
++        feature_table, category_table, permutation_table = _model_b_feature_importance_summary(
++            target, model, target_X_test, target_y_test
++        )
++        shap_table = _try_model_b_shap_summary(target, model, target_X_test)
++        feature_tables.append(feature_table)
++        category_tables.append(category_table)
++        permutation_tables.append(permutation_table)
++        shap_tables.append(shap_table)
++        category_importance = category_table.set_index("Category")["Normalized Importance"].to_dict()
++        time_share = float(category_importance.get("Time", 0.0))
++        process_share = float(category_importance.get("Process", 0.0))
++        dominant = "Time" if time_share > process_share else "Process" if process_share > time_share else "Tie"
++        conclusion_rows.append({
++            "Target": target,
++            "Status": "completed",
++            "Feature Count": len(usable_features),
++            "Time Feature Count": int(sum(_is_time_related_feature(feature) for feature in usable_features)),
++            "Process Feature Count": int(sum(not _is_time_related_feature(feature) for feature in usable_features)),
++            "Time Importance Share": time_share,
++            "Process Importance Share": process_share,
++            "Dominant Category": dominant,
++            "Time Features Dominate": time_share > process_share,
++            "Process Variables Dominate": process_share > time_share,
++        })
++        print(f"{target}: {dominant} dominates (time={time_share:.3f}, process={process_share:.3f}).")
 +
++    os.makedirs(os.path.dirname(report_path), exist_ok=True)
++    with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
++        pd.DataFrame(conclusion_rows).to_excel(writer, sheet_name="Dominance Summary", index=False)
++        (
++            pd.concat(category_tables, ignore_index=True)
++            if category_tables
++            else pd.DataFrame()
++        ).to_excel(writer, sheet_name="Category Importance", index=False)
++        (
++            pd.concat(feature_tables, ignore_index=True)
++            if feature_tables
++            else pd.DataFrame()
++        ).to_excel(writer, sheet_name="Feature Importance", index=False)
++        (
++            pd.concat(permutation_tables, ignore_index=True)
++            if permutation_tables
++            else pd.DataFrame()
++        ).to_excel(writer, sheet_name="Permutation Importance", index=False)
++        (
++            pd.concat(shap_tables, ignore_index=True)
++            if shap_tables
++            else pd.DataFrame()
++        ).to_excel(writer, sheet_name="SHAP Importance", index=False)
++        pd.DataFrame({"Model B Feature": usable_features}).to_excel(writer, sheet_name="Model B Features", index=False)
++    print(f"Saved Model B feature-importance analysis: {report_path}")
++    print("=====================================================================\n")
++    return report_path
 +
- def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
-     """Fit a scikit-learn regressor with train-only feature scaling."""
-     X_train, X_test, y_train, y_test, _ = clean_train_test_for_modeling(
+ def generate_model_design_experiments_report(
+     X_train,
+     X_test,
+     y_train,
+     y_test,
+     report_path=MODEL_DESIGN_REPORT_PATH,
+ ):
+     """Run Step 3's three RandomForestRegressor model-design experiments.
+ 
+     Model A intentionally uses every available non-output prepared feature and is
+     labeled as leakage-prone. Model B is the main clean process model: process
+     variables plus encoded time features after leakage filtering. Model C starts
+     from Model B and removes all time-related features.
+     """
+     full_X_train, full_X_test, full_y_train, full_y_test = _load_full_design_split_from_prep_data(
+         X_train, X_test, y_train, y_test
+     )
+     experiments = OrderedDict()
+     all_full_features = [column for column in full_X_train.columns if column in full_X_test.columns]
+     clean_features = filter_allowed_model_inputs(
+         all_full_features,
+         output_features=list(full_y_train.columns),
+         optional_future_quality_inputs=None,
+     )
+     no_time_features = [column for column in clean_features if not _is_time_related_feature(column)]
+@@ -4810,50 +5025,51 @@ def main():
+             X_test,
+             y_train,
+             y_test,
+         )
+     except ValueError as err:
+         print(f"Data-cleaning pipeline failed: {err}")
+         exit()
+     if dropped_missing_columns:
+         inputs = X_train.columns.tolist()
+         run_inputs = inputs
+ 
+     data = X_train
+     print_numbered_feature_list("Selected Input Features", inputs, ANSI_GREEN)
+     print_numbered_feature_list("Selected Output Features", outputs, ANSI_BLUE)
+     feature_importance_source_df = _load_feature_importance_source_dataframe(
+         dataset_path,
          X_train,
          X_test,
          y_train,
          y_test,
-         verbose=False,
      )
-     validation_report_for_training(X_train, y_train, name="sklearn training data")
- 
-     X_train_df = dataframe_from_tabular(X_train, "X_train")
-     X_test_df = dataframe_from_tabular(X_test, "X_test", columns=X_train_df.columns)
-     y_train_values = as_2d_float_array(y_train, "y_train")
-     y_test_values = as_2d_float_array(y_test, "y_test")
- 
-     scaler_x = StandardScaler()
-     X_train_scaled_df = fit_transform_dataframe(scaler_x, X_train_df)
-     X_test_scaled_df = transform_dataframe(scaler_x, X_test_df)
-     X_train_scaled = X_train_scaled_df.to_numpy()
-     X_test_scaled = X_test_scaled_df.to_numpy()
- 
-     is_multi_output = y_train_values.shape[1] > 1
-     y_train_fit = y_train_values if is_multi_output else y_train_values.ravel()
- 
-@@ -4983,94 +5058,110 @@ def main():
-                 epoch_candidates = sorted(set(epoch_candidates))
-                 for num_epochs in epoch_candidates:
-                     pretrained_weights_path = (
-                         selected_saved_run.get("weights_path")
-                         if selected_saved_run and is_nn and selected_saved_run.get("has_weights")
-                         else None
-                     )
-                     # Apply model on data for N repeats and get predictions, mse and r2
-                     mean_r2, std_r2, mean_mse, model_best_preds, max_r2, r2_list, max_run, optimized_inputs_report = repeat_fit_model(
-                         model_class,
-                         num_repeats, num_epochs, hidden_sizes, display_steps=True, features=active_features, optimization_scope=optimization_scope, optimize_feature_indexes=optimize_feature_indexes, pretrained_state_dict_path=pretrained_weights_path)
- 
-                     # Keep best seed to generate the same predictions later
-                     if mean_r2 is None:
-                         continue
- 
-                     cv_metrics = cross_validate_model(
-                         model_class,
-                         num_epochs,
-                         hidden_sizes,
-                         features=active_features,
-                         folds=MODEL_EVALUATION_CV_FOLDS,
-                         optimization_scope=optimization_scope if is_nn else "weights",
-                         optimize_feature_indexes=optimize_feature_indexes if is_nn else None,
-                     )
-+                    split_metrics = evaluate_model_on_required_splits(
-+                        model_class,
-+                        num_epochs,
-+                        hidden_sizes,
-+                        features=active_features,
-+                        optimization_scope=optimization_scope if is_nn else "weights",
-+                        optimize_feature_indexes=optimize_feature_indexes if is_nn else None,
-+                    )
- 
-                     if max_r2 > best_r2:
-                         best_r2 = max_r2
-                         model_best_predictions[model_name] = model_best_preds
-                         best_optimized_inputs_report = optimized_inputs_report
-                         max_model_index = model_index
-                         max_epochs = num_epochs
-                         max_hidden_sizes = hidden_sizes
-                         best_run = max_run
- 
-                     if mean_r2 > best_mean_r2:
-                         best_mean_r2 = mean_r2
-                         best_mse = mean_mse
-                         best_model_index = model_index
-                         best_epochs = num_epochs
-                         best_hidden_sizes = hidden_sizes
- 
-                     total_nodes = sum(hidden_sizes) if hidden_sizes else 0
- 
-                     mean_rmse = float(np.sqrt(mean_mse)) if mean_mse is not None else np.nan
-                     result = {
-                             "model":model_name,
-                             "R2": round(mean_r2,1),
-                             "MSE": round(mean_mse,2),
-                             "R2 std": round(std_r2, 1),
-                             "R2 List": [round(x, 1) for x in r2_list],
-                             "Mean R²": round(cv_metrics["mean_r2"], 3) if cv_metrics else np.nan,
-                             "Std R²": round(cv_metrics["std_r2"], 3) if cv_metrics else np.nan,
-                             "Mean RMSE": round(cv_metrics["mean_rmse"], 3) if cv_metrics else round(mean_rmse, 3),
-                             "Std RMSE": round(cv_metrics["std_rmse"], 3) if cv_metrics else np.nan,
-                             "Mean MAE": round(cv_metrics["mean_mae"], 3) if cv_metrics else np.nan,
-                             "Std MAE": round(cv_metrics["std_mae"], 3) if cv_metrics else np.nan,
-                             "CV folds": cv_metrics["folds"] if cv_metrics else 0,
-+                            "Random Split R²": round(split_metrics["random"]["r2"], 3),
-+                            "Random Split RMSE": round(split_metrics["random"]["rmse"], 3),
-+                            "Random Split MAE": round(split_metrics["random"]["mae"], 3),
-+                            "Time Split R²": round(split_metrics["time"]["r2"], 3),
-+                            "Time Split RMSE": round(split_metrics["time"]["rmse"], 3),
-+                            "Time Split MAE": round(split_metrics["time"]["mae"], 3),
-                             "hidden sizes": hidden_sizes if hidden_sizes else "N/A",
-                             "total hs": total_nodes,
-                             "epochs": num_epochs if is_nn else "N/A",
-                             }
-                     results.append(result)
- 
-         # Create a table for results. Some model/config combinations can fail and return no
-         # valid R2 values, so guard against missing/empty result sets.
-         expected_result_cols = [
-             "model", "R2", "MSE", "R2 std", "R2 List",
-             "Mean R²", "Std R²", "Mean RMSE", "Std RMSE", "Mean MAE", "Std MAE", "CV folds",
-+            "Random Split R²", "Random Split RMSE", "Random Split MAE",
-+            "Time Split R²", "Time Split RMSE", "Time Split MAE",
-             "hidden sizes", "total hs", "epochs"
+     generate_feature_importance_reports(feature_importance_source_df)
+     generate_prescriptive_optimization_report(feature_importance_source_df)
+     generate_model_comparison_report(X_train, X_test, y_train, y_test)
+     generate_model_design_experiments_report(X_train, X_test, y_train, y_test)
++    generate_model_b_feature_importance_analysis(X_train, X_test, y_train, y_test)
+     active_features = list(inputs)
+     if selected_saved_run:
+         print("Loaded saved run metadata; reusing prepared inputs/outputs.")
+         loaded_hidden_size_groups = normalize_hidden_size_groups(
+             selected_saved_run.get("hidden_size_groups"),
+             list_hidden_sizes,
+         )
+         loaded_epoch_candidates = [
+             int(e)
+             for e in selected_saved_run.get("epoch_candidates", [])
+             if str(e).isdigit() and int(e) > 0
          ]
-         results_table = pd.DataFrame(data=results)
-         if results_table.empty:
-             results_table = pd.DataFrame(columns=expected_result_cols)
-         else:
-             missing_cols = [col for col in expected_result_cols if col not in results_table.columns]
-             for col in missing_cols:
-                 results_table[col] = np.nan
-             # Rank methods by cross-validation R² when available.
-             if results_table["Mean R²"].notna().any():
-                 results_table = results_table.sort_values(by="Mean R²", ascending=False)
-                 results_table.insert(0, "CV R² Rank", range(1, len(results_table) + 1))
-             elif results_table["R2"].notna().any():
-                 results_table = results_table.sort_values(by="R2", ascending=False)
-             else:
-                 print("No valid R2 values were produced for the selected model/config combinations.")
- 
-         if results_table["R2"].isna().all():
-             print("Training finished, but no successful runs produced R2 values. Skipping reporting/plots.")
-             results_table.to_csv("exp.csv", index=False)
+         loaded_repeat_count = selected_saved_run.get("repeat_count")
+         if isinstance(loaded_repeat_count, str) and loaded_repeat_count.isdigit():
+             loaded_repeat_count = int(loaded_repeat_count)
+         if not isinstance(loaded_repeat_count, int) or loaded_repeat_count < 1:
+             loaded_repeat_count = None
+     else:
+         loaded_hidden_size_groups = [list(group) for group in list_hidden_sizes]
+         loaded_epoch_candidates = []
+         loaded_repeat_count = None
+         ans = input("Confirm these numbered inputs/outputs from prep_data folder [y]: ").strip().lower()
+         if ans not in ("", "y", "yes"):
+             print("Please re-run and choose your preferred input/output features.")
              exit()
- 
-         latex_table = results_table.copy()
-         # Create and save latex code for table
-@@ -5091,50 +5182,61 @@ def main():
-         max_model_name = model_names[max_model_index]
- 
-         print("============ Results for models (ranked by CV R²) =========================")
-         print(results_table)
-         cv_print_columns = [
-             col for col in [
-                 "CV R² Rank", "model", "hidden sizes", "epochs",
-                 "Mean R²", "Std R²", "Mean RMSE", "Std RMSE", "Mean MAE", "Std MAE", "CV folds"
-             ]
-             if col in results_table.columns
-         ]
-         if cv_print_columns:
-             cv_summary = results_table[cv_print_columns].copy()
-             if {"Mean R²", "Std R²"}.issubset(cv_summary.columns):
-                 cv_summary["CV R²"] = cv_summary.apply(lambda row: f"{row['Mean R²']} ± {row['Std R²']}", axis=1)
-             if {"Mean RMSE", "Std RMSE"}.issubset(cv_summary.columns):
-                 cv_summary["CV RMSE"] = cv_summary.apply(lambda row: f"{row['Mean RMSE']} ± {row['Std RMSE']}", axis=1)
-             if {"Mean MAE", "Std MAE"}.issubset(cv_summary.columns):
-                 cv_summary["CV MAE"] = cv_summary.apply(lambda row: f"{row['Mean MAE']} ± {row['Std MAE']}", axis=1)
-             cv_summary = cv_summary.drop(
-                 columns=["Mean R²", "Std R²", "Mean RMSE", "Std RMSE", "Mean MAE", "Std MAE"],
-                 errors="ignore",
-             )
-             print("============ 5-fold CV metrics (mean ± std) =========================")
-             print(cv_summary)
-+        split_print_columns = [
-+            col for col in [
-+                "model", "hidden sizes", "epochs",
-+                "Random Split R²", "Random Split RMSE", "Random Split MAE",
-+                "Time Split R²", "Time Split RMSE", "Time Split MAE",
-+            ]
-+            if col in results_table.columns
-+        ]
-+        if split_print_columns:
-+            print("============ Holdout split comparison (identical splits for all models) =========================")
-+            print(results_table[split_print_columns])
-         print("========================== Best Mean Model ===============================")
-         print("Best Mean R-Squred:", best_mean_r2)
-         print("Best model with better mean R-Squred:", best_model_name)
-         print("Best Hidden sizes:", best_hidden_sizes)
-         print("Best epochs:", best_epochs)
-         print("=========================== Max Model ================================")
-         print("Best model with better max R-Squred:", max_model_name)
-         print("Best Hidden sizes:", max_hidden_sizes)
-         print("Best epochs:", max_epochs)
-         print("Max R-Squred:", best_r2)
- 
-         results_table.to_csv("exp.csv")
- 
-         X_train, X_test, y_train, y_test = read_prep_data(active_features)
-         generate_target_shap_analysis(X_train, X_test, y_train, y_test, targets=outputs)
- 
-         # Show and save the plot for best results
-         best_predictions = model_best_predictions.get(max_model_name)
-         if best_predictions is None:
-             print("Best model did not produce predictions. Skipping reporting/plots.")
-             exit()
-         output_title = ", ".join(outputs)
-         title = "Prediction of " + output_title + " with " + max_model_name + " epochs:" + str(max_epochs)
-         file_name = f"R2-{best_r2:.2f}-" + max_model_name + "-" + "-".join(outputs) + ".png"
- 

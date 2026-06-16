@@ -114,6 +114,7 @@ MODEL_COMPARISON_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_compar
 OPTIMIZATION_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "optimization_report.xlsx")
 OPERATOR_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "operator_report.xlsx")
 MODEL_DESIGN_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_design_experiments.xlsx")
+MODEL_B_FEATURE_IMPORTANCE_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_b_feature_importance_analysis.xlsx")
 
 
 FEATURE_IMPORTANCE_TARGETS = (
@@ -3429,6 +3430,220 @@ def _prepare_model_design_feature_frame(train_df, test_df, feature_columns):
     return selected_train[usable_columns], selected_test[usable_columns], usable_columns
 
 
+
+def _model_b_feature_importance_summary(target, model, X_test_df, y_test_series, method_name="Random Forest Importance"):
+    """Return ranked feature and category importance rows for one Model B target."""
+    raw_importance = np.asarray(model.feature_importances_, dtype=float)
+    total_importance = float(raw_importance.sum())
+    normalized = raw_importance / total_importance if total_importance > 0 else np.zeros_like(raw_importance)
+    feature_rows = []
+    for feature, importance, normalized_importance in zip(X_test_df.columns, raw_importance, normalized):
+        feature_rows.append({
+            "Target": target,
+            "Method": method_name,
+            "Feature": feature,
+            "Base Feature": base_variable_name(feature),
+            "Category": "Time" if _is_time_related_feature(feature) else "Process",
+            "Importance": float(importance),
+            "Normalized Importance": float(normalized_importance),
+        })
+    feature_table = pd.DataFrame(feature_rows).sort_values(
+        by=["Importance", "Feature"], ascending=[False, True]
+    ).reset_index(drop=True)
+    feature_table.insert(2, "Rank", np.arange(1, len(feature_table) + 1))
+
+    category_rows = []
+    for category, category_table in feature_table.groupby("Category", dropna=False):
+        category_rows.append({
+            "Target": target,
+            "Method": method_name,
+            "Category": category,
+            "Feature Count": int(len(category_table)),
+            "Total Importance": float(category_table["Importance"].sum()),
+            "Normalized Importance": float(category_table["Normalized Importance"].sum()),
+        })
+    category_table = pd.DataFrame(category_rows)
+
+    permutation_table = pd.DataFrame()
+    try:
+        permutation = permutation_importance(
+            model,
+            X_test_df,
+            y_test_series,
+            n_repeats=10,
+            random_state=model_seed,
+            n_jobs=-1,
+            scoring="r2",
+        )
+        permutation_total = float(np.abs(permutation.importances_mean).sum())
+        permutation_normalized = (
+            np.abs(permutation.importances_mean) / permutation_total
+            if permutation_total > 0
+            else np.zeros_like(permutation.importances_mean)
+        )
+        permutation_table = pd.DataFrame({
+            "Target": target,
+            "Method": "Permutation Importance",
+            "Feature": list(X_test_df.columns),
+            "Base Feature": [base_variable_name(feature) for feature in X_test_df.columns],
+            "Category": ["Time" if _is_time_related_feature(feature) else "Process" for feature in X_test_df.columns],
+            "Importance": permutation.importances_mean,
+            "Permutation Std": permutation.importances_std,
+            "Normalized Absolute Importance": permutation_normalized,
+        }).sort_values(by=["Importance", "Feature"], ascending=[False, True]).reset_index(drop=True)
+        permutation_table.insert(2, "Rank", np.arange(1, len(permutation_table) + 1))
+    except Exception as err:
+        permutation_table = pd.DataFrame([{
+            "Target": target,
+            "Method": "Permutation Importance",
+            "Feature": "SKIPPED",
+            "Importance": np.nan,
+            "Permutation Std": np.nan,
+            "Normalized Absolute Importance": np.nan,
+            "Error": str(err),
+        }])
+
+    return feature_table, category_table, permutation_table
+
+
+def _try_model_b_shap_summary(target, model, X_test_df):
+    """Compute a compact Model B SHAP importance table when shap is installed."""
+    import importlib.util
+    if importlib.util.find_spec("shap") is None:
+        return pd.DataFrame([{"Target": target, "Status": "skipped - shap is not installed"}])
+    try:
+        import shap
+        X_explain = X_test_df.head(min(SHAP_MAX_EXPLAIN_SAMPLES, len(X_test_df)))
+        explainer = shap.TreeExplainer(model)
+        shap_values = _coerce_shap_values_for_single_target(
+            explainer.shap_values(X_explain),
+            len(X_explain.columns),
+        )
+        mean_abs_shap = np.abs(shap_values).mean(axis=0)
+        total = float(mean_abs_shap.sum())
+        normalized = mean_abs_shap / total if total > 0 else np.zeros_like(mean_abs_shap)
+        table = pd.DataFrame({
+            "Target": target,
+            "Method": "SHAP Mean Absolute Value",
+            "Feature": list(X_explain.columns),
+            "Base Feature": [base_variable_name(feature) for feature in X_explain.columns],
+            "Category": ["Time" if _is_time_related_feature(feature) else "Process" for feature in X_explain.columns],
+            "Mean(|SHAP|)": mean_abs_shap,
+            "Normalized Importance": normalized,
+        }).sort_values(by=["Mean(|SHAP|)", "Feature"], ascending=[False, True]).reset_index(drop=True)
+        table.insert(2, "Rank", np.arange(1, len(table) + 1))
+        return table
+    except Exception as err:
+        return pd.DataFrame([{"Target": target, "Status": f"skipped - {err}"}])
+
+
+def generate_model_b_feature_importance_analysis(
+    X_train,
+    X_test,
+    y_train,
+    y_test,
+    report_path=MODEL_B_FEATURE_IMPORTANCE_REPORT_PATH,
+):
+    """Compute Step 5 feature importance for Model B and test time-vs-process dominance.
+
+    Model B is the leakage-safe process feature set plus encoded time features.
+    The report ranks feature importance per target, aggregates importance into
+    Time and Process categories, and marks the category with the larger share as
+    dominant for each target.
+    """
+    full_X_train, full_X_test, full_y_train, full_y_test = _load_full_design_split_from_prep_data(
+        X_train, X_test, y_train, y_test
+    )
+    all_full_features = [column for column in full_X_train.columns if column in full_X_test.columns]
+    model_b_features = filter_allowed_model_inputs(
+        all_full_features,
+        output_features=list(full_y_train.columns),
+        optional_future_quality_inputs=None,
+    )
+    if not model_b_features:
+        print("Model B feature-importance analysis skipped: no Model B features are available.")
+        return None
+    exp_X_train, exp_X_test, usable_features = _prepare_model_design_feature_frame(
+        full_X_train, full_X_test, model_b_features
+    )
+
+    feature_tables = []
+    category_tables = []
+    permutation_tables = []
+    shap_tables = []
+    conclusion_rows = []
+    print("\n================= Step 5 Model B Feature Importance =================")
+    for target in full_y_train.columns:
+        y_train_target = coerce_refinery_numeric_series(full_y_train[target])
+        y_test_target = coerce_refinery_numeric_series(full_y_test[target])
+        train_mask = y_train_target.notna()
+        test_mask = y_test_target.notna()
+        if train_mask.sum() < 2 or test_mask.sum() < 1:
+            conclusion_rows.append({"Target": target, "Status": "skipped - insufficient valid target rows"})
+            continue
+        model = RandomForestRegressor(
+            n_estimators=500,
+            random_state=model_seed,
+            n_jobs=-1,
+            min_samples_leaf=2,
+        )
+        model.fit(exp_X_train.loc[train_mask], y_train_target.loc[train_mask].astype(float))
+        target_X_test = exp_X_test.loc[test_mask]
+        target_y_test = y_test_target.loc[test_mask].astype(float)
+        feature_table, category_table, permutation_table = _model_b_feature_importance_summary(
+            target, model, target_X_test, target_y_test
+        )
+        shap_table = _try_model_b_shap_summary(target, model, target_X_test)
+        feature_tables.append(feature_table)
+        category_tables.append(category_table)
+        permutation_tables.append(permutation_table)
+        shap_tables.append(shap_table)
+        category_importance = category_table.set_index("Category")["Normalized Importance"].to_dict()
+        time_share = float(category_importance.get("Time", 0.0))
+        process_share = float(category_importance.get("Process", 0.0))
+        dominant = "Time" if time_share > process_share else "Process" if process_share > time_share else "Tie"
+        conclusion_rows.append({
+            "Target": target,
+            "Status": "completed",
+            "Feature Count": len(usable_features),
+            "Time Feature Count": int(sum(_is_time_related_feature(feature) for feature in usable_features)),
+            "Process Feature Count": int(sum(not _is_time_related_feature(feature) for feature in usable_features)),
+            "Time Importance Share": time_share,
+            "Process Importance Share": process_share,
+            "Dominant Category": dominant,
+            "Time Features Dominate": time_share > process_share,
+            "Process Variables Dominate": process_share > time_share,
+        })
+        print(f"{target}: {dominant} dominates (time={time_share:.3f}, process={process_share:.3f}).")
+
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+    with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
+        pd.DataFrame(conclusion_rows).to_excel(writer, sheet_name="Dominance Summary", index=False)
+        (
+            pd.concat(category_tables, ignore_index=True)
+            if category_tables
+            else pd.DataFrame()
+        ).to_excel(writer, sheet_name="Category Importance", index=False)
+        (
+            pd.concat(feature_tables, ignore_index=True)
+            if feature_tables
+            else pd.DataFrame()
+        ).to_excel(writer, sheet_name="Feature Importance", index=False)
+        (
+            pd.concat(permutation_tables, ignore_index=True)
+            if permutation_tables
+            else pd.DataFrame()
+        ).to_excel(writer, sheet_name="Permutation Importance", index=False)
+        (
+            pd.concat(shap_tables, ignore_index=True)
+            if shap_tables
+            else pd.DataFrame()
+        ).to_excel(writer, sheet_name="SHAP Importance", index=False)
+        pd.DataFrame({"Model B Feature": usable_features}).to_excel(writer, sheet_name="Model B Features", index=False)
+    print(f"Saved Model B feature-importance analysis: {report_path}")
+    print("=====================================================================\n")
+    return report_path
+
 def generate_model_design_experiments_report(
     X_train,
     X_test,
@@ -4832,6 +5047,7 @@ def main():
     generate_prescriptive_optimization_report(feature_importance_source_df)
     generate_model_comparison_report(X_train, X_test, y_train, y_test)
     generate_model_design_experiments_report(X_train, X_test, y_train, y_test)
+    generate_model_b_feature_importance_analysis(X_train, X_test, y_train, y_test)
     active_features = list(inputs)
     if selected_saved_run:
         print("Loaded saved run metadata; reusing prepared inputs/outputs.")
