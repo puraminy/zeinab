@@ -32,8 +32,23 @@
     "wastewater_r2_pol",
     "wastewater_r2_q",
     "wastewater_r3_pol",
-    "wastewater_r3_q"
+    "wastewater_r3_q",
+    "boiler_pH",
+    "boiler_alkalinity",
+    "boiler_hardness",
+    "boiler_tds"
   ],
+  "sheet_name_datetime_features": [
+    "year",
+    "month",
+    "day",
+    "day_of_week",
+    "month_sin",
+    "month_cos",
+    "day_sin",
+    "day_cos"
+  ],
+  "split_strategy": "random_train_test_split",
   "optional_future_quality_inputs": [
     "raw_sugar_color",
     "raw_syrup_brix",
@@ -63,7 +78,11 @@
     "wastewater_r2_pol",
     "wastewater_r2_q",
     "wastewater_r3_pol",
-    "wastewater_r3_q"
+    "wastewater_r3_q",
+    "boiler_pH",
+    "boiler_alkalinity",
+    "boiler_hardness",
+    "boiler_tds"
   ],
   "sequential_features": [],
   "sequential_groups": [],
@@ -80,8 +99,15 @@
   "random_state": 123,
   "refinery_variable_groups": {
     "EARLY_VARIABLES": [
-      "sheet_name",
       "shift_name",
+      "year",
+      "month",
+      "day",
+      "day_of_week",
+      "month_sin",
+      "month_cos",
+      "day_sin",
+      "day_cos",
       "raw_sugar_color",
       "raw_syrup_brix",
       "raw_syrup_color"
@@ -109,7 +135,19 @@
       "standard_liquor_color",
       "white_total_points"
     ],
+    "MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS": [
+      "white_total_points",
+      "white_quality_",
+      "white_average_"
+    ],
+    "DIAGNOSTIC_ONLY_FEATURE_PATTERNS": [
+      "white_total_points",
+      "white_quality_",
+      "white_average_"
+    ],
     "input_rule": "Model inputs = EARLY_VARIABLES + CONTROL_VARIABLES only.",
-    "leakage_rule": "TARGET_VARIABLES, selected outputs, and columns containing average_to_date/average_two_shifts/moving_average/future/target are never allowed as inputs."
+    "main_model_exclusion_rule": "Remove white_total_points plus every column whose base name starts with white_quality_ or white_average_ from the main model input set.",
+    "diagnostic_only_rule": "The excluded white-sugar scoring/average fields may be used only in a separate diagnostic comparison model that is clearly labeled as leakage-prone; they are never allowed through main training validation.",
+    "leakage_rule": "TARGET_VARIABLES, selected outputs, and columns containing average_to_date/average_two_shifts/moving_average/future/target, or final white-sugar QC fields (white_total_points, white_quality_*, white_average_*) are never allowed as inputs."
   }
 }
