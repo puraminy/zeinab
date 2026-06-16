@@ -1,17 +1,36 @@
 {
   "dataset_path": "C:\\Users\\tadbirsabz\\Desktop\\zeinab\\NN\\convert\\stclean.csv",
   "output_features": [
-    "white_total_points"
+    "work_period"
   ],
   "input_features": [
-    "raw_sugar_color",
     "raw_syrup_brix",
     "raw_syrup_color",
     "lime_milk_baume",
     "lime_alkalinity",
     "co2_percent",
     "carbonated_alkalinity",
-    "carbonated_pH"
+    "carbonated_pH",
+    "sulphited_pH",
+    "sulphited_brix",
+    "standard_liquor_pH",
+    "standard_liquor_brix",
+    "boiling_r1_pol",
+    "boiling_r1_q",
+    "boiling_r2_pol",
+    "boiling_r2_q",
+    "boiling_r3_pol",
+    "boiling_r3_q",
+    "wastewater_r1_pol",
+    "wastewater_r1_q",
+    "wastewater_r2_pol",
+    "wastewater_r2_q",
+    "wastewater_r3_pol",
+    "wastewater_r3_q",
+    "boiler_pH",
+    "boiler_alkalinity",
+    "boiler_hardness",
+    "boiler_tds"
   ],
   "sheet_name_datetime_features": [
     "year",
@@ -25,17 +44,54 @@
   ],
   "split_strategy": "random_train_test_split",
   "optional_future_quality_inputs": [
-    "raw_sugar_color",
     "raw_syrup_brix",
     "raw_syrup_color",
     "lime_milk_baume",
     "lime_alkalinity",
     "co2_percent",
     "carbonated_alkalinity",
-    "carbonated_pH"
+    "carbonated_pH",
+    "sulphited_pH",
+    "sulphited_brix",
+    "standard_liquor_pH",
+    "standard_liquor_brix",
+    "boiling_r1_pol",
+    "boiling_r1_q",
+    "boiling_r2_pol",
+    "boiling_r2_q",
+    "boiling_r3_pol",
+    "boiling_r3_q",
+    "wastewater_r1_pol",
+    "wastewater_r1_q",
+    "wastewater_r2_pol",
+    "wastewater_r2_q",
+    "wastewater_r3_pol",
+    "wastewater_r3_q",
+    "boiler_pH",
+    "boiler_alkalinity",
+    "boiler_hardness",
+    "boiler_tds"
   ],
-  "sequential_features": [],
-  "sequential_groups": [],
+  "sequential_features": [
+    "raw_syrup_brix",
+    "sulphited_brix",
+    "standard_liquor_brix",
+    "carbonated_pH",
+    "sulphited_pH",
+    "standard_liquor_pH"
+  ],
+  "sequential_groups": [
+    [
+      "raw_syrup_brix",
+      "sulphited_brix",
+      "standard_liquor_brix"
+    ],
+    [
+      "carbonated_pH",
+      "sulphited_pH",
+      "standard_liquor_pH"
+    ]
+  ],
   "add_differences": false,
   "difference_order": 1,
   "add_ratio_features": false,
@@ -71,17 +127,20 @@
       "sulphited_pH",
       "sulphited_brix",
       "standard_liquor_pH",
-      "standard_liquor_brix"
+      "standard_liquor_brix",
+      "boiler_pH",
+      "boiling_r1_pol"
+    ],
+    "PROCESS_CONTROL_PREFIXES": [
+      "boiler",
+      "boiling",
+      "wastewater"
     ],
     "TARGET_VARIABLES": [
       "filtercake_moisture",
       "filtercake_sugar",
       "sweetwater_brix",
-      "sulphited_pH",
-      "sulphited_brix",
       "sulphited_color",
-      "standard_liquor_pH",
-      "standard_liquor_brix",
       "standard_liquor_color",
       "white_total_points"
     ],
@@ -107,7 +166,7 @@
         "boiler_pH"
       ]
     },
-    "input_rule": "Model inputs = EARLY_VARIABLES + CONTROL_VARIABLES only.",
+    "input_rule": "Model inputs = EARLY_VARIABLES + CONTROL_VARIABLES plus process-control prefixes (boiler, boiling, wastewater).",
     "main_model_exclusion_rule": "Remove white_total_points plus every column whose base name starts with white_quality_ or white_average_ from the main model input set.",
     "diagnostic_only_rule": "The excluded white-sugar scoring/average fields may be used only in a separate diagnostic comparison model that is clearly labeled as leakage-prone; they are never allowed through main training validation.",
     "leakage_rule": "TARGET_VARIABLES, selected outputs, and columns containing average_to_date/average_two_shifts/moving_average/future/target, or final white-sugar QC fields (white_total_points, white_quality_*, white_average_*) are never allowed as inputs."

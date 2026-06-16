@@ -99,6 +99,65 @@ def safe_numeric_conversion(df):
     return numeric_df
 
 
+
+def detect_repeated_header_rows(df):
+    """Return row indexes that exactly repeat the CSV header inside data."""
+    header = [str(col).strip() for col in df.columns]
+    repeated = []
+    for idx, row in df.iterrows():
+        values = [str(value).strip() for value in row.tolist()]
+        if values == header:
+            repeated.append(idx)
+    return repeated
+
+
+def build_data_quality_report(df, name, max_samples=5):
+    """Detect text contamination in numeric tables and repeated embedded headers."""
+    rows = []
+    repeated_headers = detect_repeated_header_rows(df)
+    if repeated_headers:
+        rows.append({
+            "table": name,
+            "column": "<row>",
+            "issue": "repeated_header_row",
+            "invalid_count": len(repeated_headers),
+            "sample_values": ["|".join(map(str, df.columns.tolist()))],
+            "row_indexes": repeated_headers[:max_samples],
+        })
+
+    for column in df.columns:
+        original = df[column]
+        normalized = original.map(_normalize_numeric_text)
+        converted = pd.to_numeric(normalized, errors="coerce")
+        invalid_mask = original.notna() & converted.isna()
+        if invalid_mask.any():
+            rows.append({
+                "table": name,
+                "column": column,
+                "issue": "non_numeric_value",
+                "invalid_count": int(invalid_mask.sum()),
+                "sample_values": original[invalid_mask].astype(str).drop_duplicates().head(max_samples).tolist(),
+                "row_indexes": original.index[invalid_mask].tolist()[:max_samples],
+            })
+    return rows
+
+
+def write_data_quality_report(report_rows, prep_folder="prep_data"):
+    """Persist a compact data-quality report for invalid numeric conversions."""
+    if not report_rows:
+        return None
+    report_dir = resolve_relative_path(os.path.join(prep_folder, "reports"))
+    os.makedirs(report_dir, exist_ok=True)
+    report_path = os.path.join(report_dir, "data_quality_report.csv")
+    pd.DataFrame(report_rows).to_csv(report_path, index=False)
+    print(f"{ANSI_YELLOW}Data-quality report written to: {report_path}{ANSI_RESET}")
+    for row in report_rows:
+        print(
+            f"{ANSI_YELLOW}  - {row['table']}.{row['column']}: {row['issue']} "
+            f"count={row['invalid_count']} samples={row['sample_values']} rows={row['row_indexes']}{ANSI_RESET}"
+        )
+    return report_path
+
 def _coerce_numeric_table(df, name):
     """Return a numeric copy of a prep-data table and report non-numeric cleanups."""
     numeric_df = safe_numeric_conversion(df)
@@ -1047,6 +1106,28 @@ def read_prep_data(inputs=None, prep_folder="prep_data", optional_future_quality
     y_train = pd.read_csv(y_train_path)
     LOGGER.debug("Reading prep_data CSV: %s", y_test_path)
     y_test = pd.read_csv(y_test_path)
+
+    quality_rows = []
+    quality_rows.extend(build_data_quality_report(X_train_full, "X_train"))
+    quality_rows.extend(build_data_quality_report(X_test_full, "X_test"))
+    quality_rows.extend(build_data_quality_report(y_train, "y_train"))
+    quality_rows.extend(build_data_quality_report(y_test, "y_test"))
+    repeated_indexes_by_table = {
+        "X_train": detect_repeated_header_rows(X_train_full),
+        "X_test": detect_repeated_header_rows(X_test_full),
+        "y_train": detect_repeated_header_rows(y_train),
+        "y_test": detect_repeated_header_rows(y_test),
+    }
+    if quality_rows:
+        write_data_quality_report(quality_rows, prep_folder=prep_folder)
+    if repeated_indexes_by_table["X_train"]:
+        X_train_full = X_train_full.drop(index=repeated_indexes_by_table["X_train"])
+    if repeated_indexes_by_table["X_test"]:
+        X_test_full = X_test_full.drop(index=repeated_indexes_by_table["X_test"])
+    if repeated_indexes_by_table["y_train"]:
+        y_train = y_train.drop(index=repeated_indexes_by_table["y_train"])
+    if repeated_indexes_by_table["y_test"]:
+        y_test = y_test.drop(index=repeated_indexes_by_table["y_test"])
 
     if list(X_train_full.columns) != list(X_test_full.columns):
         train_only = [col for col in X_train_full.columns if col not in X_test_full.columns]

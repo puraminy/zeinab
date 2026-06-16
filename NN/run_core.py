@@ -74,6 +74,7 @@ from datetime import datetime, timezone
 from collections import OrderedDict
 import warnings
 import logging
+from dataclasses import dataclass, field
 
 from openpyxl.styles import Font, PatternFill, Alignment
 
@@ -1443,8 +1444,32 @@ def normalize_hidden_size_groups(raw_groups, fallback_groups):
                     parsed.append(cleaned)
     return parsed if parsed else [list(group) for group in fallback_groups]
 
-list_epochs = [50, 100, 200, 300]
-best_epochs = 100
+@dataclass
+class TrainingConfig:
+    """Central defaults for model training so main() never shadows globals."""
+    epoch_candidates: list[int] = field(default_factory=lambda: [50, 100, 200, 300])
+    best_epochs: int = 100
+    hidden_size_groups: list[list[int]] = field(default_factory=lambda: [[16], [32], [64], [16, 8], [32, 16], [48, 24], [64, 32], [64, 32, 16]])
+    num_repeats: int = 5
+
+
+def validate_training_config(config):
+    """Return a validated copy of training defaults with actionable errors."""
+    if config is None:
+        raise ValueError("Training configuration was not initialized before model selection.")
+    epochs = [int(e) for e in config.epoch_candidates if isinstance(e, (int, str)) and str(e).isdigit() and int(e) > 0]
+    if not epochs:
+        raise ValueError("Training configuration must define at least one positive epoch candidate.")
+    hidden = normalize_hidden_size_groups(config.hidden_size_groups, [[32, 16]])
+    repeats = int(config.num_repeats) if str(config.num_repeats).isdigit() else 1
+    if repeats < 1:
+        raise ValueError("Training configuration num_repeats must be >= 1.")
+    return TrainingConfig(sorted(set(epochs)), int(config.best_epochs), hidden, repeats)
+
+
+DEFAULT_TRAINING_CONFIG = TrainingConfig()
+list_epochs = list(DEFAULT_TRAINING_CONFIG.epoch_candidates)
+best_epochs = DEFAULT_TRAINING_CONFIG.best_epochs
 
 exp_df = pd.DataFrame()
 
@@ -1676,11 +1701,8 @@ def parse_multi_select(answer, options, allow_all=True, one_based=False):
 
 
 def selectable_output_features_from_csv(data):
-    """Return output choices from every active raw dataset column, targets first."""
-    columns = list(data.columns)
-    target_first = [column for column in columns if column in TARGET_VARIABLES]
-    remaining = [column for column in columns if column not in target_first]
-    return target_first + remaining
+    """Return output choices in exact CSV order so numeric selections are stable."""
+    return list(data.columns)
 
 
 def selectable_input_features_from_csv(data, selected_output_features):
@@ -2133,7 +2155,7 @@ def prepare_or_reuse_data(dataset_path="convert/stclean.csv", prep_folder="prep_
     print_selection_guide()
 
     output_options = selectable_output_features_from_csv(data)
-    print("\nOutput feature candidates from the active raw dataset CSV (TARGET_VARIABLES shown first):")
+    print("\nOutput feature candidates from the active raw dataset CSV (CSV column order):")
     print("\n".join([str(i) + ")" + name for i, name in enumerate(output_options, start=1)]))
     answer = input(
         "Select one or several output features (indexes/ranges/names) [first target candidate]:"
@@ -2623,6 +2645,10 @@ def fit_model(
     if X_test_values.shape[0] != y_test_values.shape[0]:
         print("X_test and y_test row counts do not match.")
         return None, None, None, model, None
+    if not np.isfinite(y_train_values).all():
+        raise AssertionError("ANN pre-training validation failed: y_train contains NaN or infinite values before split.")
+    if not np.isfinite(y_test_values).all():
+        raise AssertionError("ANN pre-training validation failed: y_test contains NaN or infinite values before split.")
 
     optimize_weights = optimization_scope in ("weights", "both")
     optimize_inputs = optimization_scope in ("inputs", "both")
@@ -2650,6 +2676,11 @@ def fit_model(
         x_fit, y_fit = X_train_df, y_train_df
         x_val, y_val = None, None
 
+    if not np.isfinite(y_fit.to_numpy(dtype=float)).all():
+        raise AssertionError("ANN pre-training validation failed: y_train fit partition contains NaN or infinite values.")
+    if y_val is not None and not np.isfinite(y_val.to_numpy(dtype=float)).all():
+        raise AssertionError("ANN pre-training validation failed: y_val contains NaN or infinite values after validation split.")
+
     x_scaler = StandardScaler()
     y_scaler = StandardScaler()
     try:
@@ -2666,6 +2697,10 @@ def fit_model(
         )
         X_test_normalized = torch.as_tensor(X_test_normalized_df.to_numpy(), dtype=torch.float32)
         y_fit_normalized = torch.as_tensor(y_fit_normalized_df.to_numpy(), dtype=torch.float32)
+        if not np.isfinite(y_fit_normalized_df.to_numpy(dtype=float)).all():
+            raise AssertionError("ANN normalization failed: normalized y_train contains NaN or infinite values.")
+        if y_val_normalized_df is not None and not np.isfinite(y_val_normalized_df.to_numpy(dtype=float)).all():
+            raise AssertionError("ANN normalization failed: normalized y_val contains NaN or infinite values.")
         y_val_normalized = (
             torch.as_tensor(y_val_normalized_df.to_numpy(), dtype=torch.float32)
             if y_val_normalized_df is not None
@@ -5292,10 +5327,10 @@ def repeat_fit_model(
 
 
 def main():
-    list_hidden_sizes = [list(group) for group in globals().get("list_hidden_sizes", [])]
-    if not list_hidden_sizes:
-        list_hidden_sizes = [[16], [32], [64], [16, 8], [32, 16], [48, 24], [64, 32], [64, 32, 16]]
-    num_repeats = globals().get("num_repeats", 10)
+    training_config = validate_training_config(DEFAULT_TRAINING_CONFIG)
+    list_hidden_sizes = [list(group) for group in training_config.hidden_size_groups]
+    default_epoch_candidates = list(training_config.epoch_candidates)
+    num_repeats = training_config.num_repeats
     dataset_path = "convert/stclean.csv"
     selected_saved_run, loaded_optimization_scope = prompt_saved_run_choice()
     prepared_X_train, prepared_outputs, use_auto_feature_selection, reused_prep_data = prepare_or_reuse_data(
@@ -5439,7 +5474,7 @@ def main():
     if has_nn_model:
         print_ann_training_robustness_notes()
 
-    default_epochs = list(list_epochs)
+    default_epochs = list(default_epoch_candidates)
     if loaded_epoch_candidates:
         default_epochs = loaded_epoch_candidates
     answer = " ".join([str(e) for e in default_epochs])
@@ -5477,14 +5512,14 @@ def main():
             " ".join([str(e) for e in default_epochs]),
         )
 
-    list_epochs, use_cv_early_stop = parse_epochs_input(answer, default_epochs)
+    epoch_candidates, use_cv_early_stop = parse_epochs_input(answer, default_epochs)
     if answer != "0":
-        if not list_epochs and not use_cv_early_stop:
+        if not epoch_candidates and not use_cv_early_stop:
             print("No valid epoch values were provided.")
             exit()
 
-        if list_epochs and has_nn_model:
-            print("Manual epoch candidates:", list_epochs)
+        if epoch_candidates and has_nn_model:
+            print("Manual epoch candidates:", epoch_candidates)
         if use_cv_early_stop and has_nn_model:
             print("Cross-validation early-stop epoch search is enabled.")
 
@@ -5530,7 +5565,7 @@ def main():
 
             reference_model = registered_models[selected_models[0]]
             reference_model_name = model_names[selected_models[0]]
-            reference_epochs = list_epochs[0] if list_epochs else best_epochs
+            reference_epochs = epoch_candidates[0] if epoch_candidates else training_config.best_epochs
             reference_hidden_sizes = list_hidden_sizes[0] if is_torch_model(reference_model) else []
 
             print(
@@ -5580,7 +5615,7 @@ def main():
             is_nn = is_torch_model(model_class)
             hidden_size_candidates = list_hidden_sizes if is_nn else [[]]
             for hidden_sizes in hidden_size_candidates:
-                epoch_candidates = sorted(set(list_epochs)) if is_nn else [1]
+                epoch_candidates_for_model = sorted(set(epoch_candidates)) if is_nn else [1]
                 if is_nn and use_cv_early_stop:
                     cv_epoch = select_epochs_with_cv_early_stopping(
                         model_class,
@@ -5588,7 +5623,7 @@ def main():
                         features=active_features,
                     )
                     if cv_epoch is not None and cv_epoch > 0:
-                        epoch_candidates.append(cv_epoch)
+                        epoch_candidates_for_model = sorted(set(epoch_candidates_for_model + [cv_epoch]))
                         print(
                             f"[{model_name} | {hidden_sizes}] CV early-stop suggested epochs: {cv_epoch}"
                         )
@@ -5597,8 +5632,7 @@ def main():
                             f"[{model_name} | {hidden_sizes}] CV early-stop failed; using manual epochs only."
                         )
 
-                epoch_candidates = sorted(set(epoch_candidates))
-                for num_epochs in epoch_candidates:
+                for num_epochs in epoch_candidates_for_model:
                     pretrained_weights_path = (
                         selected_saved_run.get("weights_path")
                         if selected_saved_run and is_nn and selected_saved_run.get("has_weights")
@@ -5952,7 +5986,7 @@ def main():
             inputs=active_features,
             outputs=outputs,
             best_r2=best_r2,
-            epoch_candidates=list_epochs,
+            epoch_candidates=epoch_candidates,
             hidden_size_groups=list_hidden_sizes if is_torch_model(registered_models[max_model_index]) else [],
             repeat_count=num_repeats,
             optimization_scope=optimization_scope,

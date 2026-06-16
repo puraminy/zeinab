@@ -220,6 +220,42 @@ def _optional_future_quality_input_set(optional_future_quality_inputs=None):
     return {_canonical_name(name) for name in (optional_future_quality_inputs or [])}
 
 
+SAFE_INPUT_VARIABLES = tuple(EARLY_VARIABLES) + tuple(CONTROL_VARIABLES)
+FUTURE_INFORMATION_LEAKAGE_VARIABLES = (
+    "filtercake_moisture",
+    "filtercake_sugar",
+    "sweetwater_brix",
+    "sulphited_color",
+    "standard_liquor_color",
+    "white_total_points",
+)
+BORDERLINE_CONFIRMATION_VARIABLES = ()
+VARIABLE_CHRONOLOGY_CLASSIFICATION = {
+    **{name: "A_safe_input" for name in SAFE_INPUT_VARIABLES},
+    **{name: "B_future_information_leakage" for name in FUTURE_INFORMATION_LEAKAGE_VARIABLES},
+    **{name: "C_borderline_requires_user_confirmation" for name in BORDERLINE_CONFIRMATION_VARIABLES},
+}
+
+
+def classify_refinery_variable(column_name):
+    """Classify a process variable by refinery chronology for leakage prevention.
+
+    A = safe early/control input. B = future/downstream information that must be
+    blocked from X. C = borderline, requiring explicit user confirmation before
+    diagnostic-only use. Engineered columns inherit the base variable class.
+    """
+    base_name = base_variable_name(column_name)
+    canonical_base = _canonical_name(base_name)
+    for variable, classification in VARIABLE_CHRONOLOGY_CLASSIFICATION.items():
+        if _canonical_name(variable) == canonical_base:
+            return classification
+    if canonical_base.startswith(_PROCESS_CONTROL_PREFIX_CANONICAL):
+        return "A_safe_input"
+    if leakage_pattern_matches(column_name) or is_main_model_excluded_feature(column_name):
+        return "B_future_information_leakage"
+    return "C_borderline_requires_user_confirmation"
+
+
 def is_allowed_model_input(column_name, output_features=None, optional_future_quality_inputs=None):
     """Return True for standard inputs plus explicitly opted-in future-quality inputs."""
     output_features = set(output_features or [])
@@ -235,12 +271,14 @@ def is_allowed_model_input(column_name, output_features=None, optional_future_qu
     if is_target_variable(column_name, output_features=output_features):
         return False
 
+    if classify_refinery_variable(column_name) == "B_future_information_leakage":
+        return False
+
     optional_quality_inputs = _optional_future_quality_input_set(optional_future_quality_inputs)
     if _canonical_name(base_name) in optional_quality_inputs:
         return True
 
-    canonical_base = _canonical_name(base_name)
-    return canonical_base in _ALLOWED_CANONICAL or canonical_base.startswith(_PROCESS_CONTROL_PREFIX_CANONICAL)
+    return classify_refinery_variable(column_name) == "A_safe_input"
 
 
 def filter_allowed_model_inputs(columns, output_features=None, optional_future_quality_inputs=None):
@@ -289,11 +327,14 @@ def leakage_block_reasons(column_name, output_features=None, optional_future_qua
         reasons.append("selected output target")
     elif is_target_variable(column_name, output_features=output_features):
         reasons.append("TARGET_VARIABLES future/process output")
+    chronology_class = classify_refinery_variable(column_name)
+    if chronology_class == "B_future_information_leakage" and "TARGET_VARIABLES future/process output" not in reasons:
+        reasons.append("future/downstream refinery chronology leakage")
     optional_quality_inputs = _optional_future_quality_input_set(optional_future_quality_inputs)
     if _canonical_name(base_name) in optional_quality_inputs and not reasons:
         return ["explicitly allowed non-target diagnostic input"]
-    if _canonical_name(base_name) not in _ALLOWED_CANONICAL and not pattern_matches and not is_target_variable(column_name, output_features=output_features):
-        reasons.append("not in EARLY_VARIABLES or CONTROL_VARIABLES allow-list")
+    if chronology_class == "C_borderline_requires_user_confirmation" and not pattern_matches and not is_target_variable(column_name, output_features=output_features):
+        reasons.append("borderline or unknown chronology; requires explicit confirmation")
     return reasons
 
 def find_leakage_columns(input_features, output_features=None, optional_future_quality_inputs=None):
@@ -344,6 +385,9 @@ def refinery_variable_group_metadata():
         "CONTROL_VARIABLES": list(CONTROL_VARIABLES),
         "PROCESS_CONTROL_PREFIXES": list(PROCESS_CONTROL_PREFIXES),
         "TARGET_VARIABLES": list(TARGET_VARIABLES),
+        "SAFE_INPUT_VARIABLES": list(SAFE_INPUT_VARIABLES),
+        "FUTURE_INFORMATION_LEAKAGE_VARIABLES": list(FUTURE_INFORMATION_LEAKAGE_VARIABLES),
+        "BORDERLINE_CONFIRMATION_VARIABLES": list(BORDERLINE_CONFIRMATION_VARIABLES),
         "MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS": list(MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS),
         "DIAGNOSTIC_ONLY_FEATURE_PATTERNS": list(DIAGNOSTIC_ONLY_FEATURE_PATTERNS),
         "PRE_TARGET_FEATURE_IMPORTANCE_INPUTS": {
