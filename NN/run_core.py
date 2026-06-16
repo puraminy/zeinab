@@ -42,7 +42,9 @@ from read_data import (
 )
 from refinery_variables import (
     CONTROL_VARIABLES,
+    DIAGNOSTIC_ONLY_FEATURE_PATTERNS,
     EARLY_VARIABLES,
+    MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS,
     TARGET_VARIABLES,
     filter_allowed_model_inputs,
     find_leakage_columns,
@@ -1087,8 +1089,17 @@ def print_refinery_variable_groups():
     print("CONTROL_VARIABLES (operator-adjustable): " + ", ".join(CONTROL_VARIABLES))
     print("TARGET_VARIABLES (future quality outputs): " + ", ".join(TARGET_VARIABLES))
     print("Default safe inputs are EARLY_VARIABLES + CONTROL_VARIABLES.")
-    print("Interactive mode now lets you choose any non-output column from the active raw dataset CSV as an input.")
-    print("Safety rule: a column selected as an output target is always blocked from X.")
+    print(
+        "Main-model exclusions (always removed from X): "
+        + ", ".join(MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS)
+    )
+    print(
+        "Diagnostic-only leakage-prone features: "
+        + ", ".join(DIAGNOSTIC_ONLY_FEATURE_PATTERNS)
+        + " (use only in a separate comparison model, never in the main model)."
+    )
+    print("Interactive mode lets you choose non-output columns, subject to leakage validation.")
+    print("Safety rule: output targets and diagnostic-only leakage-prone features are always blocked from main-model X.")
     print_divider("=")
 
 

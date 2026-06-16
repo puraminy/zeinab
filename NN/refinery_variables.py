@@ -70,15 +70,44 @@ LEAKAGE_NAME_PATTERNS = (
     "target",
 )
 
+# 4) Leakage-prone feature set for the main model.
+#
 # These final/QC white-sugar fields are derived from quality scoring or final
 # quality-control calculations. They are hard-blocked from the main predictive
 # model input matrix, even if someone tries to opt them in as future-quality
 # inputs, because they would leak post-process quality information.
-LEAKAGE_RISK_FEATURE_PATTERNS = (
+MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS = (
     "white_total_points",
     "white_quality_",
     "white_average_",
 )
+
+# 5) Optional diagnostic-only feature set.
+#
+# These columns may be used only in a separate diagnostic/comparison model that
+# is explicitly labeled as leakage-prone. Keeping this alias separate from the
+# main-model exclusion rule makes the policy visible to callers without allowing
+# these columns through normal training validation.
+DIAGNOSTIC_ONLY_FEATURE_PATTERNS = MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS
+
+# Backward-compatible name used by the existing leakage checks.
+LEAKAGE_RISK_FEATURE_PATTERNS = MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS
+
+
+def _matches_exact_or_prefix(column_name, patterns):
+    """Return True when a base column equals an exact rule or starts with a prefix rule."""
+    lower_name = str(base_variable_name(column_name)).lower()
+    return any(lower_name == pattern or lower_name.startswith(pattern) for pattern in patterns)
+
+
+def is_main_model_excluded_feature(column_name):
+    """Return True for features that must be removed from the main model."""
+    return _matches_exact_or_prefix(column_name, MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS)
+
+
+def is_diagnostic_only_feature(column_name):
+    """Return True for optional leakage-prone features reserved for diagnostics."""
+    return _matches_exact_or_prefix(column_name, DIAGNOSTIC_ONLY_FEATURE_PATTERNS)
 
 
 def leakage_pattern_matches(column_name):
@@ -239,7 +268,18 @@ def refinery_variable_group_metadata():
         "EARLY_VARIABLES": list(EARLY_VARIABLES),
         "CONTROL_VARIABLES": list(CONTROL_VARIABLES),
         "TARGET_VARIABLES": list(TARGET_VARIABLES),
+        "MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS": list(MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS),
+        "DIAGNOSTIC_ONLY_FEATURE_PATTERNS": list(DIAGNOSTIC_ONLY_FEATURE_PATTERNS),
         "input_rule": "Model inputs = EARLY_VARIABLES + CONTROL_VARIABLES only.",
+        "main_model_exclusion_rule": (
+            "Remove white_total_points plus every column whose base name starts "
+            "with white_quality_ or white_average_ from the main model input set."
+        ),
+        "diagnostic_only_rule": (
+            "The excluded white-sugar scoring/average fields may be used only in "
+            "a separate diagnostic comparison model that is clearly labeled as "
+            "leakage-prone; they are never allowed through main training validation."
+        ),
         "leakage_rule": (
             "TARGET_VARIABLES, selected outputs, and columns containing "
             "average_to_date/average_two_shifts/moving_average/future/target, "
