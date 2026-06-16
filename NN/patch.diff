@@ -1,140 +1,197 @@
-diff --git a/NN/read_data.py b/NN/read_data.py
-index 8aa5f9bff250d208a9087fb782a2208458e80daf..15fd52cb376013055dae8243c149e9e2474a566a 100644
---- a/NN/read_data.py
-+++ b/NN/read_data.py
-@@ -261,95 +261,126 @@ TEMPORAL_DERIVED_COLUMN_PATTERN = re.compile(
-     r".+__(diff|lag|seqdiff|ratio|accel|normchg|roll_mean|roll_std|roll_min|roll_max|roll_range|roll_slope)_\d+$"
-     r"|sheet_name__(date_ordinal|year|month|day|dayofyear|iso_week|elapsed_days)$"
+diff --git a/NN/refinery_variables.py b/NN/refinery_variables.py
+index 7f1bc6084fd58af6aab8b4d709fa82d96c2209ca..ec283761e842e5437195b71822991bd569b14f8b 100644
+--- a/NN/refinery_variables.py
++++ b/NN/refinery_variables.py
+@@ -68,50 +68,75 @@ LEAKAGE_NAME_PATTERNS = (
+     "moving_average",
+     "future",
+     "target",
  )
  
+ # 4) Leakage-prone feature set for the main model.
+ #
+ # These final/QC white-sugar fields are derived from quality scoring or final
+ # quality-control calculations. They are hard-blocked from the main predictive
+ # model input matrix, even if someone tries to opt them in as future-quality
+ # inputs, because they would leak post-process quality information.
+ MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS = (
+     "white_total_points",
+     "white_quality_",
+     "white_average_",
+ )
  
- def split_base_and_derived_input_features(data_columns, input_features):
-     """Split user-provided inputs into dataset columns and temporal-derived columns."""
-     if input_features is None:
-         return None, []
+ # 5) Optional diagnostic-only feature set.
+ #
+ # These columns may be used only in a separate diagnostic/comparison model that
+ # is explicitly labeled as leakage-prone. Keeping this alias separate from the
+ # main-model exclusion rule makes the policy visible to callers without allowing
+ # these columns through normal training validation.
+ DIAGNOSTIC_ONLY_FEATURE_PATTERNS = MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS
  
-     base_input_features = [col for col in input_features if col in data_columns]
-     derived_input_features = [col for col in input_features if col not in data_columns]
++
++
++# 6) Target-specific feature-importance chronology.
++#
++# Feature-importance reports must explain a target only with measurements that
++# would already exist before that target is measured.  For white_total_points,
++# this intentionally stops at evaporation/boiling and excludes any final white
++# sugar QC/scoring fields or other contemporaneous/downstream targets.
++PRE_TARGET_FEATURE_IMPORTANCE_INPUTS = {
++    "white_total_points": (
++        # Raw material
++        "raw_sugar_color",
++        "raw_sugar_purity",
++        "raw_sugar_moisture",
++        # Stage 2: Clarification
++        "lime_alkalinity",
++        "carbonated_pH",
++        "co2_percent",
++        # Stage 3: Sulphitation
++        "sulphited_color",
++        # Stage 4: Evaporation/Boiling
++        "boiler_pH",
++    ),
++}
++
+ # Backward-compatible name used by the existing leakage checks.
+ LEAKAGE_RISK_FEATURE_PATTERNS = MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS
  
-     invalid_derived = [
-         col for col in derived_input_features if not TEMPORAL_DERIVED_COLUMN_PATTERN.match(col)
+ 
+ def _matches_exact_or_prefix(column_name, patterns):
+     """Return True when a base column equals an exact rule or starts with a prefix rule."""
+     lower_name = str(base_variable_name(column_name)).lower()
+     return any(lower_name == pattern or lower_name.startswith(pattern) for pattern in patterns)
+ 
+ 
+ def is_main_model_excluded_feature(column_name):
+     """Return True for features that must be removed from the main model."""
+     return _matches_exact_or_prefix(column_name, MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS)
+ 
+ 
+ def is_diagnostic_only_feature(column_name):
+     """Return True for optional leakage-prone features reserved for diagnostics."""
+     return _matches_exact_or_prefix(column_name, DIAGNOSTIC_ONLY_FEATURE_PATTERNS)
+ 
+ 
+ def leakage_pattern_matches(column_name):
+     """Return leakage marker substrings/prefixes found in a column name."""
+     lower_name = str(base_variable_name(column_name)).lower()
+     matches = [pattern for pattern in LEAKAGE_NAME_PATTERNS if pattern in lower_name]
+     matches.extend(
+@@ -199,91 +224,116 @@ def is_allowed_model_input(column_name, output_features=None, optional_future_qu
+ 
+     if is_name_based_leakage_column(column_name):
+         return False
+ 
+     optional_quality_inputs = _optional_future_quality_input_set(optional_future_quality_inputs)
+     if _canonical_name(base_name) in optional_quality_inputs:
+         return True
+ 
+     if is_target_variable(column_name, output_features=output_features):
+         return False
+     return _canonical_name(base_name) in _ALLOWED_CANONICAL
+ 
+ 
+ def filter_allowed_model_inputs(columns, output_features=None, optional_future_quality_inputs=None):
+     """Keep allowed input columns, preserving the incoming order."""
+     return [
+         column for column in columns
+         if is_allowed_model_input(
+             column,
+             output_features=output_features,
+             optional_future_quality_inputs=optional_future_quality_inputs,
+         )
      ]
-     if invalid_derived:
-         raise ValueError(
-             f"Input columns not found in dataset and not recognized as temporal-derived columns: "
-             f"{invalid_derived}. Available columns: {list(data_columns)}"
-         )
- 
-     return base_input_features, derived_input_features
  
  
--RAW_TIME_COLUMNS = ("sheet_name", "report_date_month", "report_date_day", "work_day")
-+RAW_TIME_COLUMNS = ("sheet_name", "report_date_year", "report_date_month", "report_date_day", "work_day")
- SHEET_NAME_DATE_FEATURES = (
-     "year",
-     "month",
-     "day",
-     "day_of_week",
-     "month_sin",
-     "month_cos",
-     "day_sin",
-     "day_cos",
- )
- 
- 
-+def _parse_report_date_columns(data):
-+    """Return dates built from report date columns when sheet labels are not dates."""
-+    year_column = next(
-+        (column for column in ("report_date_year", "report_year", "year") if column in data.columns),
-+        None,
-+    )
-+    month_column = next(
-+        (column for column in ("report_date_month", "month") if column in data.columns),
-+        None,
-+    )
-+    day_column = next(
-+        (column for column in ("report_date_day", "work_day", "day") if column in data.columns),
-+        None,
-+    )
-+    if not (year_column and month_column and day_column):
-+        return None
++def feature_importance_inputs_for_target(columns, target):
++    """Return target-chronology-safe feature-importance inputs.
 +
-+    date_parts = pd.DataFrame({
-+        "year": pd.to_numeric(data[year_column], errors="coerce"),
-+        "month": pd.to_numeric(data[month_column], errors="coerce"),
-+        "day": pd.to_numeric(data[day_column], errors="coerce"),
-+    })
-+    return pd.to_datetime(date_parts, errors="coerce")
++    For targets with an explicit chronology policy, only columns listed for that
++    target are eligible.  Matching is done against base variable names so future
++    engineered variants inherit the same before-target restriction.  Other
++    targets keep the existing generic leakage-name filtering behavior.
++    """
++    allowed_for_target = PRE_TARGET_FEATURE_IMPORTANCE_INPUTS.get(target)
++    if not allowed_for_target:
++        return [column for column in columns if column != target and not leakage_pattern_matches(column)]
++
++    allowed_canonical = {_canonical_name(name) for name in allowed_for_target}
++    return [
++        column for column in columns
++        if column != target
++        and _canonical_name(base_variable_name(column)) in allowed_canonical
++        and not leakage_pattern_matches(column)
++    ]
 +
 +
- def preprocess_calendar_features(data):
--    """Build leakage-safe calendar features from ``sheet_name`` and drop raw time columns.
-+    """Build leakage-safe calendar features and drop raw time columns.
+ def find_leakage_columns(input_features, output_features=None, optional_future_quality_inputs=None):
+     """Identify selected inputs that would leak future quality information."""
+     leakage_columns = []
+     for column in input_features:
+         if column in leakage_columns:
+             continue
+         if is_name_based_leakage_column(column):
+             leakage_columns.append(column)
+             continue
+         if not is_allowed_model_input(
+             column,
+             output_features=output_features,
+             optional_future_quality_inputs=optional_future_quality_inputs,
+         ):
+             leakage_columns.append(column)
+     return leakage_columns
  
--    ``sheet_name`` is the report date in the source workbook, not a plant
--    measurement.  The raw sheet label and duplicate raw date/work-day fields are
-+    ``sheet_name`` is the report date in some source workbooks, not a plant
-+    measurement.  Newer converted CSVs may instead keep non-date sheet labels
-+    plus explicit ``report_date_*`` fields.  The raw labels/date fields are
-     removed before model feature selection so models cannot memorize individual
-     sheets.  Only bounded calendar components and their cyclical encodings are
-     retained as candidate inputs.
-     """
-     transformed = data.copy()
-     parsed_dates = None
-     if "sheet_name" in transformed.columns:
-         parsed_dates = pd.to_datetime(
-             transformed["sheet_name"].astype(str).str.strip(),
-             format="%Y.%m.%d",
-             errors="coerce",
-         )
--        if parsed_dates.isna().all():
--            raise ValueError(
--                "sheet_name was present but no values could be parsed as dates "
--                "in YYYY.MM.DD format."
--            )
  
-+    if parsed_dates is None or parsed_dates.isna().all():
-+        parsed_dates = _parse_report_date_columns(transformed)
-+
-+    if parsed_dates is not None and parsed_dates.notna().any():
-         transformed["date"] = parsed_dates
-         transformed["year"] = parsed_dates.dt.year
-         transformed["month"] = parsed_dates.dt.month
-         transformed["day"] = parsed_dates.dt.day
-         transformed["day_of_week"] = parsed_dates.dt.dayofweek
-         transformed["month_sin"] = np.sin(2.0 * np.pi * transformed["month"] / 12.0)
-         transformed["month_cos"] = np.cos(2.0 * np.pi * transformed["month"] / 12.0)
-         transformed["day_sin"] = np.sin(2.0 * np.pi * transformed["day"] / 31.0)
-         transformed["day_cos"] = np.cos(2.0 * np.pi * transformed["day"] / 31.0)
-+    elif "sheet_name" in transformed.columns:
-+        print(
-+            "Warning: sheet_name was present but not parseable as YYYY.MM.DD, "
-+            "and no complete report_date_year/month/day fallback was available; "
-+            "calendar features will be skipped."
-+        )
- 
-     transformed = transformed.drop(
-         columns=[column for column in RAW_TIME_COLUMNS if column in transformed.columns],
-         errors="ignore",
+ def validate_model_inputs(input_features, output_features=None, optional_future_quality_inputs=None):
+     """Raise a clear error if an input list contains leaked/disallowed variables."""
+     leakage_columns = find_leakage_columns(
+         input_features,
+         output_features=output_features,
+         optional_future_quality_inputs=optional_future_quality_inputs,
      )
-     return transformed, parsed_dates
+     if leakage_columns:
+         allowed = list(EARLY_VARIABLES) + list(CONTROL_VARIABLES)
+         targets = list(TARGET_VARIABLES)
+         raise ValueError(
+             "Target-leakage prevention blocked disallowed model inputs: "
+             f"{leakage_columns}. Allowed inputs are EARLY_VARIABLES + "
+             f"CONTROL_VARIABLES only: {allowed}. Future quality variables are "
+             "TARGET_VARIABLES and must be predicted, not used as inputs unless "
+             "explicitly selected in run.py's Future Quality Variables prompt "
+             f"and not also selected as output targets: {targets}. Columns containing "
+             f"automatic leakage markers are always blocked from X: "
+             f"{list(LEAKAGE_NAME_PATTERNS) + list(LEAKAGE_RISK_FEATURE_PATTERNS)}."
+         )
+     return list(input_features)
  
  
- def replace_legacy_sheet_name_input(input_features, data_columns):
-     """Replace legacy raw ``sheet_name`` requests with encoded calendar inputs."""
-     if input_features is None:
-         return None
-     calendar_features = [feature for feature in SHEET_NAME_DATE_FEATURES if feature in data_columns]
-     replaced = []
-     for feature in input_features:
-         if feature == "sheet_name":
-             replaced.extend(calendar_features)
-         else:
-             replaced.append(feature)
-     return replaced
- 
- 
- def add_sheet_name_datetime_features(data, input_features):
-     """Map any legacy ``sheet_name`` input request to encoded calendar features."""
-     resolved_inputs = list(input_features)
+ def refinery_variable_group_metadata():
+     """Return serializable metadata explaining the refinery variable groups."""
+     return {
+         "EARLY_VARIABLES": list(EARLY_VARIABLES),
+         "CONTROL_VARIABLES": list(CONTROL_VARIABLES),
+         "TARGET_VARIABLES": list(TARGET_VARIABLES),
+         "MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS": list(MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS),
+         "DIAGNOSTIC_ONLY_FEATURE_PATTERNS": list(DIAGNOSTIC_ONLY_FEATURE_PATTERNS),
++        "PRE_TARGET_FEATURE_IMPORTANCE_INPUTS": {
++            target: list(inputs)
++            for target, inputs in PRE_TARGET_FEATURE_IMPORTANCE_INPUTS.items()
++        },
+         "input_rule": "Model inputs = EARLY_VARIABLES + CONTROL_VARIABLES only.",
+         "main_model_exclusion_rule": (
+             "Remove white_total_points plus every column whose base name starts "
+             "with white_quality_ or white_average_ from the main model input set."
+         ),
+         "diagnostic_only_rule": (
+             "The excluded white-sugar scoring/average fields may be used only in "
+             "a separate diagnostic comparison model that is clearly labeled as "
+             "leakage-prone; they are never allowed through main training validation."
+         ),
+         "leakage_rule": (
+             "TARGET_VARIABLES, selected outputs, and columns containing "
+             "average_to_date/average_two_shifts/moving_average/future/target, "
+             "or final white-sugar QC fields (white_total_points, white_quality_*, "
+             "white_average_*) are never allowed as inputs."
+         ),
+     }

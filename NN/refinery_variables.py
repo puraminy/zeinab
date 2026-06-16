@@ -90,6 +90,31 @@ MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS = (
 # these columns through normal training validation.
 DIAGNOSTIC_ONLY_FEATURE_PATTERNS = MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS
 
+
+
+# 6) Target-specific feature-importance chronology.
+#
+# Feature-importance reports must explain a target only with measurements that
+# would already exist before that target is measured.  For white_total_points,
+# this intentionally stops at evaporation/boiling and excludes any final white
+# sugar QC/scoring fields or other contemporaneous/downstream targets.
+PRE_TARGET_FEATURE_IMPORTANCE_INPUTS = {
+    "white_total_points": (
+        # Raw material
+        "raw_sugar_color",
+        "raw_sugar_purity",
+        "raw_sugar_moisture",
+        # Stage 2: Clarification
+        "lime_alkalinity",
+        "carbonated_pH",
+        "co2_percent",
+        # Stage 3: Sulphitation
+        "sulphited_color",
+        # Stage 4: Evaporation/Boiling
+        "boiler_pH",
+    ),
+}
+
 # Backward-compatible name used by the existing leakage checks.
 LEAKAGE_RISK_FEATURE_PATTERNS = MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS
 
@@ -221,6 +246,27 @@ def filter_allowed_model_inputs(columns, output_features=None, optional_future_q
     ]
 
 
+def feature_importance_inputs_for_target(columns, target):
+    """Return target-chronology-safe feature-importance inputs.
+
+    For targets with an explicit chronology policy, only columns listed for that
+    target are eligible.  Matching is done against base variable names so future
+    engineered variants inherit the same before-target restriction.  Other
+    targets keep the existing generic leakage-name filtering behavior.
+    """
+    allowed_for_target = PRE_TARGET_FEATURE_IMPORTANCE_INPUTS.get(target)
+    if not allowed_for_target:
+        return [column for column in columns if column != target and not leakage_pattern_matches(column)]
+
+    allowed_canonical = {_canonical_name(name) for name in allowed_for_target}
+    return [
+        column for column in columns
+        if column != target
+        and _canonical_name(base_variable_name(column)) in allowed_canonical
+        and not leakage_pattern_matches(column)
+    ]
+
+
 def find_leakage_columns(input_features, output_features=None, optional_future_quality_inputs=None):
     """Identify selected inputs that would leak future quality information."""
     leakage_columns = []
@@ -270,6 +316,10 @@ def refinery_variable_group_metadata():
         "TARGET_VARIABLES": list(TARGET_VARIABLES),
         "MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS": list(MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS),
         "DIAGNOSTIC_ONLY_FEATURE_PATTERNS": list(DIAGNOSTIC_ONLY_FEATURE_PATTERNS),
+        "PRE_TARGET_FEATURE_IMPORTANCE_INPUTS": {
+            target: list(inputs)
+            for target, inputs in PRE_TARGET_FEATURE_IMPORTANCE_INPUTS.items()
+        },
         "input_rule": "Model inputs = EARLY_VARIABLES + CONTROL_VARIABLES only.",
         "main_model_exclusion_rule": (
             "Remove white_total_points plus every column whose base name starts "
