@@ -2,6 +2,7 @@ import os
 import json
 import re
 import importlib.util
+import logging
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -17,6 +18,7 @@ ANSI_YELLOW = "\033[93m"
 ANSI_RESET = "\033[0m"
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOGGER = logging.getLogger(__name__)
 
 
 def _normalize_numeric_text(value):
@@ -162,9 +164,9 @@ def ensure_dataset_csv_exists(dataset_path, source_excel_path=None):
             f"file '{resolved_excel_path}' was not found to rebuild it."
         )
 
-    print(
-        "[path-debug] Dataset CSV is missing; rebuilding default sugar dataset "
-        f"from Excel report: {resolved_excel_path}"
+    LOGGER.debug(
+        "Dataset CSV is missing; rebuilding default sugar dataset from Excel report: %s",
+        resolved_excel_path,
     )
 
     try:
@@ -179,12 +181,12 @@ def ensure_dataset_csv_exists(dataset_path, source_excel_path=None):
 
     os.makedirs(os.path.dirname(resolved_dataset_path), exist_ok=True)
     data.to_csv(resolved_dataset_path, index=False)
-    print(f"[path-debug] Rebuilt dataset CSV: {resolved_dataset_path}")
+    LOGGER.debug("Rebuilt dataset CSV: %s", resolved_dataset_path)
     return resolved_dataset_path
 
 
 def print_path_debug(label, path, resolved_path=None):
-    """Print debug information for a path that may depend on the working directory."""
+    """Log debug information for a path that may depend on the working directory."""
     path_text = os.fspath(path)
     if resolved_path is None:
         resolved_path = resolve_relative_path(path_text)
@@ -192,13 +194,13 @@ def print_path_debug(label, path, resolved_path=None):
     module_candidate = (
         path_text if os.path.isabs(path_text) else os.path.abspath(os.path.join(MODULE_DIR, path_text))
     )
-    print(f"[path-debug] {label}")
-    print(f"[path-debug]   cwd: {os.getcwd()}")
-    print(f"[path-debug]   module_dir: {MODULE_DIR}")
-    print(f"[path-debug]   requested: {path_text}")
-    print(f"[path-debug]   cwd candidate: {cwd_candidate} (exists={os.path.exists(cwd_candidate)})")
-    print(f"[path-debug]   module candidate: {module_candidate} (exists={os.path.exists(module_candidate)})")
-    print(f"[path-debug]   resolved: {resolved_path} (exists={os.path.exists(resolved_path)})")
+    LOGGER.debug("%s", label)
+    LOGGER.debug("  cwd: %s", os.getcwd())
+    LOGGER.debug("  module_dir: %s", MODULE_DIR)
+    LOGGER.debug("  requested: %s", path_text)
+    LOGGER.debug("  cwd candidate: %s (exists=%s)", cwd_candidate, os.path.exists(cwd_candidate))
+    LOGGER.debug("  module candidate: %s (exists=%s)", module_candidate, os.path.exists(module_candidate))
+    LOGGER.debug("  resolved: %s (exists=%s)", resolved_path, os.path.exists(resolved_path))
     return resolved_path
 
 
@@ -433,11 +435,11 @@ def prep_data_exists(prep_folder="prep_data"):
     paths = prep_data_file_paths(prep_folder)
     required = [paths["X_train"], paths["X_test"], paths["y_train"], paths["y_test"]]
     exists = all(os.path.isfile(path) for path in required)
-    print(f"[path-debug] prep_data folder resolved to: {os.path.dirname(paths['X_train'])}")
-    print(f"[path-debug] prep_data required files exist: {exists}")
+    LOGGER.debug("prep_data folder resolved to: %s", os.path.dirname(paths['X_train']))
+    LOGGER.debug("prep_data required files exist: %s", exists)
     if not exists:
         missing = [path for path in required if not os.path.isfile(path)]
-        print(f"[path-debug] prep_data missing required files: {missing}")
+        LOGGER.debug("prep_data missing required files: %s", missing)
     return exists
 
 
@@ -823,7 +825,7 @@ def prepare_data_from_file(
     dataset_path = print_path_debug("prepare_data_from_file dataset", dataset_path)
     dataset_path = ensure_dataset_csv_exists(dataset_path)
 
-    print(f"[path-debug] Reading raw dataset CSV: {dataset_path}")
+    LOGGER.debug("Reading raw dataset CSV: %s", dataset_path)
     data = pd.read_csv(dataset_path)
     data, parsed_sheet_dates = preprocess_calendar_features(data)
     input_features = replace_legacy_sheet_name_input(input_features, data.columns)
@@ -934,7 +936,7 @@ def sync_prep_data_with_dataset(
     dataset_path = print_path_debug("sync_prep_data_with_dataset dataset", dataset_path)
     dataset_path = ensure_dataset_csv_exists(dataset_path)
 
-    print(f"[path-debug] Reading raw dataset CSV for prep_data sync: {dataset_path}")
+    LOGGER.debug("Reading raw dataset CSV for prep_data sync: %s", dataset_path)
     data = pd.read_csv(dataset_path)
     data, _parsed_sheet_dates = preprocess_calendar_features(data)
     input_features = replace_legacy_sheet_name_input(input_features, data.columns)
@@ -1037,13 +1039,13 @@ def read_prep_data(inputs=None, prep_folder="prep_data", optional_future_quality
         if not os.path.isfile(file_path):
             raise FileNotFoundError(f"Required file '{file_path}' not found in '{prep_folder}'.")
 
-    print(f"[path-debug] Reading prep_data CSV: {X_train_path}")
+    LOGGER.debug("Reading prep_data CSV: %s", X_train_path)
     X_train_full = pd.read_csv(X_train_path)
-    print(f"[path-debug] Reading prep_data CSV: {X_test_path}")
+    LOGGER.debug("Reading prep_data CSV: %s", X_test_path)
     X_test_full = pd.read_csv(X_test_path)
-    print(f"[path-debug] Reading prep_data CSV: {y_train_path}")
+    LOGGER.debug("Reading prep_data CSV: %s", y_train_path)
     y_train = pd.read_csv(y_train_path)
-    print(f"[path-debug] Reading prep_data CSV: {y_test_path}")
+    LOGGER.debug("Reading prep_data CSV: %s", y_test_path)
     y_test = pd.read_csv(y_test_path)
 
     if list(X_train_full.columns) != list(X_test_full.columns):

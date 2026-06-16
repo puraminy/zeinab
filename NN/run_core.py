@@ -51,6 +51,7 @@ from refinery_variables import (
     find_leakage_columns,
     feature_importance_inputs_for_target,
     leakage_pattern_matches,
+    leakage_block_reasons,
     refinery_variable_group_metadata,
     remove_name_based_leakage_inputs,
     validate_model_inputs,
@@ -300,9 +301,9 @@ def save_leakage_report(removed_columns, output_features=None, context="pre_trai
         {
             "context": context,
             "column": column,
-            "matched_patterns": ", ".join(leakage_pattern_matches(column)),
+            "matched_patterns": ", ".join(leakage_block_reasons(column, output_features=output_features)) or "blocked by leakage policy",
             "action": "removed_from_X",
-            "reason": "Column name contains an automatic target-leakage marker.",
+            "reason": "; ".join(leakage_block_reasons(column, output_features=output_features)) or "Blocked by leakage policy.",
         }
         for column in removed_columns
     ]
@@ -1963,14 +1964,18 @@ def audit_feature_leakage(input_features, output_features=None, context="pre_tra
     )
     audit_rows = []
     for feature in input_features:
-        matches = leakage_pattern_matches(feature)
+        matches = leakage_block_reasons(
+            feature,
+            output_features=output_features,
+            optional_future_quality_inputs=FUTURE_QUALITY_INPUT_CANDIDATES,
+        )
         unsafe = feature in removed
         audit_rows.append({
             "context": context,
             "feature": feature,
             "status": "unsafe_blocked" if unsafe else "safe",
-            "matched_logic": ", ".join(matches) if matches else "no leakage pattern matched",
-            "reason": "blocked before model training" if unsafe else "available before prediction or explicitly allowed",
+            "matched_logic": "; ".join(matches) if matches else "allowed input policy",
+            "reason": ("blocked before model training: " + "; ".join(matches)) if unsafe else "available before prediction or explicitly allowed",
         })
     return [feature for feature in input_features if feature not in set(removed)], removed, audit_rows
 
@@ -5325,6 +5330,10 @@ def repeat_fit_model(
 
 
 def main():
+    list_hidden_sizes = [list(group) for group in globals().get("list_hidden_sizes", [])]
+    if not list_hidden_sizes:
+        list_hidden_sizes = [[16], [32], [64], [16, 8], [32, 16], [48, 24], [64, 32], [64, 32, 16]]
+    num_repeats = globals().get("num_repeats", 10)
     dataset_path = "convert/stclean.csv"
     selected_saved_run, loaded_optimization_scope = prompt_saved_run_choice()
     prepared_X_train, prepared_outputs, use_auto_feature_selection, reused_prep_data = prepare_or_reuse_data(

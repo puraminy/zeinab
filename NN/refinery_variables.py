@@ -225,12 +225,15 @@ def is_allowed_model_input(column_name, output_features=None, optional_future_qu
     if is_name_based_leakage_column(column_name):
         return False
 
+    # Known TARGET_VARIABLES are never allowed into the main model, even if
+    # they also appear in a legacy control list or an optional input override.
+    if is_target_variable(column_name, output_features=output_features):
+        return False
+
     optional_quality_inputs = _optional_future_quality_input_set(optional_future_quality_inputs)
     if _canonical_name(base_name) in optional_quality_inputs:
         return True
 
-    if is_target_variable(column_name, output_features=output_features):
-        return False
     return _canonical_name(base_name) in _ALLOWED_CANONICAL
 
 
@@ -266,6 +269,26 @@ def feature_importance_inputs_for_target(columns, target):
         and not leakage_pattern_matches(column)
     ]
 
+
+
+def leakage_block_reasons(column_name, output_features=None, optional_future_quality_inputs=None):
+    """Return exact policy reasons that would block a feature from main-model X."""
+    reasons = []
+    base_name = base_variable_name(column_name)
+    output_features = set(output_features or [])
+    pattern_matches = leakage_pattern_matches(column_name)
+    if pattern_matches:
+        reasons.append("name pattern: " + ", ".join(pattern_matches))
+    if column_name in output_features or base_name in output_features:
+        reasons.append("selected output target")
+    elif is_target_variable(column_name, output_features=output_features):
+        reasons.append("TARGET_VARIABLES future/process output")
+    optional_quality_inputs = _optional_future_quality_input_set(optional_future_quality_inputs)
+    if _canonical_name(base_name) in optional_quality_inputs and not reasons:
+        return ["explicitly allowed non-target diagnostic input"]
+    if _canonical_name(base_name) not in _ALLOWED_CANONICAL and not pattern_matches and not is_target_variable(column_name, output_features=output_features):
+        reasons.append("not in EARLY_VARIABLES or CONTROL_VARIABLES allow-list")
+    return reasons
 
 def find_leakage_columns(input_features, output_features=None, optional_future_quality_inputs=None):
     """Identify selected inputs that would leak future quality information."""

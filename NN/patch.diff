@@ -1,82 +1,233 @@
 diff --git a/NN/run_core.py b/NN/run_core.py
-index 46332049a8a0a47406797a8b14af8c49c2b76c0b..7343576b7db85497ebaebb0fafdaeef42882ad69 100644
+index 7343576b7db85497ebaebb0fafdaeef42882ad69..2e974fbfa1a2fd2ef5e28bebcdfbb93f16ababfa 100644
 --- a/NN/run_core.py
 +++ b/NN/run_core.py
-@@ -3448,60 +3448,74 @@ def _fit_model_design_random_forest(X_train_df, X_test_df, y_train_df, y_test_df
-     return predictions, estimator
+@@ -29,50 +29,51 @@ from sklearn import utils as sklearn_utils
+ from tabulate import tabulate
+ import os
+ from latex import *
+ from plot import *
+ from models import *
+ from read_data import (
+     read_prep_data,
+     sync_prep_data_with_dataset,
+     prep_data_exists,
+     read_prep_metadata,
+     save_data,
+     print_path_debug,
+     ensure_dataset_csv_exists,
+ )
+ from refinery_variables import (
+     CONTROL_VARIABLES,
+     DIAGNOSTIC_ONLY_FEATURE_PATTERNS,
+     EARLY_VARIABLES,
+     MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS,
+     TARGET_VARIABLES,
+     base_variable_name,
+     filter_allowed_model_inputs,
+     find_leakage_columns,
+     feature_importance_inputs_for_target,
+     leakage_pattern_matches,
++    leakage_block_reasons,
+     refinery_variable_group_metadata,
+     remove_name_based_leakage_inputs,
+     validate_model_inputs,
+ )
+ from recommendation_engine import (
+     DEFAULT_RECOMMENDED_CONTROLS,
+     RecommendationError,
+     recommend_operating_conditions,
+ )
+ import inspect
+ import models
+ import json
+ import copy
+ import math
+ from datetime import datetime, timezone
+ from collections import OrderedDict
+ import warnings
+ import logging
+ 
+ from openpyxl.styles import Font, PatternFill, Alignment
+ 
+ try:
+     from xgboost import XGBRegressor
+ except ImportError:
+     XGBRegressor = None
+@@ -278,53 +279,53 @@ def validation_report_for_training(X_train, y_train, name="training data"):
+ 
+ def color_text(text, color):
+     return f"{color}{text}{ANSI_RESET}"
  
  
- def _load_full_design_split_from_prep_data(X_train, X_test, y_train, y_test, prep_folder="prep_data"):
-     """Load full prepared train/test tables when available, otherwise reconstruct from current split."""
-     train_path = os.path.join(prep_folder, "train.csv")
-     test_path = os.path.join(prep_folder, "test.csv")
-     if not (os.path.isfile(train_path) and os.path.isfile(test_path)):
-         module_prep_folder = os.path.join(MODULE_DIR, prep_folder)
-         module_train_path = os.path.join(module_prep_folder, "train.csv")
-         module_test_path = os.path.join(module_prep_folder, "test.csv")
-         if os.path.isfile(module_train_path) and os.path.isfile(module_test_path):
-             train_path = module_train_path
-             test_path = module_test_path
-     outputs = list(y_train.columns)
-     if os.path.isfile(train_path) and os.path.isfile(test_path):
-         train_df = pd.read_csv(train_path)
-         test_df = pd.read_csv(test_path)
-         if all(column in train_df.columns for column in outputs) and all(column in test_df.columns for column in outputs):
-             candidate_features = [column for column in train_df.columns if column not in outputs and column in test_df.columns]
-             return train_df[candidate_features], test_df[candidate_features], train_df[outputs], test_df[outputs]
-     return X_train.copy(), X_test.copy(), y_train.copy(), y_test.copy()
+ def print_divider(char="=", width=68):
+     print(char * width)
  
  
- def _prepare_model_design_feature_frame(train_df, test_df, feature_columns):
--    """Coerce selected experiment features to numeric and drop unusable columns consistently."""
-+    """Coerce and impute selected experiment features for sklearn estimators.
-+
-+    Step 3 and Step 5 both fit RandomForestRegressor models, which reject NaN
-+    values.  The prepared refinery data can legitimately contain missing process
-+    measurements, so this helper applies the same train-fitted missing-value
-+    pipeline used by the main training path before returning model-design
-+    matrices.
-+    """
-     selected_train = train_df[list(feature_columns)].copy()
-     selected_test = test_df[list(feature_columns)].copy()
-     selected_train = coerce_refinery_numeric_frame(selected_train)
-     selected_test = coerce_refinery_numeric_frame(selected_test)
-     combined = pd.concat([selected_train, selected_test], axis=0, ignore_index=True)
--    usable_columns = [column for column in combined.columns if combined[column].notna().any()]
-+    usable_columns = [column for column in combined.columns if selected_train[column].notna().any()]
-     if not usable_columns:
-         raise ValueError("No usable numeric features remain for the experiment.")
--    return selected_train[usable_columns], selected_test[usable_columns], usable_columns
-+
-+    imputed_train, imputed_test, dropped_columns = apply_missing_value_pipeline(
-+        selected_train[usable_columns],
-+        selected_test[usable_columns],
-+        verbose=False,
-+    )
-+    usable_columns = [column for column in usable_columns if column not in dropped_columns]
-+    return imputed_train, imputed_test, usable_columns
+ def print_numbered_feature_list(title, features, color):
+     print_divider("=")
+     print(title)
+     print_divider("-")
+     for idx, feature_name in enumerate(features, start=1):
+         print(color_text(f"{idx:>2}. {feature_name}", color))
+     print_divider("=")
  
  
+ def save_leakage_report(removed_columns, output_features=None, context="pre_training", report_path=LEAKAGE_REPORT_PATH):
+     """Write the target-leakage audit workbook showing exact X removals."""
+     output_features = list(output_features or [])
+     removed_rows = [
+         {
+             "context": context,
+             "column": column,
+-            "matched_patterns": ", ".join(leakage_pattern_matches(column)),
++            "matched_patterns": ", ".join(leakage_block_reasons(column, output_features=output_features)) or "blocked by leakage policy",
+             "action": "removed_from_X",
+-            "reason": "Column name contains an automatic target-leakage marker.",
++            "reason": "; ".join(leakage_block_reasons(column, output_features=output_features)) or "Blocked by leakage policy.",
+         }
+         for column in removed_columns
+     ]
+     kept_target_rows = [
+         {
+             "context": context,
+             "column": column,
+             "matched_patterns": ", ".join(leakage_pattern_matches(column)),
+             "action": "kept_as_final_target",
+             "reason": "Selected final targets are not removed from y.",
+         }
+         for column in output_features
+         if leakage_pattern_matches(column)
+     ]
+     summary_rows = [
+         {
+             "context": context,
+             "created_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+             "removed_from_X_count": len(removed_rows),
+             "kept_final_target_count": len(kept_target_rows),
+             "report_path": report_path,
+         }
+     ]
  
- def _model_b_feature_importance_summary(target, model, X_test_df, y_test_series, method_name="Random Forest Importance"):
-     """Return ranked feature and category importance rows for one Model B target."""
-     raw_importance = np.asarray(model.feature_importances_, dtype=float)
-     total_importance = float(raw_importance.sum())
-     normalized = raw_importance / total_importance if total_importance > 0 else np.zeros_like(raw_importance)
-     feature_rows = []
-     for feature, importance, normalized_importance in zip(X_test_df.columns, raw_importance, normalized):
-         feature_rows.append({
-             "Target": target,
-             "Method": method_name,
-             "Feature": feature,
-             "Base Feature": base_variable_name(feature),
-             "Category": "Time" if _is_time_related_feature(feature) else "Process",
-             "Importance": float(importance),
-             "Normalized Importance": float(normalized_importance),
+     os.makedirs(os.path.dirname(report_path), exist_ok=True)
+@@ -1941,58 +1942,62 @@ def read_prep_data_cached(inputs=None, prep_folder="prep_data", optional_future_
+         LOGGER.debug("Reusing cached prep_data: prep_folder=%s inputs=%s", prep_folder, inputs)
+     return tuple(frame.copy() for frame in _PREP_DATA_CACHE[key])
+ 
+ 
+ def _resolve_debug_path(label, path):
+     resolved = print_path_debug(label, path) if DEBUG_PATHS else os.path.abspath(path)
+     LOGGER.debug("Resolved %s path: %s", label, resolved)
+     return resolved
+ 
+ 
+ def audit_feature_leakage(input_features, output_features=None, context="pre_training"):
+     """Apply exact leakage detection and return safe features plus audit rows.
+ 
+     Suspicious inputs are detected by refinery_variables.find_leakage_columns(),
+     which matches selected outputs, white_* future-quality columns, target-like
+     names, diagnostic-only patterns, post-process measurements, and future
+     information patterns configured in refinery_variables.py.
+     """
+     removed = find_leakage_columns(
+         input_features,
+         output_features=output_features,
+         optional_future_quality_inputs=FUTURE_QUALITY_INPUT_CANDIDATES,
+     )
+     audit_rows = []
+     for feature in input_features:
+-        matches = leakage_pattern_matches(feature)
++        matches = leakage_block_reasons(
++            feature,
++            output_features=output_features,
++            optional_future_quality_inputs=FUTURE_QUALITY_INPUT_CANDIDATES,
++        )
+         unsafe = feature in removed
+         audit_rows.append({
+             "context": context,
+             "feature": feature,
+             "status": "unsafe_blocked" if unsafe else "safe",
+-            "matched_logic": ", ".join(matches) if matches else "no leakage pattern matched",
+-            "reason": "blocked before model training" if unsafe else "available before prediction or explicitly allowed",
++            "matched_logic": "; ".join(matches) if matches else "allowed input policy",
++            "reason": ("blocked before model training: " + "; ".join(matches)) if unsafe else "available before prediction or explicitly allowed",
          })
-     feature_table = pd.DataFrame(feature_rows).sort_values(
-         by=["Importance", "Feature"], ascending=[False, True]
-     ).reset_index(drop=True)
-     feature_table.insert(2, "Rank", np.arange(1, len(feature_table) + 1))
+     return [feature for feature in input_features if feature not in set(removed)], removed, audit_rows
  
-     category_rows = []
+ 
+ def _validate_selected_inputs_once(input_features, output_features, optional_future_quality_inputs=None, context="selection"):
+     key = (context, tuple(input_features), tuple(output_features or ()), tuple(optional_future_quality_inputs or ()))
+     if key in _VALIDATION_CACHE:
+         LOGGER.debug("Skipping duplicate model-input validation for %s", context)
+         return
+     validate_model_inputs(
+         input_features,
+         output_features=output_features,
+         optional_future_quality_inputs=optional_future_quality_inputs,
+     )
+     _VALIDATION_CACHE.add(key)
+ 
+ 
+ def _log_path_banner(dataset_path, prep_folder):
+     LOGGER.info("Dataset path: %s", dataset_path)
+     LOGGER.info("prep_data folder: %s", prep_folder)
+     if DEBUG_PATHS:
+         LOGGER.debug("run_core.py file: %s", os.path.abspath(__file__))
+ 
+ 
+ def prepare_or_reuse_data(dataset_path="convert/stclean.csv", prep_folder="prep_data"):
+@@ -5303,50 +5308,54 @@ def repeat_fit_model(
+     if display_steps:
+         print(r2_list)
+ 
+     if not r2_list:
+         return None, None, None, None, None, [], max_run, None
+ 
+     mean_r2 = float(np.mean(r2_list))
+     mean_mse = float(np.mean(mse_list))
+     std_r2 = float(np.std(r2_list))
+     return (
+         mean_r2,
+         std_r2,
+         mean_mse,
+         best_preds,
+         float(max_r2) * 100.0,
+         r2_list,
+         max_run,
+         best_optimized_inputs_report,
+     )
+ 
+ 
+ ############################### Start of Program ###################
+ 
+ 
+ def main():
++    list_hidden_sizes = [list(group) for group in globals().get("list_hidden_sizes", [])]
++    if not list_hidden_sizes:
++        list_hidden_sizes = [[16], [32], [64], [16, 8], [32, 16], [48, 24], [64, 32], [64, 32, 16]]
++    num_repeats = globals().get("num_repeats", 10)
+     dataset_path = "convert/stclean.csv"
+     selected_saved_run, loaded_optimization_scope = prompt_saved_run_choice()
+     prepared_X_train, prepared_outputs, use_auto_feature_selection, reused_prep_data = prepare_or_reuse_data(
+         dataset_path=dataset_path,
+         prep_folder="prep_data",
+     )
+ 
+     saved_inputs = selected_saved_run.get("inputs") if selected_saved_run else None
+     saved_outputs = selected_saved_run.get("outputs") if selected_saved_run else None
+     run_inputs = saved_inputs if saved_inputs else prepared_X_train.columns.tolist()
+     run_outputs_for_validation = saved_outputs if saved_outputs else prepared_outputs
+     run_inputs, _ = remove_leakage_inputs_for_training(
+         run_inputs,
+         output_features=run_outputs_for_validation,
+         context="pre_training",
+     )
+     if not run_inputs:
+         print("No input columns remain after automatic target-leakage removal.")
+         exit()
+     run_optional_future_quality_inputs = optional_input_overrides_for_selection(
+         run_inputs, run_outputs_for_validation
+     )
+     X_train, X_test, y_train, y_test = read_prep_data_cached(
+         inputs=run_inputs,
+         prep_folder="prep_data",
