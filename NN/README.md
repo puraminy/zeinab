@@ -173,3 +173,13 @@ candidate, add leakage-safe temporal features where justified, and test a small
 GRU/LSTM only as a controlled benchmark after grouped time-series validation is
 available.
 
+
+## Step 3 model-design experiments
+
+The workflow now creates a dedicated Step 3 workbook at `reports/model_design_experiments.xlsx` using the same model type for all three experiments: `RandomForestRegressor`.
+
+* **Model A — FULL (leaky baseline):** uses every available prepared non-output feature and is labelled diagnostic/comparison only because target leakage may be present.
+* **Model B — CLEAN PROCESS MODEL (MAIN MODEL):** uses only leakage-safe refinery process variables plus encoded calendar/time features after applying the existing refinery leakage rules.
+* **Model C — NO TIME MODEL:** starts from Model B and removes all raw or encoded time-related columns, so the result isolates process variables without time information.
+
+The report includes experiment metadata, overall metrics, per-target metrics, and the exact feature set used by each experiment.

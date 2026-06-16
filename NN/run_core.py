@@ -46,6 +46,7 @@ from refinery_variables import (
     EARLY_VARIABLES,
     MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS,
     TARGET_VARIABLES,
+    base_variable_name,
     filter_allowed_model_inputs,
     find_leakage_columns,
     leakage_pattern_matches,
@@ -112,6 +113,7 @@ FEATURE_IMPORTANCE_REPORTS_DIR = os.path.join(MODULE_DIR, "reports")
 MODEL_COMPARISON_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_comparison.xlsx")
 OPTIMIZATION_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "optimization_report.xlsx")
 OPERATOR_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "operator_report.xlsx")
+MODEL_DESIGN_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_design_experiments.xlsx")
 
 
 FEATURE_IMPORTANCE_TARGETS = (
@@ -3263,6 +3265,204 @@ def _write_model_comparison_workbook(summary_df, fold_df, report_path):
     print(f"Saved model comparison report: {report_path}")
 
 
+MODEL_DESIGN_EXPERIMENT_MODEL_NAME = "RandomForestRegressor"
+TIME_RELATED_BASE_FEATURES = {
+    "sheet_name",
+    "year",
+    "month",
+    "day",
+    "day_of_week",
+    "month_sin",
+    "month_cos",
+    "day_sin",
+    "day_cos",
+}
+
+
+def _is_time_related_feature(column_name):
+    """Return True for raw or engineered calendar/time columns."""
+    base_name = base_variable_name(column_name)
+    lower_name = str(column_name).lower()
+    lower_base = str(base_name).lower()
+    if lower_base in TIME_RELATED_BASE_FEATURES:
+        return True
+    return any(
+        marker in lower_name
+        for marker in ("datetime", "date", "time", "month_sin", "month_cos", "day_sin", "day_cos")
+    )
+
+
+def _model_design_target_metrics(y_true_df, prediction_array):
+    """Build per-target regression metrics for one model-design experiment."""
+    y_values = as_2d_float_array(y_true_df, "model design y_true")
+    pred_values = as_2d_float_array(prediction_array, "model design predictions")
+    rows = []
+    for target_index, target_name in enumerate(y_true_df.columns):
+        rows.append({"Target": target_name, **_target_regression_metrics(y_values[:, target_index], pred_values[:, target_index])})
+    return rows
+
+
+def _fit_model_design_random_forest(X_train_df, X_test_df, y_train_df, y_test_df):
+    """Fit the common RandomForestRegressor used by all model-design experiments."""
+    model = RandomForestRegressor(
+        n_estimators=500,
+        random_state=model_seed,
+        n_jobs=-1,
+        min_samples_leaf=2,
+    )
+    predictions, _mse, _r2, estimator = fit_sklearn_model(
+        model,
+        X_train_df,
+        X_test_df,
+        y_train_df,
+        y_test_df,
+    )
+    return predictions, estimator
+
+
+def _load_full_design_split_from_prep_data(X_train, X_test, y_train, y_test, prep_folder="prep_data"):
+    """Load full prepared train/test tables when available, otherwise reconstruct from current split."""
+    train_path = os.path.join(prep_folder, "train.csv")
+    test_path = os.path.join(prep_folder, "test.csv")
+    if not (os.path.isfile(train_path) and os.path.isfile(test_path)):
+        module_prep_folder = os.path.join(MODULE_DIR, prep_folder)
+        module_train_path = os.path.join(module_prep_folder, "train.csv")
+        module_test_path = os.path.join(module_prep_folder, "test.csv")
+        if os.path.isfile(module_train_path) and os.path.isfile(module_test_path):
+            train_path = module_train_path
+            test_path = module_test_path
+    outputs = list(y_train.columns)
+    if os.path.isfile(train_path) and os.path.isfile(test_path):
+        train_df = pd.read_csv(train_path)
+        test_df = pd.read_csv(test_path)
+        if all(column in train_df.columns for column in outputs) and all(column in test_df.columns for column in outputs):
+            candidate_features = [column for column in train_df.columns if column not in outputs and column in test_df.columns]
+            return train_df[candidate_features], test_df[candidate_features], train_df[outputs], test_df[outputs]
+    return X_train.copy(), X_test.copy(), y_train.copy(), y_test.copy()
+
+
+def _prepare_model_design_feature_frame(train_df, test_df, feature_columns):
+    """Coerce selected experiment features to numeric and drop unusable columns consistently."""
+    selected_train = train_df[list(feature_columns)].copy()
+    selected_test = test_df[list(feature_columns)].copy()
+    selected_train = coerce_refinery_numeric_frame(selected_train)
+    selected_test = coerce_refinery_numeric_frame(selected_test)
+    combined = pd.concat([selected_train, selected_test], axis=0, ignore_index=True)
+    usable_columns = [column for column in combined.columns if combined[column].notna().any()]
+    if not usable_columns:
+        raise ValueError("No usable numeric features remain for the experiment.")
+    return selected_train[usable_columns], selected_test[usable_columns], usable_columns
+
+
+def generate_model_design_experiments_report(
+    X_train,
+    X_test,
+    y_train,
+    y_test,
+    report_path=MODEL_DESIGN_REPORT_PATH,
+):
+    """Run Step 3's three RandomForestRegressor model-design experiments.
+
+    Model A intentionally uses every available non-output prepared feature and is
+    labeled as leakage-prone. Model B is the main clean process model: process
+    variables plus encoded time features after leakage filtering. Model C starts
+    from Model B and removes all time-related features.
+    """
+    full_X_train, full_X_test, full_y_train, full_y_test = _load_full_design_split_from_prep_data(
+        X_train, X_test, y_train, y_test
+    )
+    experiments = OrderedDict()
+    all_full_features = [column for column in full_X_train.columns if column in full_X_test.columns]
+    clean_features = filter_allowed_model_inputs(
+        all_full_features,
+        output_features=list(full_y_train.columns),
+        optional_future_quality_inputs=None,
+    )
+    no_time_features = [column for column in clean_features if not _is_time_related_feature(column)]
+    experiments["A_FULL_LEAKY_BASELINE"] = {
+        "description": "Includes all available non-output prepared features; comparison only because leakage is possible.",
+        "features": all_full_features,
+        "leakage_policy": "Leaky baseline / diagnostic comparison only",
+    }
+    experiments["B_CLEAN_PROCESS_MAIN"] = {
+        "description": "Main model: leakage-safe process variables plus encoded time features.",
+        "features": clean_features,
+        "leakage_policy": "No leakage features; allowed refinery inputs only",
+    }
+    experiments["C_NO_TIME"] = {
+        "description": "Same as Model B, but all raw/encoded time-related features are removed.",
+        "features": no_time_features,
+        "leakage_policy": "No leakage features; no time-related inputs",
+    }
+
+    metric_rows = []
+    metadata_rows = []
+    feature_rows = []
+    print("\n================= Step 3 Model Design Experiments =================")
+    for experiment_name, config in experiments.items():
+        features = list(config["features"])
+        metadata_row = {
+            "Experiment": experiment_name,
+            "Model Type": MODEL_DESIGN_EXPERIMENT_MODEL_NAME,
+            "Description": config["description"],
+            "Leakage Policy": config["leakage_policy"],
+            "Feature Count Requested": len(features),
+        }
+        if not features:
+            metadata_row["Status"] = "skipped - no features"
+            metadata_rows.append(metadata_row)
+            print(f"{experiment_name} skipped: no features.")
+            continue
+        try:
+            exp_X_train, exp_X_test, usable_features = _prepare_model_design_feature_frame(
+                full_X_train, full_X_test, features
+            )
+            predictions, _estimator = _fit_model_design_random_forest(
+                exp_X_train, exp_X_test, full_y_train, full_y_test
+            )
+        except (TypeError, ValueError, RuntimeError) as err:
+            metadata_row["Status"] = f"skipped - {err}"
+            metadata_rows.append(metadata_row)
+            print(f"{experiment_name} skipped: {err}")
+            continue
+        target_rows = _model_design_target_metrics(full_y_test, predictions)
+        for row in target_rows:
+            metric_rows.append({"Experiment": experiment_name, "Model Type": MODEL_DESIGN_EXPERIMENT_MODEL_NAME, **row})
+        for feature in usable_features:
+            feature_rows.append({
+                "Experiment": experiment_name,
+                "Feature": feature,
+                "Base Feature": base_variable_name(feature),
+                "Time Related": _is_time_related_feature(feature),
+            })
+        metadata_row["Status"] = "completed"
+        metadata_row["Feature Count Used"] = len(usable_features)
+        metadata_row["Targets"] = ", ".join(full_y_train.columns)
+        metadata_rows.append(metadata_row)
+        mean_r2 = float(np.nanmean([row["R2"] for row in target_rows])) if target_rows else np.nan
+        print(f"{experiment_name}: {len(usable_features)} features, mean target R2={mean_r2:.4f}")
+
+    metrics_df = pd.DataFrame(metric_rows)
+    metadata_df = pd.DataFrame(metadata_rows)
+    features_df = pd.DataFrame(feature_rows)
+    overall_df = pd.DataFrame()
+    if not metrics_df.empty:
+        overall_df = (
+            metrics_df.groupby(["Experiment", "Model Type"], as_index=False)
+            .agg(R2=("R2", "mean"), RMSE=("RMSE", "mean"), MAE=("MAE", "mean"), MAPE=("MAPE", "mean"), Targets=("Target", "nunique"))
+            .sort_values("Experiment")
+        )
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+    with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
+        metadata_df.to_excel(writer, sheet_name="Experiment Metadata", index=False)
+        overall_df.to_excel(writer, sheet_name="Overall Metrics", index=False)
+        metrics_df.to_excel(writer, sheet_name="Target Metrics", index=False)
+        features_df.to_excel(writer, sheet_name="Feature Sets", index=False)
+    print(f"Saved model design experiments report: {report_path}")
+    print("===================================================================\n")
+    return report_path
+
+
 def generate_model_comparison_report(X_train, X_test, y_train, y_test, report_path=MODEL_COMPARISON_REPORT_PATH):
     """Compare requested regressors with 5-fold CV and save reports/model_comparison.xlsx."""
     full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
@@ -4556,6 +4756,7 @@ def main():
     generate_feature_importance_reports(feature_importance_source_df)
     generate_prescriptive_optimization_report(feature_importance_source_df)
     generate_model_comparison_report(X_train, X_test, y_train, y_test)
+    generate_model_design_experiments_report(X_train, X_test, y_train, y_test)
     active_features = list(inputs)
     if selected_saved_run:
         print("Loaded saved run metadata; reusing prepared inputs/outputs.")
