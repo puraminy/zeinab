@@ -1,5 +1,5 @@
 {
-  "dataset_path": "E:\\zeinab 25 khordad\\zeinab\\NN\\convert\\stclean.csv",
+  "dataset_path": "C:\\Users\\tadbirsabz\\Desktop\\zeinab\\NN\\convert\\stclean.csv",
   "output_features": [
     "white_total_points"
   ],

@@ -1,179 +1,424 @@
-diff --git a/NN/preprocessing.py b/NN/preprocessing.py
-index f5872812fc86609c3373707cce137185fd62eb36..a1226b2a1224a21bd4ebad381fb63ee871d816fe 100644
---- a/NN/preprocessing.py
-+++ b/NN/preprocessing.py
-@@ -1,69 +1,76 @@
- """Preprocessing helpers for refinery ML pipelines."""
+diff --git a/NN/run_core.py b/NN/run_core.py
+index afe28f46654a9521ac9c036fe0d2af9a4c28f097..198bdc65302fb9e8533e5413f124d971946abbba 100644
+--- a/NN/run_core.py
++++ b/NN/run_core.py
+@@ -1567,50 +1567,192 @@ early_stopping_min_delta = 1e-4
+ validation_fraction = 0.2
+ lr_plateau_patience = 8
+ lr_plateau_factor = 0.5
+ min_learning_rate = 1e-5
+ max_gradient_norm = 0.5
+ max_input_delta = 1.5
+ # Conservative training guards for stable convergence on small industrial data.
+ #hidden_size1 = 10
+ hidden_size1 = 32
+ hidden_size2 = 16
  
- import inspect
- import logging
- import re
+ # the number of neurons in hidden layers
  
- import numpy as np
- import pandas as pd
- from sklearn.impute import SimpleImputer
+ # https://alexlenail.me/NN-SVG/
+ # use the site above to draw the following network
+ #
+ hidden_sizes = [32, 16]
+ # nn.ReLU(), nn.Tanh(), nn.Identity()
  
- LOGGER = logging.getLogger(__name__)
+ list_hidden_sizes = [[16], [32], [64], [16, 8], [32, 16], [48, 24], [64, 32], [64, 32, 16]]
+ normalization_type = "standard_scaler"
  
--_NUMERIC_TOKEN_RE = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)")
-+_NUMERIC_TOKEN_RE = re.compile(r"[+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)")
- 
- 
- def coerce_refinery_numeric_series(series, column_name=None, logger=None, max_logged_rows=20):
-     """Convert refinery values to floats with robust numeric extraction.
- 
-     Persian/other text-only values such as ``بومه شیرآهک`` become NaN. Mixed
-     strings with numbers keep the first numeric token, and simple numeric ranges
-     such as ``10-12`` are converted to their midpoint.
-     """
-     logger = logger or LOGGER
-     column_label = column_name or getattr(series, "name", None) or "<unnamed>"
-     problematic = []
- 
-     def _convert(index, value):
-         if pd.isna(value):
-             return np.nan
-         if isinstance(value, (int, float, np.integer, np.floating)):
-             return float(value)
- 
-         text = str(value).strip()
-         if not text:
-             return np.nan
- 
-         normalized = (
-             text.replace("−", "-")
-             .replace("–", "-")
-             .replace("—", "-")
-             .replace("٫", ".")
-             .replace("٬", "")
-             .replace(",", "")
-+            .strip()
-         )
-+        # Common spreadsheet/export artifacts: [1.366046E1], (1.23), etc.
-+        if re.fullmatch(r"\[\s*[^\[\]]+\s*\]", normalized):
-+            normalized = normalized[1:-1].strip()
-+        negative_parenthesized = re.fullmatch(r"\(\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*\)", normalized)
-+        if negative_parenthesized:
-+            return -float(negative_parenthesized.group(1))
-         direct_value = pd.to_numeric(normalized, errors="coerce")
-         if pd.notna(direct_value):
-             return float(direct_value)
- 
-         range_match = re.fullmatch(
-             r"\s*([+-]?\d+(?:\.\d+)?)\s*-\s*([+-]?\d+(?:\.\d+)?)\s*",
-             normalized,
-         )
-         if range_match:
-             low, high = map(float, range_match.groups())
-             return (low + high) / 2.0
- 
-         tokens = _NUMERIC_TOKEN_RE.findall(normalized)
-         if tokens:
-             return float(tokens[0])
- 
-         problematic.append((index, value))
-         return np.nan
- 
-     converted = pd.Series(
-         (_convert(index, value) for index, value in series.items()),
-         index=series.index,
-         name=series.name,
-         dtype="float64",
-     )
-@@ -110,25 +117,96 @@ def median_impute_train_test(X_train, X_test, logger=None):
-         logger.warning(
-             "Columns with all training values missing will be filled with 0.0 before median imputation: %s",
-             all_missing,
-         )
-         X_train_numeric.loc[:, all_missing] = 0.0
-         X_test_numeric.loc[:, all_missing] = X_test_numeric.loc[:, all_missing].fillna(0.0)
- 
-     imputer = make_median_imputer()
-     train_arr = imputer.fit_transform(X_train_numeric)
-     test_arr = imputer.transform(X_test_numeric)
-     X_train_imputed = pd.DataFrame(train_arr, columns=X_train_numeric.columns, index=X_train_numeric.index)
-     X_test_imputed = pd.DataFrame(test_arr, columns=X_train_numeric.columns, index=X_test_numeric.index)
- 
-     remaining_train = int(X_train_imputed.isna().sum().sum())
-     remaining_test = int(X_test_imputed.isna().sum().sum())
-     if remaining_train or remaining_test:
-         logger.warning(
-             "Median imputation left NaNs (train=%s, test=%s); filling remaining values with 0.0.",
-             remaining_train,
-             remaining_test,
-         )
-         X_train_imputed = X_train_imputed.fillna(0.0)
-         X_test_imputed = X_test_imputed.fillna(0.0)
- 
-     return X_train_imputed.astype(float), X_test_imputed.astype(float), imputer
+ EXTRA_TREES_RANDOM_SEARCH_ITERATIONS = 40
+ EXTRA_TREES_RANDOM_SEARCH_CV_FOLDS = 5
+ MODEL_EVALUATION_CV_FOLDS = 5
++ROBUST_FEATURE_CLIP_QUANTILES = (0.01, 0.99)
++MAX_HIERARCHICAL_INTERACTION_FEATURES = 48
++MAX_HIERARCHICAL_RATIO_FEATURES = 24
 +
 +
-+def _offending_rows_dataframe(df, mask, max_rows=5):
-+    rows = df.loc[mask].head(max_rows).copy()
-+    rows.insert(0, "__row_index__", rows.index)
-+    return rows
++def _safe_feature_token(column_name):
++    """Return a compact, stable token for engineered feature names."""
++    token = re.sub(r"[^0-9A-Za-z]+", "_", str(column_name)).strip("_").lower()
++    return token or "feature"
 +
 +
-+def validate_dataframe(df, name, require_numeric=True, max_rows=5):
-+    """Validate a DataFrame and report shape, dtypes, NaN/inf counts, and offenders."""
-+    frame = df if isinstance(df, pd.DataFrame) else pd.DataFrame(df)
-+    numeric_df = frame.select_dtypes(include=[np.number])
-+    non_numeric_columns = frame.columns.difference(numeric_df.columns).tolist()
-+    nan_mask = frame.isna().any(axis=1)
-+    inf_counts = pd.Series(dtype=int)
-+    inf_mask = pd.Series(False, index=frame.index)
-+    if not numeric_df.empty:
-+        inf_frame = np.isinf(numeric_df.to_numpy(dtype=float))
-+        inf_counts = pd.Series(inf_frame.sum(axis=0), index=numeric_df.columns)
-+        inf_counts = inf_counts[inf_counts > 0]
-+        inf_mask = pd.Series(inf_frame.any(axis=1), index=frame.index)
-+    report = {
-+        "name": name,
-+        "shape": frame.shape,
-+        "dtypes": {column: str(dtype) for column, dtype in frame.dtypes.items()},
-+        "nan_count": int(frame.isna().sum().sum()),
-+        "inf_count": int(inf_counts.sum()) if not inf_counts.empty else 0,
-+        "non_numeric_columns": non_numeric_columns,
-+        "sample_offending_rows": _offending_rows_dataframe(frame, nan_mask | inf_mask, max_rows=max_rows),
++def _fit_feature_clip_bounds(train_df, quantiles=ROBUST_FEATURE_CLIP_QUANTILES):
++    """Fit train-only winsorization bounds to reduce outlier signal distortion."""
++    lower_q, upper_q = quantiles
++    lower_bounds = train_df.quantile(float(lower_q), axis=0, numeric_only=True)
++    upper_bounds = train_df.quantile(float(upper_q), axis=0, numeric_only=True)
++    invalid_bounds = ~(np.isfinite(lower_bounds) & np.isfinite(upper_bounds)) | (lower_bounds > upper_bounds)
++    lower_bounds[invalid_bounds] = train_df.min(axis=0, numeric_only=True)[invalid_bounds]
++    upper_bounds[invalid_bounds] = train_df.max(axis=0, numeric_only=True)[invalid_bounds]
++    return lower_bounds, upper_bounds
++
++
++def _apply_feature_clip_bounds(dataframe, lower_bounds, upper_bounds):
++    """Apply fitted clipping bounds while preserving columns and index."""
++    clipped = dataframe.copy()
++    aligned_lower = lower_bounds.reindex(clipped.columns)
++    aligned_upper = upper_bounds.reindex(clipped.columns)
++    return clipped.clip(lower=aligned_lower, upper=aligned_upper, axis=1)
++
++
++def _rank_columns_for_hierarchy(train_df):
++    """Rank process signals by train-set variability for bounded feature expansion."""
++    std = train_df.std(axis=0, ddof=0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
++    dynamic_range = (train_df.max(axis=0) - train_df.min(axis=0)).replace([np.inf, -np.inf], np.nan).fillna(0.0)
++    score = (std * dynamic_range).sort_values(ascending=False)
++    return [column for column in score.index if score[column] > 0]
++
++
++def _engineer_single_feature_frame(dataframe, ranked_columns, interaction_pairs, ratio_pairs):
++    """Create hierarchical tabular features without changing model classes."""
++    engineered = dataframe.copy()
++    epsilon = 1e-6
++
++    for column in ranked_columns:
++        values = dataframe[column].astype(float)
++        token = _safe_feature_token(column)
++        engineered[f"{token}__squared"] = values ** 2
++        engineered[f"{token}__abs"] = values.abs()
++
++    for left, right in interaction_pairs:
++        left_values = dataframe[left].astype(float)
++        right_values = dataframe[right].astype(float)
++        engineered[f"{_safe_feature_token(left)}__x__{_safe_feature_token(right)}"] = left_values * right_values
++        engineered[f"{_safe_feature_token(left)}__minus__{_safe_feature_token(right)}"] = left_values - right_values
++
++    for numerator, denominator in ratio_pairs:
++        numerator_values = dataframe[numerator].astype(float)
++        denominator_values = dataframe[denominator].astype(float)
++        safe_denominator = denominator_values.where(denominator_values.abs() > epsilon, np.sign(denominator_values) * epsilon)
++        safe_denominator = safe_denominator.replace(0.0, epsilon).fillna(epsilon)
++        engineered[f"{_safe_feature_token(numerator)}__over__{_safe_feature_token(denominator)}"] = numerator_values / safe_denominator
++
++    engineered = engineered.replace([np.inf, -np.inf], np.nan)
++    engineered = engineered.fillna(engineered.median(axis=0, numeric_only=True)).fillna(0.0)
++    return engineered
++
++
++def engineer_refinery_feature_hierarchy(X_train_df, X_test_df):
++    """Build leakage-safe robust and hierarchical refinery features.
++
++    The model architecture is preserved: existing estimators are still trained as
++    before, but their input matrix receives train-fitted clipping plus bounded
++    second-order, interaction, and ratio features.  This exposes process
++    hierarchy that tree/boosting models can use without target leakage.
++    """
++    lower_bounds, upper_bounds = _fit_feature_clip_bounds(X_train_df)
++    clipped_train = _apply_feature_clip_bounds(X_train_df, lower_bounds, upper_bounds)
++    clipped_test = _apply_feature_clip_bounds(X_test_df, lower_bounds, upper_bounds)
++
++    ranked_columns = _rank_columns_for_hierarchy(clipped_train)
++    nonlinear_columns = ranked_columns[: min(len(ranked_columns), MAX_HIERARCHICAL_INTERACTION_FEATURES)]
++    interaction_pairs = []
++    for left_index, left in enumerate(nonlinear_columns):
++        for right in nonlinear_columns[left_index + 1 :]:
++            interaction_pairs.append((left, right))
++            if len(interaction_pairs) >= MAX_HIERARCHICAL_INTERACTION_FEATURES:
++                break
++        if len(interaction_pairs) >= MAX_HIERARCHICAL_INTERACTION_FEATURES:
++            break
++
++    ratio_pairs = []
++    for left, right in interaction_pairs:
++        if len(ratio_pairs) >= MAX_HIERARCHICAL_RATIO_FEATURES:
++            break
++        ratio_pairs.append((left, right))
++
++    train_engineered = _engineer_single_feature_frame(clipped_train, nonlinear_columns, interaction_pairs, ratio_pairs)
++    test_engineered = _engineer_single_feature_frame(clipped_test, nonlinear_columns, interaction_pairs, ratio_pairs)
++    test_engineered = test_engineered.reindex(columns=train_engineered.columns, fill_value=0.0)
++
++    metadata = {
++        "raw_feature_count": int(X_train_df.shape[1]),
++        "engineered_feature_count": int(train_engineered.shape[1]),
++        "nonlinear_feature_count": int(len(nonlinear_columns) * 2),
++        "interaction_feature_count": int(len(interaction_pairs) * 2),
++        "ratio_feature_count": int(len(ratio_pairs)),
++        "clip_quantiles": tuple(float(q) for q in ROBUST_FEATURE_CLIP_QUANTILES),
++        "raw_feature_names": list(X_train_df.columns),
++        "engineered_feature_names": list(train_engineered.columns),
++        "clip_lower_bounds": lower_bounds.to_dict(),
++        "clip_upper_bounds": upper_bounds.to_dict(),
++        "nonlinear_columns": list(nonlinear_columns),
++        "interaction_pairs": list(interaction_pairs),
++        "ratio_pairs": list(ratio_pairs),
 +    }
-+    LOGGER.info(
-+        "Validation %s: shape=%s nan_count=%s inf_count=%s non_numeric_columns=%s",
-+        name, report["shape"], report["nan_count"], report["inf_count"], non_numeric_columns,
++    LOGGER.info("Refinery feature hierarchy metadata: %s", metadata)
++    return train_engineered, test_engineered, metadata
++
++
++def transform_with_refinery_feature_hierarchy(dataframe, metadata):
++    """Apply a fitted hierarchy transform to new raw rows."""
++    raw_feature_names = metadata.get("raw_feature_names") or list(dataframe.columns)
++    raw_df = dataframe_from_tabular(dataframe, "X", columns=raw_feature_names)
++    lower_bounds = pd.Series(metadata.get("clip_lower_bounds", {})).reindex(raw_feature_names)
++    upper_bounds = pd.Series(metadata.get("clip_upper_bounds", {})).reindex(raw_feature_names)
++    clipped = _apply_feature_clip_bounds(raw_df, lower_bounds, upper_bounds)
++    engineered = _engineer_single_feature_frame(
++        clipped,
++        metadata.get("nonlinear_columns", []),
++        metadata.get("interaction_pairs", []),
++        metadata.get("ratio_pairs", []),
 +    )
-+    if not report["sample_offending_rows"].empty:
-+        LOGGER.warning("Sample offending rows for %s:\n%s", name, report["sample_offending_rows"].to_string(index=False))
-+    if require_numeric and non_numeric_columns:
-+        raise ValueError(f"{name} contains non-numeric columns: {non_numeric_columns}")
-+    if report["nan_count"]:
-+        raise ValueError(f"{name} contains {report['nan_count']} NaN value(s).")
-+    if report["inf_count"]:
-+        raise ValueError(f"{name} contains {report['inf_count']} infinite value(s).")
-+    return report
++    return engineered.reindex(columns=metadata.get("engineered_feature_names", engineered.columns), fill_value=0.0)
 +
 +
-+def validate_numpy(arr, name, max_rows=5):
-+    """Validate a numpy-like array and report shape, dtype, NaN/inf counts, and offenders."""
-+    array = np.asarray(arr)
-+    numeric = np.issubdtype(array.dtype, np.number)
-+    coerced = array.astype(float) if numeric else pd.DataFrame(array.reshape(array.shape[0], -1) if array.ndim else [array]).apply(pd.to_numeric, errors="coerce").to_numpy()
-+    nan_mask_flat = pd.isna(coerced)
-+    inf_mask_flat = np.isinf(coerced) if numeric or coerced.dtype.kind in "fc" else np.zeros_like(nan_mask_flat, dtype=bool)
-+    LOGGER.info("Validation %s: shape=%s dtype=%s nan_count=%s inf_count=%s", name, array.shape, array.dtype, int(nan_mask_flat.sum()), int(inf_mask_flat.sum()))
-+    if (not numeric) or nan_mask_flat.any() or inf_mask_flat.any():
-+        rows = np.unique(np.where((nan_mask_flat | inf_mask_flat).reshape(coerced.shape))[0])[:max_rows].tolist() if coerced.ndim else [0]
-+        raise ValueError(f"{name} invalid: numeric={numeric}, offending row indexes={rows}")
-+    return {"name": name, "shape": array.shape, "dtype": str(array.dtype), "nan_count": int(nan_mask_flat.sum()), "inf_count": int(inf_mask_flat.sum()), "non_numeric_columns": []}
-+
-+
-+def validate_tensor(tensor, name, max_rows=5):
-+    """Validate a torch tensor and report shape, dtype, NaN/inf counts, and offenders."""
-+    import torch
-+    if not torch.is_tensor(tensor):
-+        raise ValueError(f"{name} is not a torch tensor.")
-+    finite = torch.isfinite(tensor) if tensor.is_floating_point() or tensor.is_complex() else torch.ones_like(tensor, dtype=torch.bool)
-+    bad_count = int((~finite).sum().item())
-+    LOGGER.info("Validation %s: shape=%s dtype=%s nan_or_inf_count=%s", name, tuple(tensor.shape), tensor.dtype, bad_count)
-+    if bad_count:
-+        bad_rows = torch.unique(torch.nonzero(~finite, as_tuple=False)[:, 0])[:max_rows].cpu().tolist() if tensor.ndim else [0]
-+        raise ValueError(f"{name} contains NaN or infinite values; offending row indexes={bad_rows}")
-+    return {"name": name, "shape": tuple(tensor.shape), "dtype": str(tensor.dtype), "nan_count": bad_count, "inf_count": bad_count, "non_numeric_columns": []}
++def robust_clip_refinery_features(X_train_df, X_test_df):
++    """Apply train-only winsorization when feature expansion is not possible."""
++    lower_bounds, upper_bounds = _fit_feature_clip_bounds(X_train_df)
++    return (
++        _apply_feature_clip_bounds(X_train_df, lower_bounds, upper_bounds),
++        _apply_feature_clip_bounds(X_test_df, lower_bounds, upper_bounds),
++    )
+ 
+ 
+ def make_extra_trees_random_search(seed):
+     """Build a tuned ExtraTrees regressor while preserving the model menu name."""
+     base_model = ExtraTreesRegressor(random_state=seed, n_jobs=-1)
+     param_distributions = {
+         "n_estimators": [300, 500, 800, 1000],
+         "max_depth": [None, 4, 6, 8, 10, 12, 16],
+         "min_samples_split": [2, 3, 4, 5, 8, 10],
+         "min_samples_leaf": [1, 2, 3, 4, 6],
+         "max_features": ["sqrt", "log2", 0.5, 0.7, 0.9, 1.0],
+         "bootstrap": [False, True],
+     }
+     return RandomizedSearchCV(
+         estimator=base_model,
+         param_distributions=param_distributions,
+         n_iter=EXTRA_TREES_RANDOM_SEARCH_ITERATIONS,
+         scoring=make_scorer(r2_score, multioutput="uniform_average"),
+         cv=EXTRA_TREES_RANDOM_SEARCH_CV_FOLDS,
+         random_state=seed,
+         n_jobs=-1,
+         refit=True,
+     )
+ 
+ 
+@@ -2738,50 +2880,51 @@ def fit_model(
+     display_steps=False,
+     run=0,
+     optimization_scope="weights",
+     optimize_feature_indexes=None,
+     pretrained_state_dict_path=None,
+ ):
+     """Train one ANN on tabular data with train-only normalization.
+ 
+     Returns ``(predictions_original_scale, mse_original_scale, r2, model,
+     optimized_inputs_report)`` for every success/failure path so callers can
+     safely unpack results.  Scalers are fitted only on the training subset used
+     for optimization and are then reused for validation/test data.
+     """
+     set_model_seed(model_seed + run)
+     validation_report_for_training(X_train, y_train, name="ANN training data")
+ 
+     try:
+         X_train_df = dataframe_from_tabular(X_train, "X_train")
+         X_test_df = dataframe_from_tabular(X_test, "X_test", columns=X_train_df.columns)
+         y_train_df = target_dataframe(y_train, "y_train")
+         y_test_df = target_dataframe(y_test, "y_test", columns=y_train_df.columns)
+         validate_dataframe(X_train_df, "ANN X_train")
+         validate_dataframe(X_test_df, "ANN X_test")
+         validate_dataframe(y_train_df, "ANN y_train")
+         validate_dataframe(y_test_df, "ANN y_test")
++        X_train_df, X_test_df = robust_clip_refinery_features(X_train_df, X_test_df)
+         X_train_values = X_train_df.to_numpy(dtype=float)
+         X_test_values = X_test_df.to_numpy(dtype=float)
+         y_train_values = y_train_df.to_numpy(dtype=float)
+         y_test_values = y_test_df.to_numpy(dtype=float)
+     except ValueError as err:
+         print(f"Invalid training data: {err}")
+         return None, None, None, model, None
+ 
+     if X_train_values.shape[0] != y_train_values.shape[0]:
+         print("X_train and y_train row counts do not match.")
+         return None, None, None, model, None
+     if X_test_values.shape[0] != y_test_values.shape[0]:
+         print("X_test and y_test row counts do not match.")
+         return None, None, None, model, None
+     if not np.isfinite(y_train_values).all():
+         raise AssertionError("ANN pre-training validation failed: y_train contains NaN or infinite values before split.")
+     if not np.isfinite(y_test_values).all():
+         raise AssertionError("ANN pre-training validation failed: y_test contains NaN or infinite values before split.")
+ 
+     optimize_weights = optimization_scope in ("weights", "both")
+     optimize_inputs = optimization_scope in ("inputs", "both")
+     if not optimize_weights and not optimize_inputs:
+         print(f"Invalid optimization scope: {optimization_scope}")
+         return None, None, None, model, None
+ 
+@@ -3221,95 +3364,101 @@ def evaluate_model_on_required_splits(
+             optimization_scope=optimization_scope,
+             optimize_feature_indexes=optimize_feature_indexes,
+         )
+         if predictions is None:
+             metrics[split_name] = {"r2": np.nan, "rmse": np.nan, "mae": np.nan}
+         else:
+             metrics[split_name] = compute_holdout_metrics(full_y.iloc[test_idx], predictions)
+     return metrics
+ 
+ 
+ def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
+     """Fit a scikit-learn regressor with train-only feature scaling."""
+     X_train, X_test, y_train, y_test, _ = clean_train_test_for_modeling(
+         X_train,
+         X_test,
+         y_train,
+         y_test,
+         verbose=False,
+     )
+     validation_report_for_training(X_train, y_train, name="sklearn training data")
+ 
+     X_train_df = dataframe_from_tabular(X_train, "X_train")
+     X_test_df = dataframe_from_tabular(X_test, "X_test", columns=X_train_df.columns)
+     y_train_values = as_2d_float_array(y_train, "y_train")
+     y_test_values = as_2d_float_array(y_test, "y_test")
++    X_train_df, X_test_df, feature_hierarchy_metadata = engineer_refinery_feature_hierarchy(
++        X_train_df,
++        X_test_df,
++    )
+ 
+     scaler_x = StandardScaler()
+     X_train_scaled_df = fit_transform_dataframe(scaler_x, X_train_df)
+     X_test_scaled_df = transform_dataframe(scaler_x, X_test_df)
+     validate_dataframe(X_train_df, "sklearn X_train before fit")
+     validate_dataframe(X_test_df, "sklearn X_test before fit")
+     validate_numpy(y_train_values, "sklearn y_train before fit")
+     validate_numpy(y_test_values, "sklearn y_test before fit")
+     X_train_scaled = X_train_scaled_df.to_numpy(dtype=np.float64)
+     X_test_scaled = X_test_scaled_df.to_numpy(dtype=np.float64)
+     validate_numpy(X_train_scaled, "sklearn X_train_scaled before fit")
+     validate_numpy(X_test_scaled, "sklearn X_test_scaled before fit")
+ 
+     is_multi_output = y_train_values.shape[1] > 1
+     y_train_fit = y_train_values if is_multi_output else y_train_values.ravel()
+ 
+     if isinstance(model, RandomizedSearchCV):
+         search_cv_folds = min(int(model.cv), X_train_scaled.shape[0])
+         if search_cv_folds < 2:
+             print("Not enough training rows for ExtraTrees RandomizedSearchCV; fitting base estimator.")
+             model = model.estimator
+         else:
+             model.cv = search_cv_folds
+ 
+     fit_estimator = model
+     if is_multi_output:
+         model_name = getattr(model, "__class__", type(model)).__name__
+         supports_multioutput = sklearn_model_supports_multioutput(model)
+         if not supports_multioutput:
+             print(
+                 f"{model_name} does not natively support multi-output regression. "
+                 "Wrapping it with MultiOutputRegressor."
+             )
+             fit_estimator = MultiOutputRegressor(model)
+ 
+     fit_estimator.fit(X_train_scaled, y_train_fit)
+     predictions = fit_estimator.predict(X_test_scaled)
+     predictions_2d = as_2d_float_array(predictions, "predictions")
+ 
+     if predictions_2d.shape != y_test_values.shape:
+         raise ValueError(
+             f"Prediction shape {predictions_2d.shape} does not match target shape {y_test_values.shape}."
+         )
+ 
+     fit_estimator.feature_scaler_ = scaler_x
++    fit_estimator.raw_feature_names_ = list(dataframe_from_tabular(X_train, "X_train").columns)
++    fit_estimator.feature_hierarchy_metadata_ = feature_hierarchy_metadata
+     mse = float(np.mean((predictions_2d - y_test_values) ** 2))
+     r2 = safe_r2_score(y_test_values, predictions_2d)
+     return predictions_2d, mse, r2, fit_estimator
+ 
+ 
+ MODEL_COMPARISON_MODELS = (
+     "RandomForest",
+     "ExtraTrees",
+     "XGBoost",
+     "LightGBM",
+     "CatBoost",
+     "GradientBoosting",
+     "ANN",
+ )
+ MODEL_COMPARISON_CV_FOLDS = 5
+ MODEL_COMPARISON_ANN_EPOCHS = 100
+ MODEL_COMPARISON_ANN_HIDDEN_SIZES = [32, 16]
+ 
+ 
+ def is_torch_model(model_class):
+     return isinstance(model_class, type) and issubclass(model_class, nn.Module)
+ 
+ 
+ def _safe_mape_percent(y_true, y_pred, epsilon=1e-8):
+     """Return MAPE (%) while ignoring zero/near-zero actual values."""
+@@ -4481,59 +4630,67 @@ def _train_model_for_shap(model_class, inputs, num_epochs, hidden_sizes):
+         )
+         X_test_explain = _clean_shap_numeric_array(
+             transform_dataframe(
+                 scaler,
+                 dataframe_from_tabular(X_test, "X_test", columns=getattr(scaler, "feature_names_in_", X_train.columns)),
+             ),
+             "X_test_explain",
+         )
+         if X_train_explain is None or X_test_explain is None:
+             return None, None, None, None, False
+         return model, X_train, X_train_explain, X_test_explain, True
+ 
+     X_train, X_test, y_train, y_test = read_prep_data_cached(inputs)
+     try:
+         model = model_class(model_seed)
+         _, _, r2, fitted_model = fit_sklearn_model(model, X_train, X_test, y_train, y_test)
+     except (TypeError, ValueError, RuntimeError) as err:
+         print(f"Could not train sklearn model for SHAP analysis: {err}")
+         return None, None, None, None, False
+     if r2 is None:
+         print("Could not train sklearn model for SHAP analysis.")
+         return None, None, None, None, False
+     scaler = getattr(fitted_model, "feature_scaler_", None)
+     if scaler is None:
+         scaler = StandardScaler().fit(X_train)
++    feature_hierarchy_metadata = getattr(fitted_model, "feature_hierarchy_metadata_", None)
++    if feature_hierarchy_metadata:
++        X_train_for_scaler = transform_with_refinery_feature_hierarchy(X_train, feature_hierarchy_metadata)
++        X_test_for_scaler = transform_with_refinery_feature_hierarchy(X_test, feature_hierarchy_metadata)
++    else:
++        X_train_for_scaler = dataframe_from_tabular(X_train, "X_train")
++        X_test_for_scaler = dataframe_from_tabular(
++            X_test,
++            "X_test",
++            columns=getattr(scaler, "feature_names_in_", X_train.columns),
++        )
+     X_train_explain = _clean_shap_numeric_array(
+-        transform_dataframe(scaler, dataframe_from_tabular(X_train, "X_train")),
++        transform_dataframe(scaler, X_train_for_scaler),
+         "X_train_explain",
+     )
+     X_test_explain = _clean_shap_numeric_array(
+-        transform_dataframe(
+-            scaler,
+-            dataframe_from_tabular(X_test, "X_test", columns=getattr(scaler, "feature_names_in_", X_train.columns)),
+-        ),
++        transform_dataframe(scaler, X_test_for_scaler),
+         "X_test_explain",
+     )
+     if X_train_explain is None or X_test_explain is None:
+         return None, None, None, None, False
+     return fitted_model, X_train, X_train_explain, X_test_explain, False
+ 
+ 
+ def _unwrap_tree_estimators_for_shap(model):
+     """Return fitted tree estimators that SHAP TreeExplainer can explain directly."""
+     if isinstance(model, MultiOutputRegressor):
+         return list(model.estimators_)
+     if isinstance(model, RandomizedSearchCV):
+         return [model.best_estimator_]
+     return [model]
+ 
+ 
+ def _is_supported_tree_model(model):
+     """Detect tree models requested for fast SHAP support, including wrappers."""
+     tree_type_names = {
+         "RandomForestRegressor",
+         "ExtraTreesRegressor",
+         "XGBRegressor",
+         "LGBMRegressor",
+         "CatBoostRegressor",
+     }
