@@ -1453,6 +1453,25 @@ class TrainingConfig:
     num_repeats: int = 5
 
 
+@dataclass
+class TrainingRunState:
+    """Validated mutable training choices for one execution of ``main``.
+
+    Keep all values that are later mutated by prompts in one object instead of
+    assigning them conditionally in nested branches.  This prevents Python's
+    local-variable shadowing from creating ``UnboundLocalError`` failures for
+    variables such as ``list_epochs``, ``models``, ``selected_models``,
+    ``list_hidden_sizes``, and ``num_repeats``.
+    """
+    epoch_candidates: list[int]
+    hidden_size_groups: list[list[int]]
+    num_repeats: int
+    best_epochs: int
+    selected_models: list[int] = field(default_factory=list)
+    model_names: list[str] = field(default_factory=list)
+    registered_models: list = field(default_factory=list)
+
+
 def validate_training_config(config):
     """Return a validated copy of training defaults with actionable errors."""
     if config is None:
@@ -1465,6 +1484,52 @@ def validate_training_config(config):
     if repeats < 1:
         raise ValueError("Training configuration num_repeats must be >= 1.")
     return TrainingConfig(sorted(set(epochs)), int(config.best_epochs), hidden, repeats)
+
+
+def initialize_training_run_state(config=None):
+    """Create a fully initialized training state before any user prompts.
+
+    Every execution path that reaches model/epoch selection must call this once.
+    The returned lists are copies, so later prompt handling can mutate them
+    without changing module-level defaults.
+    """
+    validated = validate_training_config(config or DEFAULT_TRAINING_CONFIG)
+    return TrainingRunState(
+        epoch_candidates=list(validated.epoch_candidates),
+        hidden_size_groups=[list(group) for group in validated.hidden_size_groups],
+        num_repeats=int(validated.num_repeats),
+        best_epochs=int(validated.best_epochs),
+    )
+
+
+def validate_model_registry(registered_models, model_names):
+    """Validate model registry before selection prompts dereference it."""
+    if registered_models is None or model_names is None:
+        raise ValueError("Model registry was not initialized before model selection.")
+    if len(registered_models) != len(model_names):
+        raise ValueError(
+            "Model registry is inconsistent: "
+            f"{len(registered_models)} model objects but {len(model_names)} names."
+        )
+    if not registered_models:
+        raise ValueError("No model classes or factories are available for training.")
+    return list(registered_models), list(model_names)
+
+
+def validate_selected_model_indexes(selected_models, registered_models, context="model selection"):
+    """Return validated model indexes with clear failures for empty/out-of-range lists."""
+    if selected_models is None:
+        raise ValueError(f"{context}: selected_models was not initialized.")
+    selected = [int(index) for index in selected_models]
+    if not selected:
+        raise ValueError(f"{context}: no models were selected.")
+    max_index = len(registered_models) - 1
+    invalid = [index for index in selected if index < 0 or index > max_index]
+    if invalid:
+        raise ValueError(
+            f"{context}: invalid model index(es) {invalid}; valid range is 0 to {max_index}."
+        )
+    return selected
 
 
 DEFAULT_TRAINING_CONFIG = TrainingConfig()
@@ -1703,6 +1768,21 @@ def parse_multi_select(answer, options, allow_all=True, one_based=False):
 def selectable_output_features_from_csv(data):
     """Return output choices in exact CSV order so numeric selections are stable."""
     return list(data.columns)
+
+
+def validate_output_selection_preserved(requested_outputs, loaded_outputs, context="prep_data reload"):
+    """Fail fast when prep_data reload changes or overwrites the selected targets."""
+    requested = list(requested_outputs or [])
+    loaded = list(loaded_outputs or [])
+    if requested and loaded != requested:
+        raise ValueError(
+            f"{context} changed selected output columns. "
+            f"Requested outputs: {requested}; loaded outputs: {loaded}. "
+            "Rebuild prep_data with the same output selection or choose matching saved-run metadata."
+        )
+    if not loaded:
+        raise ValueError(f"{context} produced no output target columns.")
+    return loaded
 
 
 def selectable_input_features_from_csv(data, selected_output_features):
@@ -2266,6 +2346,15 @@ def prepare_or_reuse_data(dataset_path="convert/stclean.csv", prep_folder="prep_
         prep_folder=prep_folder,
         optional_future_quality_inputs=optional_future_quality_inputs,
     )
+    try:
+        validate_output_selection_preserved(
+            selected_output_features,
+            y_train.columns.tolist(),
+            context="raw dataset prep_data reload",
+        )
+    except ValueError as err:
+        print(f"Output selection validation failed: {err}")
+        exit()
     _ = (X_test, y_test)
     return X_train, y_train.columns.tolist(), use_auto_feature_selection, reused_prep_data
 
@@ -5327,10 +5416,10 @@ def repeat_fit_model(
 
 
 def main():
-    training_config = validate_training_config(DEFAULT_TRAINING_CONFIG)
-    list_hidden_sizes = [list(group) for group in training_config.hidden_size_groups]
-    default_epoch_candidates = list(training_config.epoch_candidates)
-    num_repeats = training_config.num_repeats
+    run_state = initialize_training_run_state(DEFAULT_TRAINING_CONFIG)
+    list_hidden_sizes = [list(group) for group in run_state.hidden_size_groups]
+    default_epoch_candidates = list(run_state.epoch_candidates)
+    num_repeats = run_state.num_repeats
     dataset_path = "convert/stclean.csv"
     selected_saved_run, loaded_optimization_scope = prompt_saved_run_choice()
     prepared_X_train, prepared_outputs, use_auto_feature_selection, reused_prep_data = prepare_or_reuse_data(
@@ -5358,6 +5447,15 @@ def main():
         prep_folder="prep_data",
         optional_future_quality_inputs=run_optional_future_quality_inputs,
     )
+    try:
+        validate_output_selection_preserved(
+            prepared_outputs,
+            y_train.columns.tolist(),
+            context="main prep_data reload",
+        )
+    except ValueError as err:
+        print(f"Output selection validation failed: {err}")
+        exit()
 
     # After loading, get the column names from X_train
     inputs = X_train.columns.tolist()
@@ -5445,6 +5543,13 @@ def main():
         model_names = ["RandomForestRegressor"]
     else:
         model_names = [model.__name__ for model in nn_models] + [name for name, _ in sklearn_models]
+    try:
+        registered_models, model_names = validate_model_registry(registered_models, model_names)
+    except ValueError as err:
+        print(f"Model initialization failed: {err}")
+        exit()
+    run_state.registered_models = registered_models
+    run_state.model_names = model_names
     if selected_saved_run and selected_saved_run.get("model_name") in model_names:
         selected_models = [model_names.index(selected_saved_run["model_name"])]
         print(f"Using saved model: {selected_saved_run['model_name']}")
@@ -5467,6 +5572,16 @@ def main():
         else:
             selected_models = [model_names.index(name) for name in selected_model_names]
 
+    try:
+        selected_models = validate_selected_model_indexes(
+            selected_models,
+            registered_models,
+            context="model selection",
+        )
+    except ValueError as err:
+        print(f"Invalid model selection: {err}")
+        exit()
+    run_state.selected_models = selected_models
     print("Selected Models:", [model_names[i] for i in selected_models])
     best_model_index = selected_models[0]
     max_model_index = best_model_index
@@ -5565,7 +5680,7 @@ def main():
 
             reference_model = registered_models[selected_models[0]]
             reference_model_name = model_names[selected_models[0]]
-            reference_epochs = epoch_candidates[0] if epoch_candidates else training_config.best_epochs
+            reference_epochs = epoch_candidates[0] if epoch_candidates else run_state.best_epochs
             reference_hidden_sizes = list_hidden_sizes[0] if is_torch_model(reference_model) else []
 
             print(

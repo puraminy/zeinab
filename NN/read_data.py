@@ -1120,14 +1120,18 @@ def read_prep_data(inputs=None, prep_folder="prep_data", optional_future_quality
     }
     if quality_rows:
         write_data_quality_report(quality_rows, prep_folder=prep_folder)
-    if repeated_indexes_by_table["X_train"]:
-        X_train_full = X_train_full.drop(index=repeated_indexes_by_table["X_train"])
-    if repeated_indexes_by_table["X_test"]:
-        X_test_full = X_test_full.drop(index=repeated_indexes_by_table["X_test"])
-    if repeated_indexes_by_table["y_train"]:
-        y_train = y_train.drop(index=repeated_indexes_by_table["y_train"])
-    if repeated_indexes_by_table["y_test"]:
-        y_test = y_test.drop(index=repeated_indexes_by_table["y_test"])
+    train_repeated_indexes = sorted(
+        set(repeated_indexes_by_table["X_train"]).union(repeated_indexes_by_table["y_train"])
+    )
+    test_repeated_indexes = sorted(
+        set(repeated_indexes_by_table["X_test"]).union(repeated_indexes_by_table["y_test"])
+    )
+    if train_repeated_indexes:
+        X_train_full = X_train_full.drop(index=train_repeated_indexes, errors="ignore").reset_index(drop=True)
+        y_train = y_train.drop(index=train_repeated_indexes, errors="ignore").reset_index(drop=True)
+    if test_repeated_indexes:
+        X_test_full = X_test_full.drop(index=test_repeated_indexes, errors="ignore").reset_index(drop=True)
+        y_test = y_test.drop(index=test_repeated_indexes, errors="ignore").reset_index(drop=True)
 
     if list(X_train_full.columns) != list(X_test_full.columns):
         train_only = [col for col in X_train_full.columns if col not in X_test_full.columns]
