@@ -34,6 +34,9 @@ from preprocessing import (
     coerce_refinery_numeric_frame,
     coerce_refinery_numeric_series,
     median_impute_train_test,
+    validate_dataframe,
+    validate_numpy,
+    validate_tensor,
 )
 from read_data import (
     read_prep_data,
@@ -350,8 +353,8 @@ def apply_missing_value_pipeline(X_train, X_test, missing_drop_threshold=50.0, v
     """
     X_train_clean = X_train.copy().replace([np.inf, -np.inf], np.nan)
     X_test_clean = X_test.copy().replace([np.inf, -np.inf], np.nan)
-    X_train_clean = X_train_clean.apply(pd.to_numeric, errors="coerce")
-    X_test_clean = X_test_clean.apply(pd.to_numeric, errors="coerce")
+    X_train_clean = coerce_refinery_numeric_frame(X_train_clean, logger=LOGGER)
+    X_test_clean = coerce_refinery_numeric_frame(X_test_clean, logger=LOGGER)
 
     train_missing_counts = X_train_clean.isna().sum()
     test_missing_counts = X_test_clean.isna().sum()
@@ -395,8 +398,8 @@ def apply_target_value_pipeline(y_train, y_test):
         raise ValueError("y_train must contain at least one target column.")
     y_test_clean = y_test.copy() if isinstance(y_test, pd.DataFrame) else pd.DataFrame(y_test)
     y_test_clean = y_test_clean.reindex(columns=y_train_clean.columns)
-    y_train_clean = y_train_clean.apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
-    y_test_clean = y_test_clean.apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
+    y_train_clean = coerce_refinery_numeric_frame(y_train_clean, logger=LOGGER).replace([np.inf, -np.inf], np.nan)
+    y_test_clean = coerce_refinery_numeric_frame(y_test_clean, logger=LOGGER).replace([np.inf, -np.inf], np.nan)
     train_mask = y_train_clean.notna().all(axis=1)
     test_mask = y_test_clean.notna().all(axis=1)
     dropped_train = int((~train_mask).sum())
@@ -2544,7 +2547,7 @@ def dataframe_from_tabular(data, name, columns=None, index=None):
         dataframe = pd.DataFrame(array, columns=columns, index=index)
     if columns is not None:
         dataframe = dataframe.reindex(columns=columns)
-    dataframe = dataframe.apply(pd.to_numeric, errors="coerce")
+    dataframe = coerce_refinery_numeric_frame(dataframe, logger=LOGGER)
     if dataframe.shape[0] == 0:
         raise ValueError(f"{name} must contain at least one row.")
     if dataframe.shape[1] == 0:
@@ -2618,6 +2621,7 @@ def initialize_linear_weights(module):
 
 def make_torch_model(model_class, input_size, hidden_sizes, output_size):
     """Instantiate a torch model while preserving older constructors."""
+    hidden_sizes = normalize_hidden_sizes_for_model(model_class, hidden_sizes)
     if model_class.__name__ == "GRNN":
         return model_class(input_size, output_size=output_size)
     try:
@@ -2626,10 +2630,42 @@ def make_torch_model(model_class, input_size, hidden_sizes, output_size):
         return model_class(input_size, hidden_sizes)
 
 
+def expected_hidden_layer_count(model_class_or_model):
+    """Return the supported hidden-layer count for model classes with fixed layouts."""
+    name = getattr(model_class_or_model, "__name__", model_class_or_model.__class__.__name__)
+    fixed_counts = {"GRNN": 0, "Linear1HiddenLayer": 1, "RBFN": 1, "Linear2HiddenLayer": 2}
+    return fixed_counts.get(name)
+
+
+def normalize_hidden_sizes_for_model(model_class_or_model, hidden_sizes):
+    """Convert requested hidden-size candidates to the nearest valid layout."""
+    requested = list(hidden_sizes or [])
+    expected = expected_hidden_layer_count(model_class_or_model)
+    name = getattr(model_class_or_model, "__name__", model_class_or_model.__class__.__name__)
+    if expected is None:
+        if not requested:
+            raise ValueError(f"{name} requires at least one hidden size.")
+        return requested
+    if expected == 0:
+        if requested:
+            LOGGER.info("Ignoring hidden sizes %s for %s because this architecture has no configurable hidden layers.", requested, name)
+        return []
+    if len(requested) == expected:
+        return requested
+    if not requested:
+        raise ValueError(f"{name} requires {expected} hidden size value(s).")
+    normalized = (requested + [requested[-1]] * expected)[:expected]
+    LOGGER.info("Converted hidden sizes %s to %s for %s (requires %s hidden layer value(s)).", requested, normalized, name, expected)
+    return normalized
+
+
 def validate_hidden_size_compatibility(model, hidden_sizes):
     """Check whether the requested hidden-size layout matches a model class."""
     hidden_layers = getattr(model, "hidden_layers", None)
-    return hidden_layers is None or len(hidden_sizes) == len(hidden_layers)
+    if hidden_layers is None:
+        return True
+    normalized = normalize_hidden_sizes_for_model(model, hidden_sizes)
+    return len(normalized) == len(hidden_layers)
 
 
 def load_model_state_dict(model, checkpoint_path):
@@ -2720,6 +2756,10 @@ def fit_model(
         X_test_df = dataframe_from_tabular(X_test, "X_test", columns=X_train_df.columns)
         y_train_df = target_dataframe(y_train, "y_train")
         y_test_df = target_dataframe(y_test, "y_test", columns=y_train_df.columns)
+        validate_dataframe(X_train_df, "ANN X_train")
+        validate_dataframe(X_test_df, "ANN X_test")
+        validate_dataframe(y_train_df, "ANN y_train")
+        validate_dataframe(y_test_df, "ANN y_test")
         X_train_values = X_train_df.to_numpy(dtype=float)
         X_test_values = X_test_df.to_numpy(dtype=float)
         y_train_values = y_train_df.to_numpy(dtype=float)
@@ -2795,6 +2835,13 @@ def fit_model(
             if y_val_normalized_df is not None
             else None
         )
+        validate_tensor(X_fit_normalized, "ANN X_fit_normalized tensor")
+        if X_val_normalized is not None:
+            validate_tensor(X_val_normalized, "ANN X_val_normalized tensor")
+        validate_tensor(X_test_normalized, "ANN X_test_normalized tensor")
+        validate_tensor(y_fit_normalized, "ANN y_fit_normalized tensor")
+        if y_val_normalized is not None:
+            validate_tensor(y_val_normalized, "ANN y_val_normalized tensor")
     except ValueError as err:
         print(f"Could not normalize data safely: {err}")
         return None, None, None, model, None
@@ -3058,6 +3105,7 @@ def cross_validate_model(
         X_val_fold = full_X.iloc[val_idx]
         y_train_fold = full_y.iloc[train_idx]
         y_val_fold = full_y.iloc[val_idx]
+        LOGGER.info("ANN CV fold %s target stats: y_train_fold=%s y_valid_fold=%s", fold_index, y_train_fold.describe().to_dict(), y_val_fold.describe().to_dict())
         try:
             predictions, mse, r2 = fit_model_on_split(
                 model_class,
@@ -3199,8 +3247,14 @@ def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
     scaler_x = StandardScaler()
     X_train_scaled_df = fit_transform_dataframe(scaler_x, X_train_df)
     X_test_scaled_df = transform_dataframe(scaler_x, X_test_df)
-    X_train_scaled = X_train_scaled_df.to_numpy()
-    X_test_scaled = X_test_scaled_df.to_numpy()
+    validate_dataframe(X_train_df, "sklearn X_train before fit")
+    validate_dataframe(X_test_df, "sklearn X_test before fit")
+    validate_numpy(y_train_values, "sklearn y_train before fit")
+    validate_numpy(y_test_values, "sklearn y_test before fit")
+    X_train_scaled = X_train_scaled_df.to_numpy(dtype=np.float64)
+    X_test_scaled = X_test_scaled_df.to_numpy(dtype=np.float64)
+    validate_numpy(X_train_scaled, "sklearn X_train_scaled before fit")
+    validate_numpy(X_test_scaled, "sklearn X_test_scaled before fit")
 
     is_multi_output = y_train_values.shape[1] > 1
     y_train_fit = y_train_values if is_multi_output else y_train_values.ravel()
