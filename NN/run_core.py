@@ -49,6 +49,7 @@ from refinery_variables import (
     base_variable_name,
     filter_allowed_model_inputs,
     find_leakage_columns,
+    feature_importance_inputs_for_target,
     leakage_pattern_matches,
     refinery_variable_group_metadata,
     remove_name_based_leakage_inputs,
@@ -131,11 +132,6 @@ DRIFT_ANALYSIS_PLOT_PATH = os.path.join(MODULE_DIR, "reports", "drift_analysis_w
 
 FEATURE_IMPORTANCE_TARGETS = (
     "white_total_points",
-    "white_solution_color",
-    "white_apparent_color",
-    "white_ash",
-    "white_moisture",
-    "white_invert",
 )
 
 
@@ -489,10 +485,7 @@ def _coerce_feature_importance_source(raw_df, target, seed=None, test_size=0.25)
 
     working_df = raw_df.copy().replace([np.inf, -np.inf], np.nan)
     y = coerce_refinery_numeric_series(working_df[target])
-    feature_columns = [
-        column for column in working_df.columns
-        if column != target and not leakage_pattern_matches(column)
-    ]
+    feature_columns = feature_importance_inputs_for_target(working_df.columns, target)
     if not feature_columns:
         return None, None, None, None, None
 
@@ -679,6 +672,7 @@ def _build_feature_importance_tables(dataframe, target, seed=None):
                 "permutation_rows_used": int(len(y_perm)),
                 "source_variables_ranked": int(len(set(encoded_to_original.values()))),
                 "encoded_feature_count": int(X_train_fi.shape[1]),
+                "feature_leakage_policy": "target_chronology_safe_inputs_only",
                 "preprocessing_scope": "fit_on_training_split_only",
                 "created_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
             }

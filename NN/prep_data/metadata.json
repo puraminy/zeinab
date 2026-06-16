@@ -20,23 +20,7 @@
     "sulphited_color",
     "standard_liquor_pH",
     "standard_liquor_brix",
-    "standard_liquor_color",
-    "boiling_r1_pol",
-    "boiling_r1_q",
-    "boiling_r2_pol",
-    "boiling_r2_q",
-    "boiling_r3_pol",
-    "boiling_r3_q",
-    "wastewater_r1_pol",
-    "wastewater_r1_q",
-    "wastewater_r2_pol",
-    "wastewater_r2_q",
-    "wastewater_r3_pol",
-    "wastewater_r3_q",
-    "boiler_pH",
-    "boiler_alkalinity",
-    "boiler_hardness",
-    "boiler_tds"
+    "standard_liquor_color"
   ],
   "sheet_name_datetime_features": [
     "year",
@@ -66,23 +50,7 @@
     "sulphited_color",
     "standard_liquor_pH",
     "standard_liquor_brix",
-    "standard_liquor_color",
-    "boiling_r1_pol",
-    "boiling_r1_q",
-    "boiling_r2_pol",
-    "boiling_r2_q",
-    "boiling_r3_pol",
-    "boiling_r3_q",
-    "wastewater_r1_pol",
-    "wastewater_r1_q",
-    "wastewater_r2_pol",
-    "wastewater_r2_q",
-    "wastewater_r3_pol",
-    "wastewater_r3_q",
-    "boiler_pH",
-    "boiler_alkalinity",
-    "boiler_hardness",
-    "boiler_tds"
+    "standard_liquor_color"
   ],
   "sequential_features": [],
   "sequential_groups": [],
@@ -145,6 +113,18 @@
       "white_quality_",
       "white_average_"
     ],
+    "PRE_TARGET_FEATURE_IMPORTANCE_INPUTS": {
+      "white_total_points": [
+        "raw_sugar_color",
+        "raw_sugar_purity",
+        "raw_sugar_moisture",
+        "lime_alkalinity",
+        "carbonated_pH",
+        "co2_percent",
+        "sulphited_color",
+        "boiler_pH"
+      ]
+    },
     "input_rule": "Model inputs = EARLY_VARIABLES + CONTROL_VARIABLES only.",
     "main_model_exclusion_rule": "Remove white_total_points plus every column whose base name starts with white_quality_ or white_average_ from the main model input set.",
     "diagnostic_only_rule": "The excluded white-sugar scoring/average fields may be used only in a separate diagnostic comparison model that is clearly labeled as leakage-prone; they are never allowed through main training validation.",
