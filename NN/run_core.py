@@ -3912,6 +3912,131 @@ def generate_drift_analysis_report(
     print("=========================================================\n")
     return report_path
 
+
+def _safe_read_excel_sheet(path, sheet_name):
+    """Read an Excel sheet if it exists, otherwise return an empty DataFrame."""
+    if not path or not os.path.exists(path):
+        return pd.DataFrame()
+    try:
+        return pd.read_excel(path, sheet_name=sheet_name)
+    except (FileNotFoundError, ValueError, OSError):
+        return pd.DataFrame()
+
+
+def _format_step7_bool(value):
+    return "Yes" if bool(value) else "No"
+
+
+def generate_final_reporting_conclusion(
+    model_design_report_path=MODEL_DESIGN_REPORT_PATH,
+    feature_importance_report_path=MODEL_B_FEATURE_IMPORTANCE_REPORT_PATH,
+    drift_report_path=DRIFT_ANALYSIS_REPORT_PATH,
+    leakage_delta_threshold=0.02,
+    time_delta_threshold=0.02,
+    sufficiency_r2_threshold=0.70,
+):
+    """Print Step 7's final structured conclusion from Steps 3, 5, and 6.
+
+    The conclusion compares Model A/B/C metrics, checks whether the leaky
+    baseline outperformed the clean model, evaluates whether encoded time
+    features materially improve Model B over Model C, checks whether the
+    process-only model remains adequate, and summarizes drift/seasonality from
+    monthly white-total-points analysis.
+    """
+    overall_df = _safe_read_excel_sheet(model_design_report_path, "Overall Metrics")
+    dominance_df = _safe_read_excel_sheet(feature_importance_report_path, "Dominance Summary")
+    drift_df = _safe_read_excel_sheet(drift_report_path, "Monthly Drift")
+
+    model_r2 = {}
+    if not overall_df.empty and {"Experiment", "R2"}.issubset(overall_df.columns):
+        for _, row in overall_df.iterrows():
+            experiment = str(row.get("Experiment", ""))
+            label = experiment[:1] if experiment[:1] in {"A", "B", "C"} else experiment
+            model_r2[label] = float(row.get("R2")) if pd.notna(row.get("R2")) else np.nan
+
+    valid_model_r2 = {model: score for model, score in model_r2.items() if pd.notna(score)}
+    best_model = max(valid_model_r2, key=valid_model_r2.get) if valid_model_r2 else "Unknown"
+    a_r2 = valid_model_r2.get("A", np.nan)
+    b_r2 = valid_model_r2.get("B", np.nan)
+    c_r2 = valid_model_r2.get("C", np.nan)
+    leakage_delta = a_r2 - b_r2 if pd.notna(a_r2) and pd.notna(b_r2) else np.nan
+    time_delta = b_r2 - c_r2 if pd.notna(b_r2) and pd.notna(c_r2) else np.nan
+    leakage_inflated = bool(pd.notna(leakage_delta) and leakage_delta > leakage_delta_threshold)
+    time_features_essential = bool(pd.notna(time_delta) and time_delta > time_delta_threshold)
+    process_only_sufficient = bool(
+        pd.notna(c_r2)
+        and c_r2 >= sufficiency_r2_threshold
+        and (pd.isna(time_delta) or time_delta <= time_delta_threshold)
+    )
+
+    time_importance = np.nan
+    process_importance = np.nan
+    dominance_note = "Feature-importance report unavailable."
+    if not dominance_df.empty:
+        if "Time Importance Share" in dominance_df.columns:
+            time_importance = float(pd.to_numeric(dominance_df["Time Importance Share"], errors="coerce").mean())
+        if "Process Importance Share" in dominance_df.columns:
+            process_importance = float(pd.to_numeric(dominance_df["Process Importance Share"], errors="coerce").mean())
+        if pd.notna(time_importance) and pd.notna(process_importance):
+            dominance_note = f"Average importance shares: time={time_importance:.3f}, process={process_importance:.3f}."
+
+    drift_exists = False
+    seasonality_exists = False
+    drift_note = "Drift analysis report unavailable."
+    if not drift_df.empty and "Mean white_total_points" in drift_df.columns:
+        monthly_means = pd.to_numeric(drift_df["Mean white_total_points"], errors="coerce").dropna()
+        if len(monthly_means) >= 2:
+            mean_level = abs(float(monthly_means.mean())) or 1.0
+            relative_range = float(monthly_means.max() - monthly_means.min()) / mean_level
+            first_last_shift = abs(float(monthly_means.iloc[-1] - monthly_means.iloc[0])) / mean_level
+            drift_exists = first_last_shift > 0.05 or relative_range > 0.10
+            seasonality_exists = relative_range > 0.10
+            drift_note = (
+                f"{len(monthly_means)} monthly groups; relative range={relative_range:.3f}; "
+                f"first-to-last shift={first_last_shift:.3f}."
+            )
+        else:
+            drift_note = "Fewer than two monthly groups; drift/seasonality cannot be established."
+
+    def _score_text(model):
+        score = valid_model_r2.get(model, np.nan)
+        return "n/a" if pd.isna(score) else f"R2={score:.4f}"
+
+    def _delta_text(value):
+        return "n/a" if pd.isna(value) else f"{value:.4f}"
+
+    print("\n================= Step 7 Final Reporting =================")
+    print(f"1. Best-performing model: {best_model} ({_score_text(best_model)})")
+    print(
+        "2. Leakage features inflated performance: "
+        f"{_format_step7_bool(leakage_inflated)} "
+        f"(A {_score_text('A')} vs B {_score_text('B')}; delta={_delta_text(leakage_delta)})"
+    )
+    print(
+        "3. Time features are essential or redundant: "
+        f"{'Essential' if time_features_essential else 'Redundant / not materially beneficial'} "
+        f"(B {_score_text('B')} vs C {_score_text('C')}; delta={_delta_text(time_delta)}; {dominance_note})"
+    )
+    print(
+        "4. Process variables alone are sufficient: "
+        f"{_format_step7_bool(process_only_sufficient)} "
+        f"(C {_score_text('C')}; sufficiency threshold R2>={sufficiency_r2_threshold:.2f})"
+    )
+    print(
+        "5. Drift or seasonality exists: "
+        f"{_format_step7_bool(drift_exists or seasonality_exists)} "
+        f"(drift={_format_step7_bool(drift_exists)}, seasonality={_format_step7_bool(seasonality_exists)}; {drift_note})"
+    )
+    print("==========================================================\n")
+    return {
+        "best_model": best_model,
+        "leakage_inflated": leakage_inflated,
+        "time_features_essential": time_features_essential,
+        "process_only_sufficient": process_only_sufficient,
+        "drift_exists": drift_exists,
+        "seasonality_exists": seasonality_exists,
+    }
+
 def generate_model_comparison_report(X_train, X_test, y_train, y_test, report_path=MODEL_COMPARISON_REPORT_PATH):
     """Compare requested regressors with 5-fold CV and save reports/model_comparison.xlsx."""
     full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
@@ -5208,6 +5333,7 @@ def main():
     generate_model_design_experiments_report(X_train, X_test, y_train, y_test)
     generate_model_b_feature_importance_analysis(X_train, X_test, y_train, y_test)
     generate_drift_analysis_report(feature_importance_source_df)
+    generate_final_reporting_conclusion()
     active_features = list(inputs)
     if selected_saved_run:
         print("Loaded saved run metadata; reusing prepared inputs/outputs.")

@@ -1,13 +1,14 @@
 diff --git a/NN/run_reporting.py b/NN/run_reporting.py
-index eb2c03da01acf17895afc3f20d40b28ade781073..531c3ba23eb7110d53c1d673c04d9d9882f7bc7f 100644
+index 531c3ba23eb7110d53c1d673c04d9d9882f7bc7f..ac914deab448ed99ca8248abde850c769e5a6615 100644
 --- a/NN/run_reporting.py
 +++ b/NN/run_reporting.py
-@@ -1,10 +1,11 @@
+@@ -1,11 +1,12 @@
  """Report-generation helpers for the NN experiment workflow."""
  
  from run_core import (
-+    generate_drift_analysis_report,
+     generate_drift_analysis_report,
      generate_feature_importance_reports,
++    generate_final_reporting_conclusion,
      generate_model_comparison_report,
      generate_model_b_feature_importance_analysis,
      generate_prescriptive_optimization_report,
