@@ -1,40 +1,303 @@
-diff --git a/NN/README.md b/NN/README.md
-index ab36c79c02f6d4d29dad809b23f07db17d1e9893..5d3b38fe5e91c3835d09c6041647a44881e4887e 100644
---- a/NN/README.md
-+++ b/NN/README.md
-@@ -151,25 +151,35 @@ For every candidate set-point combination, the engine:
- 8. returns the feasible candidate with the lowest objective score.
+diff --git a/NN/run_core.py b/NN/run_core.py
+index f47e7a6e6a594a1b1af20c3f9f522eec69fd0009..d962344d201bf6c64547fcb15f29ee257e6be777 100644
+--- a/NN/run_core.py
++++ b/NN/run_core.py
+@@ -2939,50 +2939,125 @@ def cross_validate_model(
+             print(
+                 f"CV fold {fold_index} skipped: prediction shape {prediction_values.shape} "
+                 f"does not match target shape {y_val_values.shape}."
+             )
+             continue
+         r2_scores.append(float(r2) * 100.0)
+         rmse_scores.append(float(np.sqrt(mse)))
+         mae_scores.append(float(np.mean(np.abs(prediction_values - y_val_values))))
  
- The recommendation result now includes `risk_prediction`, `current_risk_prediction`, per-target risk drivers, and clear `operator_warnings`.  When `run.py` trains and saves a PyTorch checkpoint, it prints the recommended risk level and operator warnings, writes the full recommendation to `tables/recommended-operating-conditions.json`, and creates the operator-facing workbook at `reports/operator_report.xlsx`.
+     if not r2_scores:
+         return None
  
- ### Industrial operator demo output
- 
- After the best PyTorch model is saved, `run.py` now prints a professional operator-demo section for plant demonstrations.  The report follows the live refinery workflow:
- 
- 1. the shift operator enters the current refinery conditions;
- 2. the AI predicts future sugar quality at the current conditions;
- 3. the AI recommends optimal controllable variables such as lime milk baumé, lime alkalinity, CO2 percentage, carbonated pH, sulphited pH/brix, and standard-liquor pH/brix;
- 4. the AI prints the expected future quality after applying the recommended set-points;
- 5. the AI prints the industrial risk level, risk drivers, and operator advisory messages.
- 
- The demo is formatted as readable shift-log tables so that engineers and operators can compare current values, recommended set-points, expected quality improvement, safe search ranges, and the final `LOW`, `MEDIUM`, or `HIGH` risk level during an industrial presentation.
- 
- ## Sequence-model migration note
- 
- Before replacing the feedforward ANN with LSTM or GRU, see
- [`sequence_model_evaluation.md`](sequence_model_evaluation.md). The current
- recommendation is to keep the feedforward/tabular approach as the production
- candidate, add leakage-safe temporal features where justified, and test a small
- GRU/LSTM only as a controlled benchmark after grouped time-series validation is
- available.
+     return {
+         "folds": len(r2_scores),
+         "mean_r2": float(np.mean(r2_scores)),
+         "std_r2": float(np.std(r2_scores)),
+         "mean_rmse": float(np.mean(rmse_scores)),
+         "std_rmse": float(np.std(rmse_scores)),
+         "mean_mae": float(np.mean(mae_scores)),
+         "std_mae": float(np.std(mae_scores)),
+         "r2_scores": r2_scores,
+         "rmse_scores": rmse_scores,
+         "mae_scores": mae_scores,
+     }
  
 +
-+## Step 3 model-design experiments
++def compute_holdout_metrics(y_true, y_pred):
++    """Compute required holdout regression metrics: R² (%), RMSE, and MAE."""
++    y_true_values = as_2d_float_array(y_true, "y_true")
++    prediction_values = as_2d_float_array(y_pred, "y_pred")
++    if y_true_values.shape != prediction_values.shape:
++        raise ValueError(
++            f"Prediction shape {prediction_values.shape} does not match target shape {y_true_values.shape}."
++        )
++    r2 = safe_r2_score(y_true_values, prediction_values)
++    mse = float(np.mean((prediction_values - y_true_values) ** 2))
++    return {
++        "r2": float(r2) * 100.0 if r2 is not None else np.nan,
++        "rmse": float(np.sqrt(mse)),
++        "mae": float(np.mean(np.abs(prediction_values - y_true_values))),
++    }
 +
-+The workflow now creates a dedicated Step 3 workbook at `reports/model_design_experiments.xlsx` using the same model type for all three experiments: `RandomForestRegressor`.
 +
-+* **Model A — FULL (leaky baseline):** uses every available prepared non-output feature and is labelled diagnostic/comparison only because target leakage may be present.
-+* **Model B — CLEAN PROCESS MODEL (MAIN MODEL):** uses only leakage-safe refinery process variables plus encoded calendar/time features after applying the existing refinery leakage rules.
-+* **Model C — NO TIME MODEL:** starts from Model B and removes all raw or encoded time-related columns, so the result isolates process variables without time information.
++def evaluation_split_indices(n_rows, test_size=0.2):
++    """Return identical random and chronological train/test indexes for all models."""
++    if n_rows < 2:
++        raise ValueError("At least two rows are required for train/test evaluation.")
++    row_indexes = np.arange(n_rows)
++    random_train_idx, random_test_idx = train_test_split(
++        row_indexes,
++        test_size=test_size,
++        random_state=data_seed,
++        shuffle=True,
++    )
++    n_test = max(1, int(round(n_rows * float(test_size))))
++    if n_test >= n_rows:
++        raise ValueError(f"test_size={test_size} leaves no chronological training rows for {n_rows} rows.")
++    time_train_idx = row_indexes[: n_rows - n_test]
++    time_test_idx = row_indexes[n_rows - n_test :]
++    return {
++        "random": (random_train_idx, random_test_idx),
++        "time": (time_train_idx, time_test_idx),
++    }
 +
-+The report includes experiment metadata, overall metrics, per-target metrics, and the exact feature set used by each experiment.
++
++def evaluate_model_on_required_splits(
++    model_class,
++    num_epochs,
++    hidden_sizes,
++    features=None,
++    optimization_scope="weights",
++    optimize_feature_indexes=None,
++    test_size=0.2,
++):
++    """Evaluate one model/configuration on identical random and time-based splits."""
++    X_train, X_test, y_train, y_test = read_prep_data(features)
++    full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
++    full_y = pd.concat([y_train, y_test], axis=0).reset_index(drop=True)
++    split_indexes = evaluation_split_indices(len(full_X), test_size=test_size)
++    metrics = {}
++    for split_name, (train_idx, test_idx) in split_indexes.items():
++        predictions, _mse, _r2 = fit_model_on_split(
++            model_class,
++            full_X.iloc[train_idx],
++            full_X.iloc[test_idx],
++            full_y.iloc[train_idx],
++            full_y.iloc[test_idx],
++            num_epochs,
++            hidden_sizes,
++            run=0 if split_name == "random" else 1,
++            optimization_scope=optimization_scope,
++            optimize_feature_indexes=optimize_feature_indexes,
++        )
++        if predictions is None:
++            metrics[split_name] = {"r2": np.nan, "rmse": np.nan, "mae": np.nan}
++        else:
++            metrics[split_name] = compute_holdout_metrics(full_y.iloc[test_idx], predictions)
++    return metrics
++
++
+ def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
+     """Fit a scikit-learn regressor with train-only feature scaling."""
+     X_train, X_test, y_train, y_test, _ = clean_train_test_for_modeling(
+         X_train,
+         X_test,
+         y_train,
+         y_test,
+         verbose=False,
+     )
+     validation_report_for_training(X_train, y_train, name="sklearn training data")
+ 
+     X_train_df = dataframe_from_tabular(X_train, "X_train")
+     X_test_df = dataframe_from_tabular(X_test, "X_test", columns=X_train_df.columns)
+     y_train_values = as_2d_float_array(y_train, "y_train")
+     y_test_values = as_2d_float_array(y_test, "y_test")
+ 
+     scaler_x = StandardScaler()
+     X_train_scaled_df = fit_transform_dataframe(scaler_x, X_train_df)
+     X_test_scaled_df = transform_dataframe(scaler_x, X_test_df)
+     X_train_scaled = X_train_scaled_df.to_numpy()
+     X_test_scaled = X_test_scaled_df.to_numpy()
+ 
+     is_multi_output = y_train_values.shape[1] > 1
+     y_train_fit = y_train_values if is_multi_output else y_train_values.ravel()
+ 
+@@ -4983,94 +5058,110 @@ def main():
+                 epoch_candidates = sorted(set(epoch_candidates))
+                 for num_epochs in epoch_candidates:
+                     pretrained_weights_path = (
+                         selected_saved_run.get("weights_path")
+                         if selected_saved_run and is_nn and selected_saved_run.get("has_weights")
+                         else None
+                     )
+                     # Apply model on data for N repeats and get predictions, mse and r2
+                     mean_r2, std_r2, mean_mse, model_best_preds, max_r2, r2_list, max_run, optimized_inputs_report = repeat_fit_model(
+                         model_class,
+                         num_repeats, num_epochs, hidden_sizes, display_steps=True, features=active_features, optimization_scope=optimization_scope, optimize_feature_indexes=optimize_feature_indexes, pretrained_state_dict_path=pretrained_weights_path)
+ 
+                     # Keep best seed to generate the same predictions later
+                     if mean_r2 is None:
+                         continue
+ 
+                     cv_metrics = cross_validate_model(
+                         model_class,
+                         num_epochs,
+                         hidden_sizes,
+                         features=active_features,
+                         folds=MODEL_EVALUATION_CV_FOLDS,
+                         optimization_scope=optimization_scope if is_nn else "weights",
+                         optimize_feature_indexes=optimize_feature_indexes if is_nn else None,
+                     )
++                    split_metrics = evaluate_model_on_required_splits(
++                        model_class,
++                        num_epochs,
++                        hidden_sizes,
++                        features=active_features,
++                        optimization_scope=optimization_scope if is_nn else "weights",
++                        optimize_feature_indexes=optimize_feature_indexes if is_nn else None,
++                    )
+ 
+                     if max_r2 > best_r2:
+                         best_r2 = max_r2
+                         model_best_predictions[model_name] = model_best_preds
+                         best_optimized_inputs_report = optimized_inputs_report
+                         max_model_index = model_index
+                         max_epochs = num_epochs
+                         max_hidden_sizes = hidden_sizes
+                         best_run = max_run
+ 
+                     if mean_r2 > best_mean_r2:
+                         best_mean_r2 = mean_r2
+                         best_mse = mean_mse
+                         best_model_index = model_index
+                         best_epochs = num_epochs
+                         best_hidden_sizes = hidden_sizes
+ 
+                     total_nodes = sum(hidden_sizes) if hidden_sizes else 0
+ 
+                     mean_rmse = float(np.sqrt(mean_mse)) if mean_mse is not None else np.nan
+                     result = {
+                             "model":model_name,
+                             "R2": round(mean_r2,1),
+                             "MSE": round(mean_mse,2),
+                             "R2 std": round(std_r2, 1),
+                             "R2 List": [round(x, 1) for x in r2_list],
+                             "Mean R²": round(cv_metrics["mean_r2"], 3) if cv_metrics else np.nan,
+                             "Std R²": round(cv_metrics["std_r2"], 3) if cv_metrics else np.nan,
+                             "Mean RMSE": round(cv_metrics["mean_rmse"], 3) if cv_metrics else round(mean_rmse, 3),
+                             "Std RMSE": round(cv_metrics["std_rmse"], 3) if cv_metrics else np.nan,
+                             "Mean MAE": round(cv_metrics["mean_mae"], 3) if cv_metrics else np.nan,
+                             "Std MAE": round(cv_metrics["std_mae"], 3) if cv_metrics else np.nan,
+                             "CV folds": cv_metrics["folds"] if cv_metrics else 0,
++                            "Random Split R²": round(split_metrics["random"]["r2"], 3),
++                            "Random Split RMSE": round(split_metrics["random"]["rmse"], 3),
++                            "Random Split MAE": round(split_metrics["random"]["mae"], 3),
++                            "Time Split R²": round(split_metrics["time"]["r2"], 3),
++                            "Time Split RMSE": round(split_metrics["time"]["rmse"], 3),
++                            "Time Split MAE": round(split_metrics["time"]["mae"], 3),
+                             "hidden sizes": hidden_sizes if hidden_sizes else "N/A",
+                             "total hs": total_nodes,
+                             "epochs": num_epochs if is_nn else "N/A",
+                             }
+                     results.append(result)
+ 
+         # Create a table for results. Some model/config combinations can fail and return no
+         # valid R2 values, so guard against missing/empty result sets.
+         expected_result_cols = [
+             "model", "R2", "MSE", "R2 std", "R2 List",
+             "Mean R²", "Std R²", "Mean RMSE", "Std RMSE", "Mean MAE", "Std MAE", "CV folds",
++            "Random Split R²", "Random Split RMSE", "Random Split MAE",
++            "Time Split R²", "Time Split RMSE", "Time Split MAE",
+             "hidden sizes", "total hs", "epochs"
+         ]
+         results_table = pd.DataFrame(data=results)
+         if results_table.empty:
+             results_table = pd.DataFrame(columns=expected_result_cols)
+         else:
+             missing_cols = [col for col in expected_result_cols if col not in results_table.columns]
+             for col in missing_cols:
+                 results_table[col] = np.nan
+             # Rank methods by cross-validation R² when available.
+             if results_table["Mean R²"].notna().any():
+                 results_table = results_table.sort_values(by="Mean R²", ascending=False)
+                 results_table.insert(0, "CV R² Rank", range(1, len(results_table) + 1))
+             elif results_table["R2"].notna().any():
+                 results_table = results_table.sort_values(by="R2", ascending=False)
+             else:
+                 print("No valid R2 values were produced for the selected model/config combinations.")
+ 
+         if results_table["R2"].isna().all():
+             print("Training finished, but no successful runs produced R2 values. Skipping reporting/plots.")
+             results_table.to_csv("exp.csv", index=False)
+             exit()
+ 
+         latex_table = results_table.copy()
+         # Create and save latex code for table
+@@ -5091,50 +5182,61 @@ def main():
+         max_model_name = model_names[max_model_index]
+ 
+         print("============ Results for models (ranked by CV R²) =========================")
+         print(results_table)
+         cv_print_columns = [
+             col for col in [
+                 "CV R² Rank", "model", "hidden sizes", "epochs",
+                 "Mean R²", "Std R²", "Mean RMSE", "Std RMSE", "Mean MAE", "Std MAE", "CV folds"
+             ]
+             if col in results_table.columns
+         ]
+         if cv_print_columns:
+             cv_summary = results_table[cv_print_columns].copy()
+             if {"Mean R²", "Std R²"}.issubset(cv_summary.columns):
+                 cv_summary["CV R²"] = cv_summary.apply(lambda row: f"{row['Mean R²']} ± {row['Std R²']}", axis=1)
+             if {"Mean RMSE", "Std RMSE"}.issubset(cv_summary.columns):
+                 cv_summary["CV RMSE"] = cv_summary.apply(lambda row: f"{row['Mean RMSE']} ± {row['Std RMSE']}", axis=1)
+             if {"Mean MAE", "Std MAE"}.issubset(cv_summary.columns):
+                 cv_summary["CV MAE"] = cv_summary.apply(lambda row: f"{row['Mean MAE']} ± {row['Std MAE']}", axis=1)
+             cv_summary = cv_summary.drop(
+                 columns=["Mean R²", "Std R²", "Mean RMSE", "Std RMSE", "Mean MAE", "Std MAE"],
+                 errors="ignore",
+             )
+             print("============ 5-fold CV metrics (mean ± std) =========================")
+             print(cv_summary)
++        split_print_columns = [
++            col for col in [
++                "model", "hidden sizes", "epochs",
++                "Random Split R²", "Random Split RMSE", "Random Split MAE",
++                "Time Split R²", "Time Split RMSE", "Time Split MAE",
++            ]
++            if col in results_table.columns
++        ]
++        if split_print_columns:
++            print("============ Holdout split comparison (identical splits for all models) =========================")
++            print(results_table[split_print_columns])
+         print("========================== Best Mean Model ===============================")
+         print("Best Mean R-Squred:", best_mean_r2)
+         print("Best model with better mean R-Squred:", best_model_name)
+         print("Best Hidden sizes:", best_hidden_sizes)
+         print("Best epochs:", best_epochs)
+         print("=========================== Max Model ================================")
+         print("Best model with better max R-Squred:", max_model_name)
+         print("Best Hidden sizes:", max_hidden_sizes)
+         print("Best epochs:", max_epochs)
+         print("Max R-Squred:", best_r2)
+ 
+         results_table.to_csv("exp.csv")
+ 
+         X_train, X_test, y_train, y_test = read_prep_data(active_features)
+         generate_target_shap_analysis(X_train, X_test, y_train, y_test, targets=outputs)
+ 
+         # Show and save the plot for best results
+         best_predictions = model_best_predictions.get(max_model_name)
+         if best_predictions is None:
+             print("Best model did not produce predictions. Skipping reporting/plots.")
+             exit()
+         output_title = ", ".join(outputs)
+         title = "Prediction of " + output_title + " with " + max_model_name + " epochs:" + str(max_epochs)
+         file_name = f"R2-{best_r2:.2f}-" + max_model_name + "-" + "-".join(outputs) + ".png"
+ 

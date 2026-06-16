@@ -2961,6 +2961,81 @@ def cross_validate_model(
         "mae_scores": mae_scores,
     }
 
+
+def compute_holdout_metrics(y_true, y_pred):
+    """Compute required holdout regression metrics: R² (%), RMSE, and MAE."""
+    y_true_values = as_2d_float_array(y_true, "y_true")
+    prediction_values = as_2d_float_array(y_pred, "y_pred")
+    if y_true_values.shape != prediction_values.shape:
+        raise ValueError(
+            f"Prediction shape {prediction_values.shape} does not match target shape {y_true_values.shape}."
+        )
+    r2 = safe_r2_score(y_true_values, prediction_values)
+    mse = float(np.mean((prediction_values - y_true_values) ** 2))
+    return {
+        "r2": float(r2) * 100.0 if r2 is not None else np.nan,
+        "rmse": float(np.sqrt(mse)),
+        "mae": float(np.mean(np.abs(prediction_values - y_true_values))),
+    }
+
+
+def evaluation_split_indices(n_rows, test_size=0.2):
+    """Return identical random and chronological train/test indexes for all models."""
+    if n_rows < 2:
+        raise ValueError("At least two rows are required for train/test evaluation.")
+    row_indexes = np.arange(n_rows)
+    random_train_idx, random_test_idx = train_test_split(
+        row_indexes,
+        test_size=test_size,
+        random_state=data_seed,
+        shuffle=True,
+    )
+    n_test = max(1, int(round(n_rows * float(test_size))))
+    if n_test >= n_rows:
+        raise ValueError(f"test_size={test_size} leaves no chronological training rows for {n_rows} rows.")
+    time_train_idx = row_indexes[: n_rows - n_test]
+    time_test_idx = row_indexes[n_rows - n_test :]
+    return {
+        "random": (random_train_idx, random_test_idx),
+        "time": (time_train_idx, time_test_idx),
+    }
+
+
+def evaluate_model_on_required_splits(
+    model_class,
+    num_epochs,
+    hidden_sizes,
+    features=None,
+    optimization_scope="weights",
+    optimize_feature_indexes=None,
+    test_size=0.2,
+):
+    """Evaluate one model/configuration on identical random and time-based splits."""
+    X_train, X_test, y_train, y_test = read_prep_data(features)
+    full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
+    full_y = pd.concat([y_train, y_test], axis=0).reset_index(drop=True)
+    split_indexes = evaluation_split_indices(len(full_X), test_size=test_size)
+    metrics = {}
+    for split_name, (train_idx, test_idx) in split_indexes.items():
+        predictions, _mse, _r2 = fit_model_on_split(
+            model_class,
+            full_X.iloc[train_idx],
+            full_X.iloc[test_idx],
+            full_y.iloc[train_idx],
+            full_y.iloc[test_idx],
+            num_epochs,
+            hidden_sizes,
+            run=0 if split_name == "random" else 1,
+            optimization_scope=optimization_scope,
+            optimize_feature_indexes=optimize_feature_indexes,
+        )
+        if predictions is None:
+            metrics[split_name] = {"r2": np.nan, "rmse": np.nan, "mae": np.nan}
+        else:
+            metrics[split_name] = compute_holdout_metrics(full_y.iloc[test_idx], predictions)
+    return metrics
+
+
 def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
     """Fit a scikit-learn regressor with train-only feature scaling."""
     X_train, X_test, y_train, y_test, _ = clean_train_test_for_modeling(
@@ -5005,6 +5080,14 @@ def main():
                         optimization_scope=optimization_scope if is_nn else "weights",
                         optimize_feature_indexes=optimize_feature_indexes if is_nn else None,
                     )
+                    split_metrics = evaluate_model_on_required_splits(
+                        model_class,
+                        num_epochs,
+                        hidden_sizes,
+                        features=active_features,
+                        optimization_scope=optimization_scope if is_nn else "weights",
+                        optimize_feature_indexes=optimize_feature_indexes if is_nn else None,
+                    )
 
                     if max_r2 > best_r2:
                         best_r2 = max_r2
@@ -5038,6 +5121,12 @@ def main():
                             "Mean MAE": round(cv_metrics["mean_mae"], 3) if cv_metrics else np.nan,
                             "Std MAE": round(cv_metrics["std_mae"], 3) if cv_metrics else np.nan,
                             "CV folds": cv_metrics["folds"] if cv_metrics else 0,
+                            "Random Split R²": round(split_metrics["random"]["r2"], 3),
+                            "Random Split RMSE": round(split_metrics["random"]["rmse"], 3),
+                            "Random Split MAE": round(split_metrics["random"]["mae"], 3),
+                            "Time Split R²": round(split_metrics["time"]["r2"], 3),
+                            "Time Split RMSE": round(split_metrics["time"]["rmse"], 3),
+                            "Time Split MAE": round(split_metrics["time"]["mae"], 3),
                             "hidden sizes": hidden_sizes if hidden_sizes else "N/A",
                             "total hs": total_nodes,
                             "epochs": num_epochs if is_nn else "N/A",
@@ -5049,6 +5138,8 @@ def main():
         expected_result_cols = [
             "model", "R2", "MSE", "R2 std", "R2 List",
             "Mean R²", "Std R²", "Mean RMSE", "Std RMSE", "Mean MAE", "Std MAE", "CV folds",
+            "Random Split R²", "Random Split RMSE", "Random Split MAE",
+            "Time Split R²", "Time Split RMSE", "Time Split MAE",
             "hidden sizes", "total hs", "epochs"
         ]
         results_table = pd.DataFrame(data=results)
@@ -5113,6 +5204,17 @@ def main():
             )
             print("============ 5-fold CV metrics (mean ± std) =========================")
             print(cv_summary)
+        split_print_columns = [
+            col for col in [
+                "model", "hidden sizes", "epochs",
+                "Random Split R²", "Random Split RMSE", "Random Split MAE",
+                "Time Split R²", "Time Split RMSE", "Time Split MAE",
+            ]
+            if col in results_table.columns
+        ]
+        if split_print_columns:
+            print("============ Holdout split comparison (identical splits for all models) =========================")
+            print(results_table[split_print_columns])
         print("========================== Best Mean Model ===============================")
         print("Best Mean R-Squred:", best_mean_r2)
         print("Best model with better mean R-Squred:", best_model_name)
