@@ -1,197 +1,1320 @@
-diff --git a/NN/refinery_variables.py b/NN/refinery_variables.py
-index 7f1bc6084fd58af6aab8b4d709fa82d96c2209ca..ec283761e842e5437195b71822991bd569b14f8b 100644
---- a/NN/refinery_variables.py
-+++ b/NN/refinery_variables.py
-@@ -68,50 +68,75 @@ LEAKAGE_NAME_PATTERNS = (
-     "moving_average",
-     "future",
-     "target",
+diff --git a/NN/run_core.py b/NN/run_core.py
+index 2e23537f4810ccb0c997759bef206ebf9c312cdb..9e7b12b1a8111ec1e736ba06ecbd6f8954a874f2 100644
+--- a/NN/run_core.py
++++ b/NN/run_core.py
+@@ -45,85 +45,95 @@ from refinery_variables import (
+     DIAGNOSTIC_ONLY_FEATURE_PATTERNS,
+     EARLY_VARIABLES,
+     MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS,
+     TARGET_VARIABLES,
+     base_variable_name,
+     filter_allowed_model_inputs,
+     find_leakage_columns,
+     leakage_pattern_matches,
+     refinery_variable_group_metadata,
+     remove_name_based_leakage_inputs,
+     validate_model_inputs,
+ )
+ from recommendation_engine import (
+     DEFAULT_RECOMMENDED_CONTROLS,
+     RecommendationError,
+     recommend_operating_conditions,
+ )
+ import inspect
+ import models
+ import json
+ import copy
+ import math
+ from datetime import datetime, timezone
+ from collections import OrderedDict
+ import warnings
++import logging
+ 
+ from openpyxl.styles import Font, PatternFill, Alignment
+ 
+ try:
+     from xgboost import XGBRegressor
+ except ImportError:
+     XGBRegressor = None
+ 
+ try:
+     from lightgbm import LGBMRegressor
+ except ImportError:
+     LGBMRegressor = None
+ 
+ try:
+     from catboost import CatBoostRegressor
+ except ImportError:
+     CatBoostRegressor = None
+ 
+ # SHAP releases commonly used with this project may still reference NumPy
+ # aliases removed in NumPy 2.x.  Providing the aliases here keeps explanation
+ # generation from crashing while avoiding global version pinning.
+ for _numpy_alias, _numpy_type in {
+     "bool": bool,
+     "int": int,
+     "float": float,
+ }.items():
+     if not hasattr(np, _numpy_alias):
+         setattr(np, _numpy_alias, _numpy_type)
+ 
+ warnings.filterwarnings(
+     "ignore",
+     message="X does not have valid feature names, but .* was fitted with feature names",
+     category=UserWarning,
  )
  
- # 4) Leakage-prone feature set for the main model.
- #
- # These final/QC white-sugar fields are derived from quality scoring or final
- # quality-control calculations. They are hard-blocked from the main predictive
- # model input matrix, even if someone tries to opt them in as future-quality
- # inputs, because they would leak post-process quality information.
- MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS = (
++LOGGER = logging.getLogger(__name__)
++if not logging.getLogger().handlers:
++    logging.basicConfig(level=os.getenv("RUN_CORE_LOG_LEVEL", "INFO").upper(), format="%(levelname)s:%(name)s:%(message)s")
++DEBUG_PATHS = os.getenv("RUN_CORE_DEBUG_PATHS", "").strip().lower() in {"1", "true", "yes", "debug"}
++_PREP_DATA_CACHE = {}
++_VALIDATION_CACHE = set()
++_NAN_REPORT_CACHE = set()
++
++
+ ANSI_RESET = "\033[0m"
+ ANSI_GREEN = "\033[92m"
+ ANSI_BLUE = "\033[94m"
+ SAVED_RUNS_DIR = "saved_runs"
+ CHECKPOINTS_DIR = "checkpoints"
+ MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+ LEAKAGE_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "leakage_report.xlsx")
+ FEATURE_IMPORTANCE_REPORTS_DIR = os.path.join(MODULE_DIR, "reports")
+ MODEL_COMPARISON_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_comparison.xlsx")
+ OPTIMIZATION_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "optimization_report.xlsx")
+ OPERATOR_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "operator_report.xlsx")
+ MODEL_DESIGN_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_design_experiments.xlsx")
+ MODEL_B_FEATURE_IMPORTANCE_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "model_b_feature_importance_analysis.xlsx")
+ DRIFT_ANALYSIS_REPORT_PATH = os.path.join(MODULE_DIR, "reports", "drift_analysis_white_total_points.xlsx")
+ DRIFT_ANALYSIS_PLOT_PATH = os.path.join(MODULE_DIR, "reports", "drift_analysis_white_total_points.png")
+ 
+ 
+ FEATURE_IMPORTANCE_TARGETS = (
      "white_total_points",
-     "white_quality_",
-     "white_average_",
+     "white_solution_color",
+     "white_apparent_color",
+     "white_ash",
+     "white_moisture",
+     "white_invert",
  )
- 
- # 5) Optional diagnostic-only feature set.
- #
- # These columns may be used only in a separate diagnostic/comparison model that
- # is explicitly labeled as leakage-prone. Keeping this alias separate from the
- # main-model exclusion rule makes the policy visible to callers without allowing
- # these columns through normal training validation.
- DIAGNOSTIC_ONLY_FEATURE_PATTERNS = MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS
- 
-+
-+
-+# 6) Target-specific feature-importance chronology.
-+#
-+# Feature-importance reports must explain a target only with measurements that
-+# would already exist before that target is measured.  For white_total_points,
-+# this intentionally stops at evaporation/boiling and excludes any final white
-+# sugar QC/scoring fields or other contemporaneous/downstream targets.
-+PRE_TARGET_FEATURE_IMPORTANCE_INPUTS = {
-+    "white_total_points": (
-+        # Raw material
-+        "raw_sugar_color",
-+        "raw_sugar_purity",
-+        "raw_sugar_moisture",
-+        # Stage 2: Clarification
-+        "lime_alkalinity",
-+        "carbonated_pH",
-+        "co2_percent",
-+        # Stage 3: Sulphitation
-+        "sulphited_color",
-+        # Stage 4: Evaporation/Boiling
-+        "boiler_pH",
-+    ),
-+}
-+
- # Backward-compatible name used by the existing leakage checks.
- LEAKAGE_RISK_FEATURE_PATTERNS = MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS
- 
- 
- def _matches_exact_or_prefix(column_name, patterns):
-     """Return True when a base column equals an exact rule or starts with a prefix rule."""
-     lower_name = str(base_variable_name(column_name)).lower()
-     return any(lower_name == pattern or lower_name.startswith(pattern) for pattern in patterns)
- 
- 
- def is_main_model_excluded_feature(column_name):
-     """Return True for features that must be removed from the main model."""
-     return _matches_exact_or_prefix(column_name, MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS)
- 
- 
- def is_diagnostic_only_feature(column_name):
-     """Return True for optional leakage-prone features reserved for diagnostics."""
-     return _matches_exact_or_prefix(column_name, DIAGNOSTIC_ONLY_FEATURE_PATTERNS)
- 
- 
- def leakage_pattern_matches(column_name):
-     """Return leakage marker substrings/prefixes found in a column name."""
-     lower_name = str(base_variable_name(column_name)).lower()
-     matches = [pattern for pattern in LEAKAGE_NAME_PATTERNS if pattern in lower_name]
-     matches.extend(
-@@ -199,91 +224,116 @@ def is_allowed_model_input(column_name, output_features=None, optional_future_qu
- 
-     if is_name_based_leakage_column(column_name):
-         return False
- 
-     optional_quality_inputs = _optional_future_quality_input_set(optional_future_quality_inputs)
-     if _canonical_name(base_name) in optional_quality_inputs:
-         return True
- 
-     if is_target_variable(column_name, output_features=output_features):
-         return False
-     return _canonical_name(base_name) in _ALLOWED_CANONICAL
- 
- 
- def filter_allowed_model_inputs(columns, output_features=None, optional_future_quality_inputs=None):
-     """Keep allowed input columns, preserving the incoming order."""
-     return [
-         column for column in columns
-         if is_allowed_model_input(
-             column,
-             output_features=output_features,
-             optional_future_quality_inputs=optional_future_quality_inputs,
+@@ -183,98 +193,104 @@ def coerce_refinery_numeric_series(series):
+             .replace("–", "-")
+             .replace("—", "-")
+             .replace(",", "")
          )
+         direct_value = pd.to_numeric(normalized, errors="coerce")
+         if pd.notna(direct_value):
+             return float(direct_value)
+         range_match = re.fullmatch(
+             r"\s*([+-]?\d+(?:\.\d+)?)\s*-\s*([+-]?\d+(?:\.\d+)?)\s*",
+             normalized,
+         )
+         if range_match:
+             low, high = map(float, range_match.groups())
+             return (low + high) / 2.0
+         return np.nan
+ 
+     return series.map(_convert).astype(float)
+ 
+ 
+ def coerce_refinery_numeric_frame(dataframe):
+     """Convert every column in a dataframe with the refinery numeric parser."""
+     return dataframe.apply(coerce_refinery_numeric_series, axis=0)
+ 
+ 
+ 
+-def validation_report(df, name="dataset"):
+-    """Print a compact data-quality report before model training."""
+-    if not isinstance(df, pd.DataFrame):
+-        df = pd.DataFrame(df)
+-
+-    print("\n")
+-    print_divider("=", 76)
+-    print(f"VALIDATION REPORT: {name}")
+-    print_divider("-", 76)
+-    print(f"shape: {df.shape}")
+-    print(f"duplicate rows: {int(df.duplicated().sum())}")
+-
+-    nan_counts = df.isna().sum().sort_values(ascending=False)
+-    nan_percentages = (nan_counts / max(len(df), 1) * 100.0).sort_values(ascending=False)
+-    print("NaN counts:")
+-    print(nan_counts.to_string())
+-    print("NaN percentages:")
+-    print(nan_percentages.map(lambda value: f"{value:.2f}%").to_string())
+-
+-    numeric_df = df.select_dtypes(include=[np.number])
+-    if numeric_df.empty:
+-        infinite_counts = pd.Series(dtype="int64")
+-        min_max_values = pd.DataFrame(columns=["min", "max"])
+-    else:
+-        infinite_counts = np.isinf(numeric_df).sum().sort_values(ascending=False)
+-        min_max_values = pd.DataFrame({
+-            "min": numeric_df.replace([np.inf, -np.inf], np.nan).min(),
+-            "max": numeric_df.replace([np.inf, -np.inf], np.nan).max(),
+-        })
+-
+-    print("infinite values:")
+-    print(infinite_counts.to_string() if not infinite_counts.empty else "None")
++def _nan_summary_signature(*frames):
++    parts = []
++    for frame in frames:
++        if frame is None:
++            parts.append(None)
++            continue
++        df = frame if isinstance(frame, pd.DataFrame) else pd.DataFrame(frame)
++        parts.append((tuple(df.columns), tuple(df.isna().sum().astype(int).tolist()), len(df)))
++    return tuple(parts)
+ 
+-    non_numeric_columns = df.select_dtypes(exclude=[np.number]).columns.tolist()
+-    print("non-numeric columns:")
+-    print(", ".join(non_numeric_columns) if non_numeric_columns else "None")
+ 
+-    print("min/max values:")
+-    print(min_max_values.to_string() if not min_max_values.empty else "None")
++def report_nan_summary(name, *frames, force=False):
++    """Log one de-duplicated NaN summary for any collection of dataframes."""
++    signature = (name, _nan_summary_signature(*frames))
++    if not force and signature in _NAN_REPORT_CACHE:
++        LOGGER.debug("Skipping duplicate NaN summary for %s", name)
++        return
++    _NAN_REPORT_CACHE.add(signature)
++    rows = []
++    for idx, frame in enumerate(frames, start=1):
++        df = frame if isinstance(frame, pd.DataFrame) else pd.DataFrame(frame)
++        missing = df.isna().sum()
++        missing = missing[missing > 0].sort_values(ascending=False)
++        for column, count in missing.items():
++            rows.append({"frame": idx, "column": column, "nan_count": int(count), "nan_pct": float(count / max(len(df), 1) * 100.0)})
++    if not rows:
++        LOGGER.info("NaN summary for %s: no NaN values detected.", name)
++        return
++    summary = pd.DataFrame(rows)
++    LOGGER.info("NaN summary for %s:\n%s", name, summary.to_string(index=False))
+ 
+-    constant_columns = [
+-        column for column in df.columns
+-        if df[column].nunique(dropna=False) <= 1
+-    ]
+-    print("suspicious constant columns:")
+-    print(", ".join(constant_columns) if constant_columns else "None")
+-    print_divider("=", 76)
+ 
++def validation_report(df, name="dataset", force=False):
++    """Run a reusable, de-duplicated validation workflow for a dataframe."""
++    frame = df if isinstance(df, pd.DataFrame) else pd.DataFrame(df)
++    signature = (name, frame.shape, tuple(frame.columns), tuple(frame.dtypes.astype(str)), tuple(frame.isna().sum().astype(int)))
++    if not force and signature in _VALIDATION_CACHE:
++        LOGGER.debug("Skipping duplicate validation report for %s", name)
++        return
++    _VALIDATION_CACHE.add(signature)
++
++    LOGGER.info("VALIDATION REPORT: %s shape=%s duplicate_rows=%s", name, frame.shape, int(frame.duplicated().sum()))
++    report_nan_summary(name, frame, force=force)
++    numeric_df = frame.select_dtypes(include=[np.number])
++    infinite_counts = np.isinf(numeric_df).sum() if not numeric_df.empty else pd.Series(dtype=int)
++    infinite_counts = infinite_counts[infinite_counts > 0]
++    non_numeric_columns = frame.columns.difference(numeric_df.columns).tolist()
++    constant_columns = [column for column in frame.columns if frame[column].nunique(dropna=False) <= 1]
++    if not infinite_counts.empty:
++        LOGGER.warning("Infinite values in %s:\n%s", name, infinite_counts.to_string())
++    if non_numeric_columns:
++        LOGGER.debug("Non-numeric columns in %s: %s", name, ", ".join(non_numeric_columns))
++    if constant_columns:
++        LOGGER.debug("Suspicious constant columns in %s: %s", name, ", ".join(constant_columns))
+ 
+ def validation_report_for_training(X_train, y_train, name="training data"):
+     """Print validation_report on the combined feature/target training table."""
+     X_train_df = X_train if isinstance(X_train, pd.DataFrame) else pd.DataFrame(X_train)
+     y_train_df = y_train if isinstance(y_train, pd.DataFrame) else pd.DataFrame(y_train)
+     combined = pd.concat(
+         [X_train_df.reset_index(drop=True), y_train_df.reset_index(drop=True)],
+         axis=1,
+     )
+     validation_report(combined, name=name)
+ 
+ def color_text(text, color):
+     return f"{color}{text}{ANSI_RESET}"
+ 
+ 
+ def print_divider(char="=", width=68):
+     print(char * width)
+ 
+ 
+ def print_numbered_feature_list(title, features, color):
+     print_divider("=")
+     print(title)
+     print_divider("-")
+     for idx, feature_name in enumerate(features, start=1):
+         print(color_text(f"{idx:>2}. {feature_name}", color))
+@@ -306,111 +322,81 @@ def save_leakage_report(removed_columns, output_features=None, context="pre_trai
+         if leakage_pattern_matches(column)
+     ]
+     summary_rows = [
+         {
+             "context": context,
+             "created_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+             "removed_from_X_count": len(removed_rows),
+             "kept_final_target_count": len(kept_target_rows),
+             "report_path": report_path,
+         }
      ]
  
- 
-+def feature_importance_inputs_for_target(columns, target):
-+    """Return target-chronology-safe feature-importance inputs.
-+
-+    For targets with an explicit chronology policy, only columns listed for that
-+    target are eligible.  Matching is done against base variable names so future
-+    engineered variants inherit the same before-target restriction.  Other
-+    targets keep the existing generic leakage-name filtering behavior.
-+    """
-+    allowed_for_target = PRE_TARGET_FEATURE_IMPORTANCE_INPUTS.get(target)
-+    if not allowed_for_target:
-+        return [column for column in columns if column != target and not leakage_pattern_matches(column)]
-+
-+    allowed_canonical = {_canonical_name(name) for name in allowed_for_target}
-+    return [
-+        column for column in columns
-+        if column != target
-+        and _canonical_name(base_variable_name(column)) in allowed_canonical
-+        and not leakage_pattern_matches(column)
-+    ]
-+
-+
- def find_leakage_columns(input_features, output_features=None, optional_future_quality_inputs=None):
-     """Identify selected inputs that would leak future quality information."""
-     leakage_columns = []
-     for column in input_features:
-         if column in leakage_columns:
-             continue
-         if is_name_based_leakage_column(column):
-             leakage_columns.append(column)
-             continue
-         if not is_allowed_model_input(
-             column,
-             output_features=output_features,
-             optional_future_quality_inputs=optional_future_quality_inputs,
-         ):
-             leakage_columns.append(column)
-     return leakage_columns
+     os.makedirs(os.path.dirname(report_path), exist_ok=True)
+     with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
+         pd.DataFrame(removed_rows, columns=["context", "column", "matched_patterns", "action", "reason"]).to_excel(
+             writer, sheet_name="removed_from_X", index=False
+         )
+         pd.DataFrame(kept_target_rows, columns=["context", "column", "matched_patterns", "action", "reason"]).to_excel(
+             writer, sheet_name="kept_targets", index=False
+         )
+         pd.DataFrame(summary_rows).to_excel(writer, sheet_name="summary", index=False)
+     print(f"Saved target-leakage report: {report_path}")
  
  
- def validate_model_inputs(input_features, output_features=None, optional_future_quality_inputs=None):
-     """Raise a clear error if an input list contains leaked/disallowed variables."""
-     leakage_columns = find_leakage_columns(
-         input_features,
+ def remove_leakage_inputs_for_training(input_features, output_features=None, context="pre_training"):
+-    """Print, report, and remove automatic name-based leakage columns from X."""
+-    cleaned_inputs, removed_columns = remove_name_based_leakage_inputs(
+-        list(input_features),
++    """Remove suspicious target-leakage inputs before any model training."""
++    safe_inputs, removed_columns, audit_rows = audit_feature_leakage(
++        input_features,
          output_features=output_features,
++        context=context,
+     )
+     if removed_columns:
+         print("Target leakage columns detected in X candidates:")
+-        for column in removed_columns:
+-            patterns = ", ".join(leakage_pattern_matches(column))
+-            print(f" - {column} (matched: {patterns})")
++        for row in audit_rows:
++            if row["status"] == "unsafe_blocked":
++                print(f" - {row['feature']} (matched: {row['matched_logic']})")
+         print("Removed leakage columns from X: " + ", ".join(removed_columns))
+     else:
+-        print("No automatic name-based target leakage columns detected in X candidates.")
+-
+-    kept_targets = [column for column in (output_features or []) if leakage_pattern_matches(column)]
++        LOGGER.info("No automatic name-based target leakage columns detected in X candidates for %s.", context)
++    kept_targets = [column for column in (output_features or []) if column in set(output_features or [])]
+     if kept_targets:
+-        print("Final target column(s) kept in y (not removed): " + ", ".join(kept_targets))
+-
++        LOGGER.debug("Final target column(s) kept in y: %s", ", ".join(kept_targets))
+     save_leakage_report(removed_columns, output_features=output_features, context=context)
+-    return cleaned_inputs, removed_columns
+-
+-
+-
+-
++    if audit_rows:
++        LOGGER.debug("Leakage audit for %s:\n%s", context, pd.DataFrame(audit_rows).to_string(index=False))
++    return safe_inputs, removed_columns
+ 
+ def _format_missing_percentage(value):
+     """Format a missing-value percentage consistently for console reports."""
+     return f"{value:.2f}%"
+ 
+ 
+-def _print_missing_value_report(X_train, X_test, train_missing_counts, test_missing_counts):
+-    """Print counts and percentages for columns that contain missing feature values."""
+-    all_missing_columns = [
+-        column
+-        for column in X_train.columns
+-        if train_missing_counts.get(column, 0) > 0 or test_missing_counts.get(column, 0) > 0
+-    ]
+-    if not all_missing_columns:
+-        print("Missing-value report: no NaN values detected in selected input columns.")
+-        return
+-
+-    print("\n================= Missing-Value Report =================")
+-    print("Columns containing NaN values:")
+-    for column in all_missing_columns:
+-        train_count = int(train_missing_counts.get(column, 0))
+-        test_count = int(test_missing_counts.get(column, 0))
+-        train_pct = (train_count / max(len(X_train), 1)) * 100.0
+-        test_pct = (test_count / max(len(X_test), 1)) * 100.0
+-        print(
+-            f" - {column}: "
+-            f"train={train_count}/{len(X_train)} ({_format_missing_percentage(train_pct)}), "
+-            f"test={test_count}/{len(X_test)} ({_format_missing_percentage(test_pct)})"
+-        )
+-        if train_pct > 20.0 or test_pct > 20.0:
+-            print(
+-                f"   WARNING: missing percentage exceeds 20% "
+-                f"(train={_format_missing_percentage(train_pct)}, "
+-                f"test={_format_missing_percentage(test_pct)})."
+-            )
+-    print("========================================================\n")
+-
++def _print_missing_value_report(X_train, X_test, train_missing_counts=None, test_missing_counts=None):
++    """Compatibility wrapper around the de-duplicated NaN reporter."""
++    _ = (train_missing_counts, test_missing_counts)
++    report_nan_summary("selected input columns", X_train, X_test)
+ 
+ def apply_missing_value_pipeline(X_train, X_test, missing_drop_threshold=50.0, verbose=True):
+     """Drop high-missing feature columns and median-impute remaining values.
+ 
+     Missingness thresholds and median imputation are fitted from training data only;
+     the learned column set and medians are then applied to test data.
+     """
+     X_train_clean = X_train.copy().replace([np.inf, -np.inf], np.nan)
+     X_test_clean = X_test.copy().replace([np.inf, -np.inf], np.nan)
+     X_train_clean = X_train_clean.apply(pd.to_numeric, errors="coerce")
+     X_test_clean = X_test_clean.apply(pd.to_numeric, errors="coerce")
+ 
+     train_missing_counts = X_train_clean.isna().sum()
+     test_missing_counts = X_test_clean.isna().sum()
+     if verbose:
+         _print_missing_value_report(X_train_clean, X_test_clean, train_missing_counts, test_missing_counts)
+ 
+     train_missing_percentages = train_missing_counts / max(len(X_train_clean), 1) * 100.0
+     columns_to_drop = train_missing_percentages[train_missing_percentages > missing_drop_threshold].index.tolist()
+     if columns_to_drop:
+         if verbose:
+             print(
+                 f"Dropping {len(columns_to_drop)} input column(s) with >{missing_drop_threshold:.0f}% "
+                 "missing values in training data: "
+                 + ", ".join(columns_to_drop)
+@@ -1917,113 +1903,181 @@ def parse_sequential_layout(answer, options, one_based=False):
+         "[" in answer or "]" in answer or "(" in answer or ")" in answer or ">" in answer
+     )
+     if not grouped_layout:
+         sequential_features = parse_multi_select(answer, options, allow_all=False, one_based=one_based)
+         return sequential_features, []
+ 
+     groups = []
+     bracket_groups = re.findall(r"[\[\(]([^\]\)]+)[\]\)]", answer)
+     raw_groups = bracket_groups if bracket_groups else [item.strip() for item in answer.split(",") if item.strip()]
+ 
+     for raw_group in raw_groups:
+         normalized = raw_group.replace(">", " ")
+         group_values = parse_multi_select(normalized, options, allow_all=False, one_based=one_based)
+         if len(group_values) < 2:
+             raise ValueError("Each sequential group must contain at least two columns.")
+         groups.append(group_values)
+ 
+     flat_features = []
+     for group in groups:
+         for feature in group:
+             if feature not in flat_features:
+                 flat_features.append(feature)
+     return flat_features, groups
+ 
+ 
++def _prep_cache_key(inputs=None, prep_folder="prep_data", optional_future_quality_inputs=None):
++    return (
++        os.path.abspath(prep_folder),
++        tuple(inputs) if inputs is not None else None,
++        tuple(optional_future_quality_inputs or ()),
++    )
++
++
++def read_prep_data_cached(inputs=None, prep_folder="prep_data", optional_future_quality_inputs=None, refresh=False):
++    """Lazy-load prepared datasets once per feature selection and reuse copies."""
++    key = _prep_cache_key(inputs, prep_folder, optional_future_quality_inputs)
++    if refresh or key not in _PREP_DATA_CACHE:
++        LOGGER.debug("Loading prep_data from disk: prep_folder=%s inputs=%s optional_future_quality_inputs=%s", prep_folder, inputs, optional_future_quality_inputs)
++        _PREP_DATA_CACHE[key] = read_prep_data(
++            inputs=inputs,
++            prep_folder=prep_folder,
++            optional_future_quality_inputs=optional_future_quality_inputs,
++        )
++    else:
++        LOGGER.debug("Reusing cached prep_data: prep_folder=%s inputs=%s", prep_folder, inputs)
++    return tuple(frame.copy() for frame in _PREP_DATA_CACHE[key])
++
++
++def _resolve_debug_path(label, path):
++    resolved = print_path_debug(label, path) if DEBUG_PATHS else os.path.abspath(path)
++    LOGGER.debug("Resolved %s path: %s", label, resolved)
++    return resolved
++
++
++def audit_feature_leakage(input_features, output_features=None, context="pre_training"):
++    """Apply exact leakage detection and return safe features plus audit rows.
++
++    Suspicious inputs are detected by refinery_variables.find_leakage_columns(),
++    which matches selected outputs, white_* future-quality columns, target-like
++    names, diagnostic-only patterns, post-process measurements, and future
++    information patterns configured in refinery_variables.py.
++    """
++    removed = find_leakage_columns(
++        input_features,
++        output_features=output_features,
++        optional_future_quality_inputs=FUTURE_QUALITY_INPUT_CANDIDATES,
++    )
++    audit_rows = []
++    for feature in input_features:
++        matches = leakage_pattern_matches(feature)
++        unsafe = feature in removed
++        audit_rows.append({
++            "context": context,
++            "feature": feature,
++            "status": "unsafe_blocked" if unsafe else "safe",
++            "matched_logic": ", ".join(matches) if matches else "no leakage pattern matched",
++            "reason": "blocked before model training" if unsafe else "available before prediction or explicitly allowed",
++        })
++    return [feature for feature in input_features if feature not in set(removed)], removed, audit_rows
++
++
++def _validate_selected_inputs_once(input_features, output_features, optional_future_quality_inputs=None, context="selection"):
++    key = (context, tuple(input_features), tuple(output_features or ()), tuple(optional_future_quality_inputs or ()))
++    if key in _VALIDATION_CACHE:
++        LOGGER.debug("Skipping duplicate model-input validation for %s", context)
++        return
++    validate_model_inputs(
++        input_features,
++        output_features=output_features,
++        optional_future_quality_inputs=optional_future_quality_inputs,
++    )
++    _VALIDATION_CACHE.add(key)
++
++
++def _log_path_banner(dataset_path, prep_folder):
++    LOGGER.info("Dataset path: %s", dataset_path)
++    LOGGER.info("prep_data folder: %s", prep_folder)
++    if DEBUG_PATHS:
++        LOGGER.debug("run_core.py file: %s", os.path.abspath(__file__))
++
++
+ def prepare_or_reuse_data(dataset_path="convert/stclean.csv", prep_folder="prep_data"):
+-    print("====================================")
+-    print("DATASET PATH: " + dataset_path)
+-    print("====================================")
+-    print(f"[path-debug] run.py file: {os.path.abspath(__file__)}")
+-    dataset_path = print_path_debug("raw dataset CSV", dataset_path)
+-    prep_folder = print_path_debug("prep_data folder", prep_folder)
+-    print(f"[path-debug] Effective dataset path: {dataset_path}")
+-    print(f"[path-debug] Effective prep_data folder: {prep_folder}")
++    dataset_path = _resolve_debug_path("raw dataset CSV", dataset_path)
++    prep_folder = _resolve_debug_path("prep_data folder", prep_folder)
++    _log_path_banner(dataset_path, prep_folder)
+ 
+     use_auto_feature_selection = False
+     reused_prep_data = False
+     print_refinery_variable_groups()
+ 
+     if prep_data_exists(prep_folder):
+         prep_x_train_path = os.path.join(prep_folder, "X_train.csv")
+         prep_y_train_path = os.path.join(prep_folder, "y_train.csv")
+         existing_all_inputs = pd.read_csv(prep_x_train_path, nrows=0).columns.tolist()
+         existing_outputs = pd.read_csv(prep_y_train_path, nrows=0).columns.tolist()
+         leaked_existing_inputs = find_leakage_columns(
+             existing_all_inputs,
+             output_features=existing_outputs,
+             optional_future_quality_inputs=FUTURE_QUALITY_INPUT_CANDIDATES,
+         )
+         if leaked_existing_inputs:
+             print(
+                 "Existing prep_data contains future/disallowed inputs and will be rebuilt "
+                 f"to prevent target leakage: {leaked_existing_inputs}"
+             )
+         else:
+-            X_train_existing, _, y_train_existing, _ = read_prep_data(inputs=None, prep_folder=prep_folder)
++            X_train_existing, _, y_train_existing, _ = read_prep_data_cached(inputs=None, prep_folder=prep_folder)
+             existing_inputs = X_train_existing.columns.tolist()
+             print_numbered_feature_list("Prepared Input Features (prep_data)", existing_inputs, ANSI_GREEN)
+             existing_inputs, optional_future_quality_inputs = append_future_quality_input_candidates(
+                 existing_inputs,
+                 existing_all_inputs,
+                 selected_output_features=existing_outputs,
+             )
+             if optional_future_quality_inputs:
+-                X_train_existing, _, y_train_existing, _ = read_prep_data(
++                X_train_existing, _, y_train_existing, _ = read_prep_data_cached(
+                     inputs=existing_inputs,
+                     prep_folder=prep_folder,
+                     optional_future_quality_inputs=optional_future_quality_inputs,
+                 )
+             print_numbered_feature_list("Prepared Output Features (prep_data)", existing_outputs, ANSI_BLUE)
+ 
+             metadata = read_prep_metadata(prep_folder)
+             if metadata:
+                 print("prep_data metadata:")
+                 print(metadata)
+ 
+-            print(
+-                "[path-debug] Complete prep_data files were found. If you continue with prep_data, "
+-                "the raw dataset CSV will not be read in this run."
+-            )
++            LOGGER.info("Complete prep_data files were found; raw dataset CSV can be skipped.")
+             reuse_answer = input(
+                 "Continue with these prepared refinery-safe inputs/outputs? [y]: "
+             ).strip().lower()
+             if reuse_answer in ("", "y", "yes"):
+-                print("[path-debug] prep_data reuse selected; skipping raw dataset CSV read.")
++                LOGGER.info("prep_data reuse selected; skipping raw dataset CSV read.")
+                 reused_prep_data = True
+                 return X_train_existing, existing_outputs, use_auto_feature_selection, reused_prep_data
+-            print("[path-debug] prep_data reuse declined; raw dataset CSV flow will be used.")
++            LOGGER.info("prep_data reuse declined; raw dataset CSV flow will be used.")
+ 
+             prep_train_path = os.path.join(prep_folder, "train.csv")
+             prep_test_path = os.path.join(prep_folder, "test.csv")
+ 
+             if os.path.isfile(prep_train_path) and os.path.isfile(prep_test_path):
+                 print("\nYou chose not to continue with current prep_data selection.")
+                 print("1) Reselect input features from prep_data/train.csv and prep_data/test.csv")
+                 print("2) Rebuild prep_data from the raw dataset and select input/output/sequential options again")
+                 reselect_mode = input("Choose option [1]: ").strip()
+                 if reselect_mode in ("", "1"):
+                     train_df = pd.read_csv(prep_train_path)
+                     test_df = pd.read_csv(prep_test_path)
+                     available_inputs = [
+                         column for column in train_df.columns if column not in set(existing_outputs)
+                     ]
+                     if not available_inputs:
+                         print("No candidate input columns found. Falling back to full prepare flow.")
+                     else:
+                         print_numbered_feature_list(
+                             "Input Features from prep_data/train.csv (prepared outputs excluded)",
+                             available_inputs,
+                             ANSI_GREEN,
+                         )
+                         reselect_answer = input(
+                             "\nSelect one or several input features (indexes/ranges), or [all]: "
+@@ -2031,110 +2085,111 @@ def prepare_or_reuse_data(dataset_path="convert/stclean.csv", prep_folder="prep_
+                         try:
+                             selected_input_features = parse_multi_select(
+                                 reselect_answer,
+                                 available_inputs,
+                                 allow_all=True,
+                                 one_based=True,
+                             )
+                         except ValueError as err:
+                             print(f"Invalid input feature selection: {err}")
+                             exit()
+ 
+                         resolved_inputs = (
+                             available_inputs if selected_input_features is None else selected_input_features
+                         )
+                         resolved_inputs, _ = remove_leakage_inputs_for_training(
+                             resolved_inputs,
+                             output_features=existing_outputs,
+                             context="prep_data_reselect",
+                         )
+                         if not resolved_inputs:
+                             print("No input columns remain after automatic target-leakage removal.")
+                             exit()
+                         optional_future_quality_inputs = optional_input_overrides_for_selection(
+                             resolved_inputs, existing_outputs
+                         )
+-                        validate_model_inputs(
++                        _validate_selected_inputs_once(
+                             resolved_inputs,
+                             output_features=existing_outputs,
+                             optional_future_quality_inputs=optional_future_quality_inputs,
+                         )
+                         missing_inputs_in_test = [
+                             col for col in resolved_inputs if col not in test_df.columns
+                         ]
+                         if missing_inputs_in_test:
+                             print(
+                                 "Selected inputs are missing from prep_data/test.csv: "
+                                 + str(missing_inputs_in_test)
+                             )
+                             print("Please rebuild prep_data from the raw dataset.")
+                             exit()
+ 
+                         missing_outputs_in_test = [
+                             col for col in existing_outputs if col not in test_df.columns
+                         ]
+                         if missing_outputs_in_test:
+                             print(
+                                 "Prepared output columns are missing from prep_data/test.csv: "
+                                 + str(missing_outputs_in_test)
+                             )
+                             print("Please rebuild prep_data from the raw dataset.")
+                             exit()
+ 
+                         X_train_selected = train_df[resolved_inputs]
+                         X_test_selected = test_df[resolved_inputs]
+                         y_train_selected = train_df[existing_outputs]
+                         y_test_selected = test_df[existing_outputs]
+                         metadata = read_prep_metadata(prep_folder)
+                         if metadata:
+                             metadata["input_features"] = list(resolved_inputs)
+                             metadata["refinery_variable_groups"] = refinery_variable_group_metadata()
+                         save_data(
+                             prep_folder,
+                             X_train_selected,
+                             X_test_selected,
+                             y_train_selected,
+                             y_test_selected,
+                             metadata=metadata,
+                         )
++                        _PREP_DATA_CACHE.clear()
+                         print("prep_data updated with the newly selected input features.")
+                         reused_prep_data = True
+                         return (
+                             X_train_selected,
+                             existing_outputs,
+                             use_auto_feature_selection,
+                             reused_prep_data,
+                         )
+                 elif reselect_mode == "2":
+                     print("Preparing data again from the raw dataset...")
+                 else:
+                     print("Invalid choice. Preparing data again from the raw dataset...")
+             else:
+                 print("prep_data/train.csv or prep_data/test.csv not found. Preparing data again from the raw dataset...")
+ 
+     dataset_path = ensure_dataset_csv_exists(dataset_path)
+-    print(f"[path-debug] prep_data did not prevent raw CSV flow; reading dataset now: {dataset_path}")
++    LOGGER.info("Reading raw dataset CSV: %s", dataset_path)
+     data = pd.read_csv(dataset_path)
+     print_selection_guide()
+ 
+     output_options = selectable_output_features_from_csv(data)
+     print("\nOutput feature candidates from the active raw dataset CSV (TARGET_VARIABLES shown first):")
+     print("\n".join([str(i) + ")" + name for i, name in enumerate(output_options, start=1)]))
+     answer = input(
+         "Select one or several output features (indexes/ranges/names) [first target candidate]:"
+     )
+     try:
+         selected_output_features = (
+             [output_options[0]]
+             if not answer
+             else parse_multi_select(answer, output_options, allow_all=False, one_based=True)
+         )
+     except ValueError as err:
+         print(f"Invalid output feature selection: {err}")
+         exit()
+ 
+     available_input_features = selectable_input_features_from_csv(data, selected_output_features)
+     if not available_input_features:
+         print("No input columns are available after excluding selected output feature(s).")
+         exit()
+     print("\nAvailable model inputs from the active raw dataset CSV (selected outputs excluded):")
+     print("\n".join([str(i) + ")" + name for i, name in enumerate(available_input_features, start=1)]))
+@@ -2162,89 +2217,90 @@ def prepare_or_reuse_data(dataset_path="convert/stclean.csv", prep_folder="prep_
+         try:
+             selected_input_features = parse_multi_select(
+                 answer,
+                 available_input_features,
+                 allow_all=True,
+                 one_based=True,
+             )
+         except ValueError as err:
+             print(f"Invalid input feature selection: {err}")
+             exit()
+ 
+     resolved_inputs = (
+         available_input_features if selected_input_features is None else selected_input_features
+     )
+     resolved_inputs, _ = remove_leakage_inputs_for_training(
+         resolved_inputs,
+         output_features=selected_output_features,
+         context="raw_dataset_selection",
+     )
+     if not resolved_inputs:
+         print("No input columns remain after automatic target-leakage removal.")
+         exit()
+     optional_future_quality_inputs = optional_input_overrides_for_selection(
+         resolved_inputs, selected_output_features
+     )
+-    validate_model_inputs(
++    _validate_selected_inputs_once(
+         resolved_inputs,
+         output_features=selected_output_features,
          optional_future_quality_inputs=optional_future_quality_inputs,
      )
-     if leakage_columns:
-         allowed = list(EARLY_VARIABLES) + list(CONTROL_VARIABLES)
-         targets = list(TARGET_VARIABLES)
-         raise ValueError(
-             "Target-leakage prevention blocked disallowed model inputs: "
-             f"{leakage_columns}. Allowed inputs are EARLY_VARIABLES + "
-             f"CONTROL_VARIABLES only: {allowed}. Future quality variables are "
-             "TARGET_VARIABLES and must be predicted, not used as inputs unless "
-             "explicitly selected in run.py's Future Quality Variables prompt "
-             f"and not also selected as output targets: {targets}. Columns containing "
-             f"automatic leakage markers are always blocked from X: "
-             f"{list(LEAKAGE_NAME_PATTERNS) + list(LEAKAGE_RISK_FEATURE_PATTERNS)}."
+     (
+         sequential_features,
+         sequential_groups,
+         add_differences,
+         difference_order,
+         add_ratio_features,
+         add_acceleration_features,
+         add_normalized_change_features,
+         create_rnn_windows,
+         rnn_window_size,
+         add_rolling_dynamics,
+         rolling_window,
+     ) = prompt_temporal_options(resolved_inputs)
+ 
+     sync_prep_data_with_dataset(
+         dataset_path=dataset_path,
+         prep_folder=prep_folder,
+         input_features=resolved_inputs,
+         output_feature=selected_output_features,
+         sequential_features=sequential_features,
+         sequential_groups=sequential_groups,
+         add_differences=add_differences,
+         difference_order=difference_order,
+         add_ratio_features=add_ratio_features,
+         add_acceleration_features=add_acceleration_features,
+         add_normalized_change_features=add_normalized_change_features,
+         create_rnn_windows=create_rnn_windows,
+         rnn_window_size=rnn_window_size,
+         add_rolling_dynamics=add_rolling_dynamics,
+         rolling_window=rolling_window,
+         optional_future_quality_inputs=optional_future_quality_inputs,
+     )
+ 
+-    X_train, X_test, y_train, y_test = read_prep_data(
++    _PREP_DATA_CACHE.clear()
++    X_train, X_test, y_train, y_test = read_prep_data_cached(
+         inputs=resolved_inputs,
+         prep_folder=prep_folder,
+         optional_future_quality_inputs=optional_future_quality_inputs,
+     )
+     _ = (X_test, y_test)
+     return X_train, y_train.columns.tolist(), use_auto_feature_selection, reused_prep_data
+ 
+ def ask_with_default(prompt, default):
+     answer = input(f"{prompt} [{default}]:").strip()
+     return answer if answer else str(default)
+ 
+ 
+ def parse_epochs_input(answer, default_epochs):
+     """Parse epochs input and detect optional CV early-stop mode."""
+     text = answer.strip().lower()
+     if text == "0":
+         return [], False
+ 
+     use_cv_early_stop = False
+     parsed_epochs = []
+     for token in answer.split():
+         lowered = token.lower()
+         if lowered in ("cv", "auto"):
+             use_cv_early_stop = True
+             continue
+@@ -2876,51 +2932,51 @@ def fit_model_on_split(
+             num_epochs,
+             display_steps=False,
+             run=run,
+             optimization_scope=optimization_scope,
+             optimize_feature_indexes=optimize_feature_indexes,
          )
-     return list(input_features)
+         return predictions, mse, r2
+ 
+     model = model_class(model_seed + run)
+     predictions, mse, r2, _model = fit_sklearn_model(
+         model, X_train_fold, X_test_fold, y_train_fold, y_test_fold
+     )
+     return predictions, mse, r2
  
  
- def refinery_variable_group_metadata():
-     """Return serializable metadata explaining the refinery variable groups."""
+ def cross_validate_model(
+     model_class,
+     num_epochs,
+     hidden_sizes,
+     features=None,
+     folds=MODEL_EVALUATION_CV_FOLDS,
+     optimization_scope="weights",
+     optimize_feature_indexes=None,
+ ):
+     """Run leakage-safe 5-fold CV and report R², RMSE, and MAE mean ± std."""
+-    X_train, X_test, y_train, y_test = read_prep_data(features)
++    X_train, X_test, y_train, y_test = read_prep_data_cached(features)
+     full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
+     full_y = pd.concat([y_train, y_test], axis=0).reset_index(drop=True)
+     if len(full_X) < 2:
+         return None
+ 
+     n_splits = min(int(folds), len(full_X))
+     if n_splits < 2:
+         return None
+ 
+     kfold = KFold(n_splits=n_splits, shuffle=True, random_state=data_seed)
+     r2_scores = []
+     rmse_scores = []
+     mae_scores = []
+     for fold_index, (train_idx, val_idx) in enumerate(kfold.split(full_X), start=1):
+         X_train_fold = full_X.iloc[train_idx]
+         X_val_fold = full_X.iloc[val_idx]
+         y_train_fold = full_y.iloc[train_idx]
+         y_val_fold = full_y.iloc[val_idx]
+         try:
+             predictions, mse, r2 = fit_model_on_split(
+                 model_class,
+                 X_train_fold,
+                 X_val_fold,
+                 y_train_fold,
+                 y_val_fold,
+@@ -2992,51 +3048,51 @@ def evaluation_split_indices(n_rows, test_size=0.2):
+         test_size=test_size,
+         random_state=data_seed,
+         shuffle=True,
+     )
+     n_test = max(1, int(round(n_rows * float(test_size))))
+     if n_test >= n_rows:
+         raise ValueError(f"test_size={test_size} leaves no chronological training rows for {n_rows} rows.")
+     time_train_idx = row_indexes[: n_rows - n_test]
+     time_test_idx = row_indexes[n_rows - n_test :]
      return {
-         "EARLY_VARIABLES": list(EARLY_VARIABLES),
-         "CONTROL_VARIABLES": list(CONTROL_VARIABLES),
-         "TARGET_VARIABLES": list(TARGET_VARIABLES),
-         "MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS": list(MAIN_MODEL_EXCLUDED_FEATURE_PATTERNS),
-         "DIAGNOSTIC_ONLY_FEATURE_PATTERNS": list(DIAGNOSTIC_ONLY_FEATURE_PATTERNS),
-+        "PRE_TARGET_FEATURE_IMPORTANCE_INPUTS": {
-+            target: list(inputs)
-+            for target, inputs in PRE_TARGET_FEATURE_IMPORTANCE_INPUTS.items()
-+        },
-         "input_rule": "Model inputs = EARLY_VARIABLES + CONTROL_VARIABLES only.",
-         "main_model_exclusion_rule": (
-             "Remove white_total_points plus every column whose base name starts "
-             "with white_quality_ or white_average_ from the main model input set."
-         ),
-         "diagnostic_only_rule": (
-             "The excluded white-sugar scoring/average fields may be used only in "
-             "a separate diagnostic comparison model that is clearly labeled as "
-             "leakage-prone; they are never allowed through main training validation."
-         ),
-         "leakage_rule": (
-             "TARGET_VARIABLES, selected outputs, and columns containing "
-             "average_to_date/average_two_shifts/moving_average/future/target, "
-             "or final white-sugar QC fields (white_total_points, white_quality_*, "
-             "white_average_*) are never allowed as inputs."
-         ),
+         "random": (random_train_idx, random_test_idx),
+         "time": (time_train_idx, time_test_idx),
      }
+ 
+ 
+ def evaluate_model_on_required_splits(
+     model_class,
+     num_epochs,
+     hidden_sizes,
+     features=None,
+     optimization_scope="weights",
+     optimize_feature_indexes=None,
+     test_size=0.2,
+ ):
+     """Evaluate one model/configuration on identical random and time-based splits."""
+-    X_train, X_test, y_train, y_test = read_prep_data(features)
++    X_train, X_test, y_train, y_test = read_prep_data_cached(features)
+     full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
+     full_y = pd.concat([y_train, y_test], axis=0).reset_index(drop=True)
+     split_indexes = evaluation_split_indices(len(full_X), test_size=test_size)
+     metrics = {}
+     for split_name, (train_idx, test_idx) in split_indexes.items():
+         predictions, _mse, _r2 = fit_model_on_split(
+             model_class,
+             full_X.iloc[train_idx],
+             full_X.iloc[test_idx],
+             full_y.iloc[train_idx],
+             full_y.iloc[test_idx],
+             num_epochs,
+             hidden_sizes,
+             run=0 if split_name == "random" else 1,
+             optimization_scope=optimization_scope,
+             optimize_feature_indexes=optimize_feature_indexes,
+         )
+         if predictions is None:
+             metrics[split_name] = {"r2": np.nan, "rmse": np.nan, "mae": np.nan}
+         else:
+             metrics[split_name] = compute_holdout_metrics(full_y.iloc[test_idx], predictions)
+     return metrics
+ 
+ 
+ def fit_sklearn_model(model, X_train, X_test, y_train, y_test):
+@@ -4098,51 +4154,51 @@ def generate_model_comparison_report(X_train, X_test, y_train, y_test, report_pa
+                         **metrics,
+                     }
+                 )
+ 
+     summary_df, fold_df = _summarize_model_target_folds(fold_metric_rows)
+     if summary_df.empty:
+         print("Model comparison skipped: no model produced valid fold metrics.")
+         return None
+ 
+     _write_model_comparison_workbook(summary_df, fold_df, report_path)
+     print(tabulate(summary_df[["Target", "Rank", "Model", "R2", "RMSE", "MAE", "MAPE"]], headers="keys", tablefmt="github", showindex=False))
+     print("===============================================================\n")
+     return report_path
+ 
+ 
+ 
+ def select_epochs_with_cv_early_stopping(
+     model_class,
+     hidden_sizes,
+     features=None,
+     folds=5,
+     patience=early_stopping_patience,
+     min_delta=early_stopping_min_delta,
+ ):
+     """Recommend an epoch count using leakage-safe K-Fold early stopping."""
+-    X_train, _, y_train, _ = read_prep_data(features)
++    X_train, _, y_train, _ = read_prep_data_cached(features)
+     full_X = X_train.reset_index(drop=True)
+     full_y = y_train.reset_index(drop=True)
+     if len(full_X) < 2:
+         return None
+ 
+     n_splits = min(int(folds), len(full_X))
+     if n_splits < 2:
+         return None
+ 
+     kfold = KFold(n_splits=n_splits, shuffle=True, random_state=data_seed)
+     best_epochs = []
+     input_size = full_X.shape[1]
+     output_size = as_2d_float_array(full_y, "full_y").shape[1]
+     max_epochs = max(list_epochs) if list_epochs else 200
+ 
+     for fold_index, (train_idx, val_idx) in enumerate(kfold.split(full_X), start=1):
+         x_train_fold = full_X.iloc[train_idx]
+         x_val_fold = full_X.iloc[val_idx]
+         y_train_fold = full_y.iloc[train_idx]
+         y_val_fold = full_y.iloc[val_idx]
+ 
+         x_scaler = StandardScaler()
+         y_scaler = StandardScaler()
+         try:
+             x_train_scaled = fit_transform_dataframe(x_scaler, x_train_fold)
+@@ -4206,51 +4262,51 @@ def select_epochs_with_cv_early_stopping(
+                 best_epoch = epoch
+                 epochs_without_improvement = 0
+             else:
+                 epochs_without_improvement += 1
+ 
+             if epochs_without_improvement >= patience:
+                 break
+ 
+         if best_epoch is not None:
+             best_epochs.append(best_epoch)
+ 
+     if not best_epochs:
+         return None
+     return int(np.median(best_epochs))
+ 
+ 
+ ############################ Feature Selection ####################
+ # Selects the best combination of features by removing features one by one
+ # Search about Backward Feature Elimination
+ # Sensitivity Analysis Functions
+ 
+ 
+ 
+ def train_single_model(model_class, num_epochs, hidden_sizes, features=None, run=0):
+     """Train one model instance and return trained model with raw train/test splits."""
+-    X_train, X_test, y_train, y_test = read_prep_data(features)
++    X_train, X_test, y_train, y_test = read_prep_data_cached(features)
+     input_size = X_train.shape[1]
+     output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
+     model = make_torch_model(model_class, input_size, hidden_sizes, output_size)
+ 
+     _, _, r2, model, _ = fit_model(
+         model, X_train, X_test, y_train, y_test, num_epochs, display_steps=False, run=run
+     )
+     return model, X_train, X_test, y_train, y_test, r2
+ 
+ 
+ def _parse_positive_int_with_default(answer, default_value, name):
+     """Parse a positive integer from interactive input while preserving defaults."""
+     if not answer:
+         return default_value
+     try:
+         value = int(answer)
+     except ValueError:
+         print(f"Invalid {name} '{answer}'. Using default value {default_value}.")
+         return default_value
+     if value <= 0:
+         print(f"{name} must be > 0. Using default value {default_value}.")
+         return default_value
+     return value
+ 
+ 
+@@ -4259,51 +4315,51 @@ def _train_model_for_shap(model_class, inputs, num_epochs, hidden_sizes):
+     if is_torch_model(model_class):
+         model, X_train, X_test, _, _, r2 = train_single_model(
+             model_class, num_epochs, hidden_sizes, features=inputs, run=0
+         )
+         if r2 is None:
+             print("Could not train model for SHAP analysis.")
+             return None, None, None, None, False
+         scaler = getattr(model, "input_scaler_", None)
+         if scaler is None:
+             scaler = StandardScaler().fit(X_train)
+         X_train_explain = _clean_shap_numeric_array(
+             transform_dataframe(scaler, dataframe_from_tabular(X_train, "X_train")),
+             "X_train_explain",
+         )
+         X_test_explain = _clean_shap_numeric_array(
+             transform_dataframe(
+                 scaler,
+                 dataframe_from_tabular(X_test, "X_test", columns=getattr(scaler, "feature_names_in_", X_train.columns)),
+             ),
+             "X_test_explain",
+         )
+         if X_train_explain is None or X_test_explain is None:
+             return None, None, None, None, False
+         return model, X_train, X_train_explain, X_test_explain, True
+ 
+-    X_train, X_test, y_train, y_test = read_prep_data(inputs)
++    X_train, X_test, y_train, y_test = read_prep_data_cached(inputs)
+     try:
+         model = model_class(model_seed)
+         _, _, r2, fitted_model = fit_sklearn_model(model, X_train, X_test, y_train, y_test)
+     except (TypeError, ValueError, RuntimeError) as err:
+         print(f"Could not train sklearn model for SHAP analysis: {err}")
+         return None, None, None, None, False
+     if r2 is None:
+         print("Could not train sklearn model for SHAP analysis.")
+         return None, None, None, None, False
+     scaler = getattr(fitted_model, "feature_scaler_", None)
+     if scaler is None:
+         scaler = StandardScaler().fit(X_train)
+     X_train_explain = _clean_shap_numeric_array(
+         transform_dataframe(scaler, dataframe_from_tabular(X_train, "X_train")),
+         "X_train_explain",
+     )
+     X_test_explain = _clean_shap_numeric_array(
+         transform_dataframe(
+             scaler,
+             dataframe_from_tabular(X_test, "X_test", columns=getattr(scaler, "feature_names_in_", X_train.columns)),
+         ),
+         "X_test_explain",
+     )
+     if X_train_explain is None or X_test_explain is None:
+         return None, None, None, None, False
+@@ -4913,51 +4969,51 @@ def shap_feature_importance(model_class, inputs, num_epochs, hidden_sizes, model
+         )
+         return None
+ 
+     total_importance = float(np.sum(mean_abs_shap))
+     if total_importance > 0:
+         normalized_importance = mean_abs_shap / total_importance
+     else:
+         normalized_importance = np.zeros_like(mean_abs_shap)
+ 
+     shap_table = pd.DataFrame(
+         {
+             "Feature": feature_names,
+             "Mean(|SHAP|)": mean_abs_shap,
+             "Normalized Importance": normalized_importance,
+         }
+     ).sort_values(by="Mean(|SHAP|)", ascending=False).reset_index(drop=True)
+     shap_table.insert(0, "Rank", np.arange(1, len(shap_table) + 1))
+ 
+     slug_source = model_name or getattr(model_class, "__name__", "best_model")
+     model_slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(slug_source)).strip("_") or "best_model"
+     _save_shap_plots(shap, shap_values, explain_points, feature_names, model_slug)
+     _save_shap_tables(shap_table, model_slug)
+ 
+     return shap_table
+ def weight_analysis(model_class, data, inputs, output, num_epochs, hidden_sizes):
+-    X_train, X_test, y_train, y_test = read_prep_data(inputs)
++    X_train, X_test, y_train, y_test = read_prep_data_cached(inputs)
+     input_size = X_train.shape[1]
+ 
+     output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
+     model = make_torch_model(model_class, input_size, hidden_sizes, output_size)
+     _, _, r2, model, _ = fit_model(model, X_train, X_test, y_train, y_test, num_epochs)
+     print("R2:", r2)
+ 
+     weight_importances = {}
+     with torch.no_grad():
+         for i, feature in enumerate(inputs):
+             importance = np.abs(model.hidden_layers[0].weight[:, i].numpy()).mean()
+             weight_importances[feature] = importance
+ 
+     weight_table = pd.DataFrame(list(weight_importances.items()), columns=['Feature', 'Weight Importance'])
+     return weight_table
+ 
+ 
+ def jackknife_sensitivity_analysis(model_class, data, inputs, output, num_epochs, hidden_sizes):
+     base_model_r2, _, _, _, _, _, run, _ = repeat_fit_model(model_class,
+             num_repeats, num_epochs, hidden_sizes)
+     sensitivities = {}
+     variances = []
+     _num_repeats = input("Number of repeat [10]:")
+     _num_repeats = int(_num_repeats) if _num_repeats else 10
+     print("Please wait ...")
+@@ -4975,51 +5031,51 @@ def jackknife_sensitivity_analysis(model_class, data, inputs, output, num_epochs
+             continue
+         reduced_r2_mean = np.mean(reduced_r2_list)
+         sensitivity = base_model_r2 - reduced_r2_mean
+         variance = np.var(reduced_r2_list)
+         sensitivities[input_feature] = sensitivity
+         variances.append(variance)
+ 
+     sensitivity_table = pd.DataFrame(list(sensitivities.items()), columns=['Feature', 'Sensitivity'])
+     sensitivity_table['Variance'] = variances
+     return sensitivity_table
+ 
+ def evaluate_feature_subset_on_training_split(
+     model_class,
+     features,
+     num_epochs,
+     hidden_sizes,
+     validation_size=0.25,
+ ):
+     """Score a feature subset using only the training partition.
+ 
+     The held-out test partition from prep_data is intentionally discarded here.
+     Feature selection is a model-selection step, so candidate subsets must be
+     chosen on an inner train/validation split of the training data and the final
+     test split must remain untouched until final model evaluation.
+     """
+-    X_train_full, _X_test_unused, y_train_full, _y_test_unused = read_prep_data(features)
++    X_train_full, _X_test_unused, y_train_full, _y_test_unused = read_prep_data_cached(features)
+     if len(X_train_full) < 3:
+         return None
+ 
+     inner_test_size = min(max(float(validation_size), 0.1), 0.5)
+     X_fit, X_val, y_fit, y_val = train_test_split(
+         X_train_full,
+         y_train_full,
+         test_size=inner_test_size,
+         random_state=data_seed,
+     )
+     X_fit, X_val, y_fit, y_val, _ = clean_train_test_for_modeling(X_fit, X_val, y_fit, y_val, verbose=False)
+     if X_fit.empty or X_val.empty:
+         return None
+ 
+     scores = []
+     input_size = X_fit.shape[1]
+     output_size = as_2d_float_array(y_fit, "y_fit").shape[1]
+     for i in range(int(num_repeats)):
+         try:
+             if is_torch_model(model_class):
+                 model = make_torch_model(model_class, input_size, hidden_sizes, output_size)
+                 if not validate_hidden_size_compatibility(model, hidden_sizes):
+                     continue
+                 _predictions, _mse, r2, _model, _report = fit_model(
+                     model,
+@@ -5157,51 +5213,51 @@ def forward_feature_selection(model_class, data, inputs, output, num_epochs, hid
+     print('Elminated Features: ')
+     print(set(data.columns).difference(candidates))
+ 
+     table = pd.DataFrame(data=rows)
+     return table
+ 
+ 
+ # Repeats an fit_model to get average of results
+ def repeat_fit_model(
+     model_class,
+     num_repeats,
+     num_epochs,
+     hidden_sizes,
+     display_steps=False,
+     features=None,
+     optimization_scope="weights",
+     optimize_feature_indexes=None,
+     pretrained_state_dict_path=None,
+ ):
+     """Run repeated training/evaluation and summarize successful runs.
+ 
+     Returns eight values in all cases: mean R² (%), std R² (%), mean MSE,
+     best predictions, best R² (%), per-run R² list (%), best run index, and
+     the optimized-input report from the best run.
+     """
+-    X_train, X_test, y_train, y_test = read_prep_data(features)
++    X_train, X_test, y_train, y_test = read_prep_data_cached(features)
+     X_train, X_test, y_train, y_test, _dropped_missing_columns = clean_train_test_for_modeling(
+         X_train,
+         X_test,
+         y_train,
+         y_test,
+         verbose=False,
+     )
+     r2_list = []
+     mse_list = []
+     max_r2 = -float("inf")
+     max_run = 0
+     best_preds = None
+     best_optimized_inputs_report = None
+     input_size = X_train.shape[1]
+     output_size = as_2d_float_array(y_train, "y_train").shape[1]
+ 
+     for i in range(int(num_repeats)):
+         try:
+             if is_torch_model(model_class):
+                 model = make_torch_model(model_class, input_size, hidden_sizes, output_size)
+                 if not validate_hidden_size_compatibility(model, hidden_sizes):
+                     print(f"Skipping incompatible hidden sizes {hidden_sizes} for {model_class.__name__}.")
+                     continue
+                 predictions, mse, r2, model, optimized_inputs_report = fit_model(
+                     model,
+@@ -5261,51 +5317,51 @@ def repeat_fit_model(
+ 
+ 
+ def main():
+     dataset_path = "convert/stclean.csv"
+     selected_saved_run, loaded_optimization_scope = prompt_saved_run_choice()
+     prepared_X_train, prepared_outputs, use_auto_feature_selection, reused_prep_data = prepare_or_reuse_data(
+         dataset_path=dataset_path,
+         prep_folder="prep_data",
+     )
+ 
+     saved_inputs = selected_saved_run.get("inputs") if selected_saved_run else None
+     saved_outputs = selected_saved_run.get("outputs") if selected_saved_run else None
+     run_inputs = saved_inputs if saved_inputs else prepared_X_train.columns.tolist()
+     run_outputs_for_validation = saved_outputs if saved_outputs else prepared_outputs
+     run_inputs, _ = remove_leakage_inputs_for_training(
+         run_inputs,
+         output_features=run_outputs_for_validation,
+         context="pre_training",
+     )
+     if not run_inputs:
+         print("No input columns remain after automatic target-leakage removal.")
+         exit()
+     run_optional_future_quality_inputs = optional_input_overrides_for_selection(
+         run_inputs, run_outputs_for_validation
+     )
+-    X_train, X_test, y_train, y_test = read_prep_data(
++    X_train, X_test, y_train, y_test = read_prep_data_cached(
+         inputs=run_inputs,
+         prep_folder="prep_data",
+         optional_future_quality_inputs=run_optional_future_quality_inputs,
+     )
+ 
+     # After loading, get the column names from X_train
+     inputs = X_train.columns.tolist()
+     if saved_outputs:
+         missing_saved_outputs = [col for col in saved_outputs if col not in y_train.columns.tolist()]
+         if missing_saved_outputs:
+             print(
+                 "Saved run output columns are missing from prep_data: "
+                 f"{missing_saved_outputs}. Please rebuild prep_data or choose a different saved run."
+             )
+             exit()
+         y_train = y_train[saved_outputs]
+         y_test = y_test[saved_outputs]
+     outputs = y_train.columns.tolist()
+     output = outputs
+     try:
+         X_train, X_test, y_train, y_test, dropped_missing_columns = clean_train_test_for_modeling(
+             X_train,
+             X_test,
+             y_train,
+             y_test,
+@@ -5708,51 +5764,58 @@ def main():
+             print(cv_summary)
+         split_print_columns = [
+             col for col in [
+                 "model", "hidden sizes", "epochs",
+                 "Random Split R²", "Random Split RMSE", "Random Split MAE",
+                 "Time Split R²", "Time Split RMSE", "Time Split MAE",
+             ]
+             if col in results_table.columns
+         ]
+         if split_print_columns:
+             print("============ Holdout split comparison (identical splits for all models) =========================")
+             print(results_table[split_print_columns])
+         print("========================== Best Mean Model ===============================")
+         print("Best Mean R-Squred:", best_mean_r2)
+         print("Best model with better mean R-Squred:", best_model_name)
+         print("Best Hidden sizes:", best_hidden_sizes)
+         print("Best epochs:", best_epochs)
+         print("=========================== Max Model ================================")
+         print("Best model with better max R-Squred:", max_model_name)
+         print("Best Hidden sizes:", max_hidden_sizes)
+         print("Best epochs:", max_epochs)
+         print("Max R-Squred:", best_r2)
+ 
+         results_table.to_csv("exp.csv")
+ 
+-        X_train, X_test, y_train, y_test = read_prep_data(active_features)
++        X_train, X_test, y_train, y_test = read_prep_data_cached(active_features)
++        X_train, X_test, y_train, y_test, _ = clean_train_test_for_modeling(
++            X_train,
++            X_test,
++            y_train,
++            y_test,
++            verbose=False,
++        )
+         generate_target_shap_analysis(X_train, X_test, y_train, y_test, targets=outputs)
+ 
+         # Show and save the plot for best results
+         best_predictions = model_best_predictions.get(max_model_name)
+         if best_predictions is None:
+             print("Best model did not produce predictions. Skipping reporting/plots.")
+             exit()
+         output_title = ", ".join(outputs)
+         title = "Prediction of " + output_title + " with " + max_model_name + " epochs:" + str(max_epochs)
+         file_name = f"R2-{best_r2:.2f}-" + max_model_name + "-" + "-".join(outputs) + ".png"
+ 
+         y_test_values = y_test.values if hasattr(y_test, "values") else y_test
+         best_model_metrics = compute_regression_report_metrics(y_test_values, best_predictions)
+         if best_model_metrics:
+             print("===================== Best Selected Model Report =====================")
+             print(f"Selected model name                    {max_model_name}")
+             print(f"R-Squared                              {best_r2/100:.4f}")
+             print(
+                 f"Correlation coefficient                {best_model_metrics['Correlation coefficient']:.4f}"
+             )
+             print(
+                 f"Mean absolute error                    {best_model_metrics['Mean absolute error']:.4f}"
+             )
+             print(
+                 f"Root mean squared error                {best_model_metrics['Root mean squared error']:.4f}"

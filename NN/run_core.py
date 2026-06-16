@@ -67,6 +67,7 @@ import math
 from datetime import datetime, timezone
 from collections import OrderedDict
 import warnings
+import logging
 
 from openpyxl.styles import Font, PatternFill, Alignment
 
@@ -101,6 +102,15 @@ warnings.filterwarnings(
     message="X does not have valid feature names, but .* was fitted with feature names",
     category=UserWarning,
 )
+
+LOGGER = logging.getLogger(__name__)
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=os.getenv("RUN_CORE_LOG_LEVEL", "INFO").upper(), format="%(levelname)s:%(name)s:%(message)s")
+DEBUG_PATHS = os.getenv("RUN_CORE_DEBUG_PATHS", "").strip().lower() in {"1", "true", "yes", "debug"}
+_PREP_DATA_CACHE = {}
+_VALIDATION_CACHE = set()
+_NAN_REPORT_CACHE = set()
+
 
 ANSI_RESET = "\033[0m"
 ANSI_GREEN = "\033[92m"
@@ -205,54 +215,60 @@ def coerce_refinery_numeric_frame(dataframe):
 
 
 
-def validation_report(df, name="dataset"):
-    """Print a compact data-quality report before model training."""
-    if not isinstance(df, pd.DataFrame):
-        df = pd.DataFrame(df)
+def _nan_summary_signature(*frames):
+    parts = []
+    for frame in frames:
+        if frame is None:
+            parts.append(None)
+            continue
+        df = frame if isinstance(frame, pd.DataFrame) else pd.DataFrame(frame)
+        parts.append((tuple(df.columns), tuple(df.isna().sum().astype(int).tolist()), len(df)))
+    return tuple(parts)
 
-    print("\n")
-    print_divider("=", 76)
-    print(f"VALIDATION REPORT: {name}")
-    print_divider("-", 76)
-    print(f"shape: {df.shape}")
-    print(f"duplicate rows: {int(df.duplicated().sum())}")
 
-    nan_counts = df.isna().sum().sort_values(ascending=False)
-    nan_percentages = (nan_counts / max(len(df), 1) * 100.0).sort_values(ascending=False)
-    print("NaN counts:")
-    print(nan_counts.to_string())
-    print("NaN percentages:")
-    print(nan_percentages.map(lambda value: f"{value:.2f}%").to_string())
+def report_nan_summary(name, *frames, force=False):
+    """Log one de-duplicated NaN summary for any collection of dataframes."""
+    signature = (name, _nan_summary_signature(*frames))
+    if not force and signature in _NAN_REPORT_CACHE:
+        LOGGER.debug("Skipping duplicate NaN summary for %s", name)
+        return
+    _NAN_REPORT_CACHE.add(signature)
+    rows = []
+    for idx, frame in enumerate(frames, start=1):
+        df = frame if isinstance(frame, pd.DataFrame) else pd.DataFrame(frame)
+        missing = df.isna().sum()
+        missing = missing[missing > 0].sort_values(ascending=False)
+        for column, count in missing.items():
+            rows.append({"frame": idx, "column": column, "nan_count": int(count), "nan_pct": float(count / max(len(df), 1) * 100.0)})
+    if not rows:
+        LOGGER.info("NaN summary for %s: no NaN values detected.", name)
+        return
+    summary = pd.DataFrame(rows)
+    LOGGER.info("NaN summary for %s:\n%s", name, summary.to_string(index=False))
 
-    numeric_df = df.select_dtypes(include=[np.number])
-    if numeric_df.empty:
-        infinite_counts = pd.Series(dtype="int64")
-        min_max_values = pd.DataFrame(columns=["min", "max"])
-    else:
-        infinite_counts = np.isinf(numeric_df).sum().sort_values(ascending=False)
-        min_max_values = pd.DataFrame({
-            "min": numeric_df.replace([np.inf, -np.inf], np.nan).min(),
-            "max": numeric_df.replace([np.inf, -np.inf], np.nan).max(),
-        })
 
-    print("infinite values:")
-    print(infinite_counts.to_string() if not infinite_counts.empty else "None")
+def validation_report(df, name="dataset", force=False):
+    """Run a reusable, de-duplicated validation workflow for a dataframe."""
+    frame = df if isinstance(df, pd.DataFrame) else pd.DataFrame(df)
+    signature = (name, frame.shape, tuple(frame.columns), tuple(frame.dtypes.astype(str)), tuple(frame.isna().sum().astype(int)))
+    if not force and signature in _VALIDATION_CACHE:
+        LOGGER.debug("Skipping duplicate validation report for %s", name)
+        return
+    _VALIDATION_CACHE.add(signature)
 
-    non_numeric_columns = df.select_dtypes(exclude=[np.number]).columns.tolist()
-    print("non-numeric columns:")
-    print(", ".join(non_numeric_columns) if non_numeric_columns else "None")
-
-    print("min/max values:")
-    print(min_max_values.to_string() if not min_max_values.empty else "None")
-
-    constant_columns = [
-        column for column in df.columns
-        if df[column].nunique(dropna=False) <= 1
-    ]
-    print("suspicious constant columns:")
-    print(", ".join(constant_columns) if constant_columns else "None")
-    print_divider("=", 76)
-
+    LOGGER.info("VALIDATION REPORT: %s shape=%s duplicate_rows=%s", name, frame.shape, int(frame.duplicated().sum()))
+    report_nan_summary(name, frame, force=force)
+    numeric_df = frame.select_dtypes(include=[np.number])
+    infinite_counts = np.isinf(numeric_df).sum() if not numeric_df.empty else pd.Series(dtype=int)
+    infinite_counts = infinite_counts[infinite_counts > 0]
+    non_numeric_columns = frame.columns.difference(numeric_df.columns).tolist()
+    constant_columns = [column for column in frame.columns if frame[column].nunique(dropna=False) <= 1]
+    if not infinite_counts.empty:
+        LOGGER.warning("Infinite values in %s:\n%s", name, infinite_counts.to_string())
+    if non_numeric_columns:
+        LOGGER.debug("Non-numeric columns in %s: %s", name, ", ".join(non_numeric_columns))
+    if constant_columns:
+        LOGGER.debug("Suspicious constant columns in %s: %s", name, ", ".join(constant_columns))
 
 def validation_report_for_training(X_train, y_train, name="training data"):
     """Print validation_report on the combined feature/target training table."""
@@ -328,67 +344,37 @@ def save_leakage_report(removed_columns, output_features=None, context="pre_trai
 
 
 def remove_leakage_inputs_for_training(input_features, output_features=None, context="pre_training"):
-    """Print, report, and remove automatic name-based leakage columns from X."""
-    cleaned_inputs, removed_columns = remove_name_based_leakage_inputs(
-        list(input_features),
+    """Remove suspicious target-leakage inputs before any model training."""
+    safe_inputs, removed_columns, audit_rows = audit_feature_leakage(
+        input_features,
         output_features=output_features,
+        context=context,
     )
     if removed_columns:
         print("Target leakage columns detected in X candidates:")
-        for column in removed_columns:
-            patterns = ", ".join(leakage_pattern_matches(column))
-            print(f" - {column} (matched: {patterns})")
+        for row in audit_rows:
+            if row["status"] == "unsafe_blocked":
+                print(f" - {row['feature']} (matched: {row['matched_logic']})")
         print("Removed leakage columns from X: " + ", ".join(removed_columns))
     else:
-        print("No automatic name-based target leakage columns detected in X candidates.")
-
-    kept_targets = [column for column in (output_features or []) if leakage_pattern_matches(column)]
+        LOGGER.info("No automatic name-based target leakage columns detected in X candidates for %s.", context)
+    kept_targets = [column for column in (output_features or []) if column in set(output_features or [])]
     if kept_targets:
-        print("Final target column(s) kept in y (not removed): " + ", ".join(kept_targets))
-
+        LOGGER.debug("Final target column(s) kept in y: %s", ", ".join(kept_targets))
     save_leakage_report(removed_columns, output_features=output_features, context=context)
-    return cleaned_inputs, removed_columns
-
-
-
-
+    if audit_rows:
+        LOGGER.debug("Leakage audit for %s:\n%s", context, pd.DataFrame(audit_rows).to_string(index=False))
+    return safe_inputs, removed_columns
 
 def _format_missing_percentage(value):
     """Format a missing-value percentage consistently for console reports."""
     return f"{value:.2f}%"
 
 
-def _print_missing_value_report(X_train, X_test, train_missing_counts, test_missing_counts):
-    """Print counts and percentages for columns that contain missing feature values."""
-    all_missing_columns = [
-        column
-        for column in X_train.columns
-        if train_missing_counts.get(column, 0) > 0 or test_missing_counts.get(column, 0) > 0
-    ]
-    if not all_missing_columns:
-        print("Missing-value report: no NaN values detected in selected input columns.")
-        return
-
-    print("\n================= Missing-Value Report =================")
-    print("Columns containing NaN values:")
-    for column in all_missing_columns:
-        train_count = int(train_missing_counts.get(column, 0))
-        test_count = int(test_missing_counts.get(column, 0))
-        train_pct = (train_count / max(len(X_train), 1)) * 100.0
-        test_pct = (test_count / max(len(X_test), 1)) * 100.0
-        print(
-            f" - {column}: "
-            f"train={train_count}/{len(X_train)} ({_format_missing_percentage(train_pct)}), "
-            f"test={test_count}/{len(X_test)} ({_format_missing_percentage(test_pct)})"
-        )
-        if train_pct > 20.0 or test_pct > 20.0:
-            print(
-                f"   WARNING: missing percentage exceeds 20% "
-                f"(train={_format_missing_percentage(train_pct)}, "
-                f"test={_format_missing_percentage(test_pct)})."
-            )
-    print("========================================================\n")
-
+def _print_missing_value_report(X_train, X_test, train_missing_counts=None, test_missing_counts=None):
+    """Compatibility wrapper around the de-duplicated NaN reporter."""
+    _ = (train_missing_counts, test_missing_counts)
+    report_nan_summary("selected input columns", X_train, X_test)
 
 def apply_missing_value_pipeline(X_train, X_test, missing_drop_threshold=50.0, verbose=True):
     """Drop high-missing feature columns and median-impute remaining values.
@@ -1939,15 +1925,86 @@ def parse_sequential_layout(answer, options, one_based=False):
     return flat_features, groups
 
 
+def _prep_cache_key(inputs=None, prep_folder="prep_data", optional_future_quality_inputs=None):
+    return (
+        os.path.abspath(prep_folder),
+        tuple(inputs) if inputs is not None else None,
+        tuple(optional_future_quality_inputs or ()),
+    )
+
+
+def read_prep_data_cached(inputs=None, prep_folder="prep_data", optional_future_quality_inputs=None, refresh=False):
+    """Lazy-load prepared datasets once per feature selection and reuse copies."""
+    key = _prep_cache_key(inputs, prep_folder, optional_future_quality_inputs)
+    if refresh or key not in _PREP_DATA_CACHE:
+        LOGGER.debug("Loading prep_data from disk: prep_folder=%s inputs=%s optional_future_quality_inputs=%s", prep_folder, inputs, optional_future_quality_inputs)
+        _PREP_DATA_CACHE[key] = read_prep_data(
+            inputs=inputs,
+            prep_folder=prep_folder,
+            optional_future_quality_inputs=optional_future_quality_inputs,
+        )
+    else:
+        LOGGER.debug("Reusing cached prep_data: prep_folder=%s inputs=%s", prep_folder, inputs)
+    return tuple(frame.copy() for frame in _PREP_DATA_CACHE[key])
+
+
+def _resolve_debug_path(label, path):
+    resolved = print_path_debug(label, path) if DEBUG_PATHS else os.path.abspath(path)
+    LOGGER.debug("Resolved %s path: %s", label, resolved)
+    return resolved
+
+
+def audit_feature_leakage(input_features, output_features=None, context="pre_training"):
+    """Apply exact leakage detection and return safe features plus audit rows.
+
+    Suspicious inputs are detected by refinery_variables.find_leakage_columns(),
+    which matches selected outputs, white_* future-quality columns, target-like
+    names, diagnostic-only patterns, post-process measurements, and future
+    information patterns configured in refinery_variables.py.
+    """
+    removed = find_leakage_columns(
+        input_features,
+        output_features=output_features,
+        optional_future_quality_inputs=FUTURE_QUALITY_INPUT_CANDIDATES,
+    )
+    audit_rows = []
+    for feature in input_features:
+        matches = leakage_pattern_matches(feature)
+        unsafe = feature in removed
+        audit_rows.append({
+            "context": context,
+            "feature": feature,
+            "status": "unsafe_blocked" if unsafe else "safe",
+            "matched_logic": ", ".join(matches) if matches else "no leakage pattern matched",
+            "reason": "blocked before model training" if unsafe else "available before prediction or explicitly allowed",
+        })
+    return [feature for feature in input_features if feature not in set(removed)], removed, audit_rows
+
+
+def _validate_selected_inputs_once(input_features, output_features, optional_future_quality_inputs=None, context="selection"):
+    key = (context, tuple(input_features), tuple(output_features or ()), tuple(optional_future_quality_inputs or ()))
+    if key in _VALIDATION_CACHE:
+        LOGGER.debug("Skipping duplicate model-input validation for %s", context)
+        return
+    validate_model_inputs(
+        input_features,
+        output_features=output_features,
+        optional_future_quality_inputs=optional_future_quality_inputs,
+    )
+    _VALIDATION_CACHE.add(key)
+
+
+def _log_path_banner(dataset_path, prep_folder):
+    LOGGER.info("Dataset path: %s", dataset_path)
+    LOGGER.info("prep_data folder: %s", prep_folder)
+    if DEBUG_PATHS:
+        LOGGER.debug("run_core.py file: %s", os.path.abspath(__file__))
+
+
 def prepare_or_reuse_data(dataset_path="convert/stclean.csv", prep_folder="prep_data"):
-    print("====================================")
-    print("DATASET PATH: " + dataset_path)
-    print("====================================")
-    print(f"[path-debug] run.py file: {os.path.abspath(__file__)}")
-    dataset_path = print_path_debug("raw dataset CSV", dataset_path)
-    prep_folder = print_path_debug("prep_data folder", prep_folder)
-    print(f"[path-debug] Effective dataset path: {dataset_path}")
-    print(f"[path-debug] Effective prep_data folder: {prep_folder}")
+    dataset_path = _resolve_debug_path("raw dataset CSV", dataset_path)
+    prep_folder = _resolve_debug_path("prep_data folder", prep_folder)
+    _log_path_banner(dataset_path, prep_folder)
 
     use_auto_feature_selection = False
     reused_prep_data = False
@@ -1969,7 +2026,7 @@ def prepare_or_reuse_data(dataset_path="convert/stclean.csv", prep_folder="prep_
                 f"to prevent target leakage: {leaked_existing_inputs}"
             )
         else:
-            X_train_existing, _, y_train_existing, _ = read_prep_data(inputs=None, prep_folder=prep_folder)
+            X_train_existing, _, y_train_existing, _ = read_prep_data_cached(inputs=None, prep_folder=prep_folder)
             existing_inputs = X_train_existing.columns.tolist()
             print_numbered_feature_list("Prepared Input Features (prep_data)", existing_inputs, ANSI_GREEN)
             existing_inputs, optional_future_quality_inputs = append_future_quality_input_candidates(
@@ -1978,7 +2035,7 @@ def prepare_or_reuse_data(dataset_path="convert/stclean.csv", prep_folder="prep_
                 selected_output_features=existing_outputs,
             )
             if optional_future_quality_inputs:
-                X_train_existing, _, y_train_existing, _ = read_prep_data(
+                X_train_existing, _, y_train_existing, _ = read_prep_data_cached(
                     inputs=existing_inputs,
                     prep_folder=prep_folder,
                     optional_future_quality_inputs=optional_future_quality_inputs,
@@ -1990,18 +2047,15 @@ def prepare_or_reuse_data(dataset_path="convert/stclean.csv", prep_folder="prep_
                 print("prep_data metadata:")
                 print(metadata)
 
-            print(
-                "[path-debug] Complete prep_data files were found. If you continue with prep_data, "
-                "the raw dataset CSV will not be read in this run."
-            )
+            LOGGER.info("Complete prep_data files were found; raw dataset CSV can be skipped.")
             reuse_answer = input(
                 "Continue with these prepared refinery-safe inputs/outputs? [y]: "
             ).strip().lower()
             if reuse_answer in ("", "y", "yes"):
-                print("[path-debug] prep_data reuse selected; skipping raw dataset CSV read.")
+                LOGGER.info("prep_data reuse selected; skipping raw dataset CSV read.")
                 reused_prep_data = True
                 return X_train_existing, existing_outputs, use_auto_feature_selection, reused_prep_data
-            print("[path-debug] prep_data reuse declined; raw dataset CSV flow will be used.")
+            LOGGER.info("prep_data reuse declined; raw dataset CSV flow will be used.")
 
             prep_train_path = os.path.join(prep_folder, "train.csv")
             prep_test_path = os.path.join(prep_folder, "test.csv")
@@ -2053,7 +2107,7 @@ def prepare_or_reuse_data(dataset_path="convert/stclean.csv", prep_folder="prep_
                         optional_future_quality_inputs = optional_input_overrides_for_selection(
                             resolved_inputs, existing_outputs
                         )
-                        validate_model_inputs(
+                        _validate_selected_inputs_once(
                             resolved_inputs,
                             output_features=existing_outputs,
                             optional_future_quality_inputs=optional_future_quality_inputs,
@@ -2096,6 +2150,7 @@ def prepare_or_reuse_data(dataset_path="convert/stclean.csv", prep_folder="prep_
                             y_test_selected,
                             metadata=metadata,
                         )
+                        _PREP_DATA_CACHE.clear()
                         print("prep_data updated with the newly selected input features.")
                         reused_prep_data = True
                         return (
@@ -2112,7 +2167,7 @@ def prepare_or_reuse_data(dataset_path="convert/stclean.csv", prep_folder="prep_
                 print("prep_data/train.csv or prep_data/test.csv not found. Preparing data again from the raw dataset...")
 
     dataset_path = ensure_dataset_csv_exists(dataset_path)
-    print(f"[path-debug] prep_data did not prevent raw CSV flow; reading dataset now: {dataset_path}")
+    LOGGER.info("Reading raw dataset CSV: %s", dataset_path)
     data = pd.read_csv(dataset_path)
     print_selection_guide()
 
@@ -2184,7 +2239,7 @@ def prepare_or_reuse_data(dataset_path="convert/stclean.csv", prep_folder="prep_
     optional_future_quality_inputs = optional_input_overrides_for_selection(
         resolved_inputs, selected_output_features
     )
-    validate_model_inputs(
+    _validate_selected_inputs_once(
         resolved_inputs,
         output_features=selected_output_features,
         optional_future_quality_inputs=optional_future_quality_inputs,
@@ -2222,7 +2277,8 @@ def prepare_or_reuse_data(dataset_path="convert/stclean.csv", prep_folder="prep_
         optional_future_quality_inputs=optional_future_quality_inputs,
     )
 
-    X_train, X_test, y_train, y_test = read_prep_data(
+    _PREP_DATA_CACHE.clear()
+    X_train, X_test, y_train, y_test = read_prep_data_cached(
         inputs=resolved_inputs,
         prep_folder=prep_folder,
         optional_future_quality_inputs=optional_future_quality_inputs,
@@ -2898,7 +2954,7 @@ def cross_validate_model(
     optimize_feature_indexes=None,
 ):
     """Run leakage-safe 5-fold CV and report R², RMSE, and MAE mean ± std."""
-    X_train, X_test, y_train, y_test = read_prep_data(features)
+    X_train, X_test, y_train, y_test = read_prep_data_cached(features)
     full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
     full_y = pd.concat([y_train, y_test], axis=0).reset_index(drop=True)
     if len(full_X) < 2:
@@ -3014,7 +3070,7 @@ def evaluate_model_on_required_splits(
     test_size=0.2,
 ):
     """Evaluate one model/configuration on identical random and time-based splits."""
-    X_train, X_test, y_train, y_test = read_prep_data(features)
+    X_train, X_test, y_train, y_test = read_prep_data_cached(features)
     full_X = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
     full_y = pd.concat([y_train, y_test], axis=0).reset_index(drop=True)
     split_indexes = evaluation_split_indices(len(full_X), test_size=test_size)
@@ -4120,7 +4176,7 @@ def select_epochs_with_cv_early_stopping(
     min_delta=early_stopping_min_delta,
 ):
     """Recommend an epoch count using leakage-safe K-Fold early stopping."""
-    X_train, _, y_train, _ = read_prep_data(features)
+    X_train, _, y_train, _ = read_prep_data_cached(features)
     full_X = X_train.reset_index(drop=True)
     full_y = y_train.reset_index(drop=True)
     if len(full_X) < 2:
@@ -4228,7 +4284,7 @@ def select_epochs_with_cv_early_stopping(
 
 def train_single_model(model_class, num_epochs, hidden_sizes, features=None, run=0):
     """Train one model instance and return trained model with raw train/test splits."""
-    X_train, X_test, y_train, y_test = read_prep_data(features)
+    X_train, X_test, y_train, y_test = read_prep_data_cached(features)
     input_size = X_train.shape[1]
     output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
     model = make_torch_model(model_class, input_size, hidden_sizes, output_size)
@@ -4281,7 +4337,7 @@ def _train_model_for_shap(model_class, inputs, num_epochs, hidden_sizes):
             return None, None, None, None, False
         return model, X_train, X_train_explain, X_test_explain, True
 
-    X_train, X_test, y_train, y_test = read_prep_data(inputs)
+    X_train, X_test, y_train, y_test = read_prep_data_cached(inputs)
     try:
         model = model_class(model_seed)
         _, _, r2, fitted_model = fit_sklearn_model(model, X_train, X_test, y_train, y_test)
@@ -4935,7 +4991,7 @@ def shap_feature_importance(model_class, inputs, num_epochs, hidden_sizes, model
 
     return shap_table
 def weight_analysis(model_class, data, inputs, output, num_epochs, hidden_sizes):
-    X_train, X_test, y_train, y_test = read_prep_data(inputs)
+    X_train, X_test, y_train, y_test = read_prep_data_cached(inputs)
     input_size = X_train.shape[1]
 
     output_size = y_train.shape[1] if hasattr(y_train, "shape") and len(y_train.shape) > 1 else 1
@@ -4997,7 +5053,7 @@ def evaluate_feature_subset_on_training_split(
     chosen on an inner train/validation split of the training data and the final
     test split must remain untouched until final model evaluation.
     """
-    X_train_full, _X_test_unused, y_train_full, _y_test_unused = read_prep_data(features)
+    X_train_full, _X_test_unused, y_train_full, _y_test_unused = read_prep_data_cached(features)
     if len(X_train_full) < 3:
         return None
 
@@ -5179,7 +5235,7 @@ def repeat_fit_model(
     best predictions, best R² (%), per-run R² list (%), best run index, and
     the optimized-input report from the best run.
     """
-    X_train, X_test, y_train, y_test = read_prep_data(features)
+    X_train, X_test, y_train, y_test = read_prep_data_cached(features)
     X_train, X_test, y_train, y_test, _dropped_missing_columns = clean_train_test_for_modeling(
         X_train,
         X_test,
@@ -5283,7 +5339,7 @@ def main():
     run_optional_future_quality_inputs = optional_input_overrides_for_selection(
         run_inputs, run_outputs_for_validation
     )
-    X_train, X_test, y_train, y_test = read_prep_data(
+    X_train, X_test, y_train, y_test = read_prep_data_cached(
         inputs=run_inputs,
         prep_folder="prep_data",
         optional_future_quality_inputs=run_optional_future_quality_inputs,
@@ -5730,7 +5786,14 @@ def main():
 
         results_table.to_csv("exp.csv")
 
-        X_train, X_test, y_train, y_test = read_prep_data(active_features)
+        X_train, X_test, y_train, y_test = read_prep_data_cached(active_features)
+        X_train, X_test, y_train, y_test, _ = clean_train_test_for_modeling(
+            X_train,
+            X_test,
+            y_train,
+            y_test,
+            verbose=False,
+        )
         generate_target_shap_analysis(X_train, X_test, y_train, y_test, targets=outputs)
 
         # Show and save the plot for best results
