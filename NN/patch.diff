@@ -1,17 +1,140 @@
-diff --git a/NN/run_reporting.py b/NN/run_reporting.py
-index 531c3ba23eb7110d53c1d673c04d9d9882f7bc7f..ac914deab448ed99ca8248abde850c769e5a6615 100644
---- a/NN/run_reporting.py
-+++ b/NN/run_reporting.py
-@@ -1,11 +1,12 @@
- """Report-generation helpers for the NN experiment workflow."""
- 
- from run_core import (
-     generate_drift_analysis_report,
-     generate_feature_importance_reports,
-+    generate_final_reporting_conclusion,
-     generate_model_comparison_report,
-     generate_model_b_feature_importance_analysis,
-     generate_prescriptive_optimization_report,
-     print_industrial_operator_demo,
-     save_operator_report,
+diff --git a/NN/read_data.py b/NN/read_data.py
+index 8aa5f9bff250d208a9087fb782a2208458e80daf..15fd52cb376013055dae8243c149e9e2474a566a 100644
+--- a/NN/read_data.py
++++ b/NN/read_data.py
+@@ -261,95 +261,126 @@ TEMPORAL_DERIVED_COLUMN_PATTERN = re.compile(
+     r".+__(diff|lag|seqdiff|ratio|accel|normchg|roll_mean|roll_std|roll_min|roll_max|roll_range|roll_slope)_\d+$"
+     r"|sheet_name__(date_ordinal|year|month|day|dayofyear|iso_week|elapsed_days)$"
  )
+ 
+ 
+ def split_base_and_derived_input_features(data_columns, input_features):
+     """Split user-provided inputs into dataset columns and temporal-derived columns."""
+     if input_features is None:
+         return None, []
+ 
+     base_input_features = [col for col in input_features if col in data_columns]
+     derived_input_features = [col for col in input_features if col not in data_columns]
+ 
+     invalid_derived = [
+         col for col in derived_input_features if not TEMPORAL_DERIVED_COLUMN_PATTERN.match(col)
+     ]
+     if invalid_derived:
+         raise ValueError(
+             f"Input columns not found in dataset and not recognized as temporal-derived columns: "
+             f"{invalid_derived}. Available columns: {list(data_columns)}"
+         )
+ 
+     return base_input_features, derived_input_features
+ 
+ 
+-RAW_TIME_COLUMNS = ("sheet_name", "report_date_month", "report_date_day", "work_day")
++RAW_TIME_COLUMNS = ("sheet_name", "report_date_year", "report_date_month", "report_date_day", "work_day")
+ SHEET_NAME_DATE_FEATURES = (
+     "year",
+     "month",
+     "day",
+     "day_of_week",
+     "month_sin",
+     "month_cos",
+     "day_sin",
+     "day_cos",
+ )
+ 
+ 
++def _parse_report_date_columns(data):
++    """Return dates built from report date columns when sheet labels are not dates."""
++    year_column = next(
++        (column for column in ("report_date_year", "report_year", "year") if column in data.columns),
++        None,
++    )
++    month_column = next(
++        (column for column in ("report_date_month", "month") if column in data.columns),
++        None,
++    )
++    day_column = next(
++        (column for column in ("report_date_day", "work_day", "day") if column in data.columns),
++        None,
++    )
++    if not (year_column and month_column and day_column):
++        return None
++
++    date_parts = pd.DataFrame({
++        "year": pd.to_numeric(data[year_column], errors="coerce"),
++        "month": pd.to_numeric(data[month_column], errors="coerce"),
++        "day": pd.to_numeric(data[day_column], errors="coerce"),
++    })
++    return pd.to_datetime(date_parts, errors="coerce")
++
++
+ def preprocess_calendar_features(data):
+-    """Build leakage-safe calendar features from ``sheet_name`` and drop raw time columns.
++    """Build leakage-safe calendar features and drop raw time columns.
+ 
+-    ``sheet_name`` is the report date in the source workbook, not a plant
+-    measurement.  The raw sheet label and duplicate raw date/work-day fields are
++    ``sheet_name`` is the report date in some source workbooks, not a plant
++    measurement.  Newer converted CSVs may instead keep non-date sheet labels
++    plus explicit ``report_date_*`` fields.  The raw labels/date fields are
+     removed before model feature selection so models cannot memorize individual
+     sheets.  Only bounded calendar components and their cyclical encodings are
+     retained as candidate inputs.
+     """
+     transformed = data.copy()
+     parsed_dates = None
+     if "sheet_name" in transformed.columns:
+         parsed_dates = pd.to_datetime(
+             transformed["sheet_name"].astype(str).str.strip(),
+             format="%Y.%m.%d",
+             errors="coerce",
+         )
+-        if parsed_dates.isna().all():
+-            raise ValueError(
+-                "sheet_name was present but no values could be parsed as dates "
+-                "in YYYY.MM.DD format."
+-            )
+ 
++    if parsed_dates is None or parsed_dates.isna().all():
++        parsed_dates = _parse_report_date_columns(transformed)
++
++    if parsed_dates is not None and parsed_dates.notna().any():
+         transformed["date"] = parsed_dates
+         transformed["year"] = parsed_dates.dt.year
+         transformed["month"] = parsed_dates.dt.month
+         transformed["day"] = parsed_dates.dt.day
+         transformed["day_of_week"] = parsed_dates.dt.dayofweek
+         transformed["month_sin"] = np.sin(2.0 * np.pi * transformed["month"] / 12.0)
+         transformed["month_cos"] = np.cos(2.0 * np.pi * transformed["month"] / 12.0)
+         transformed["day_sin"] = np.sin(2.0 * np.pi * transformed["day"] / 31.0)
+         transformed["day_cos"] = np.cos(2.0 * np.pi * transformed["day"] / 31.0)
++    elif "sheet_name" in transformed.columns:
++        print(
++            "Warning: sheet_name was present but not parseable as YYYY.MM.DD, "
++            "and no complete report_date_year/month/day fallback was available; "
++            "calendar features will be skipped."
++        )
+ 
+     transformed = transformed.drop(
+         columns=[column for column in RAW_TIME_COLUMNS if column in transformed.columns],
+         errors="ignore",
+     )
+     return transformed, parsed_dates
+ 
+ 
+ def replace_legacy_sheet_name_input(input_features, data_columns):
+     """Replace legacy raw ``sheet_name`` requests with encoded calendar inputs."""
+     if input_features is None:
+         return None
+     calendar_features = [feature for feature in SHEET_NAME_DATE_FEATURES if feature in data_columns]
+     replaced = []
+     for feature in input_features:
+         if feature == "sheet_name":
+             replaced.extend(calendar_features)
+         else:
+             replaced.append(feature)
+     return replaced
+ 
+ 
+ def add_sheet_name_datetime_features(data, input_features):
+     """Map any legacy ``sheet_name`` input request to encoded calendar features."""
+     resolved_inputs = list(input_features)

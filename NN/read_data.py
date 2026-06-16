@@ -283,7 +283,7 @@ def split_base_and_derived_input_features(data_columns, input_features):
     return base_input_features, derived_input_features
 
 
-RAW_TIME_COLUMNS = ("sheet_name", "report_date_month", "report_date_day", "work_day")
+RAW_TIME_COLUMNS = ("sheet_name", "report_date_year", "report_date_month", "report_date_day", "work_day")
 SHEET_NAME_DATE_FEATURES = (
     "year",
     "month",
@@ -296,11 +296,37 @@ SHEET_NAME_DATE_FEATURES = (
 )
 
 
-def preprocess_calendar_features(data):
-    """Build leakage-safe calendar features from ``sheet_name`` and drop raw time columns.
+def _parse_report_date_columns(data):
+    """Return dates built from report date columns when sheet labels are not dates."""
+    year_column = next(
+        (column for column in ("report_date_year", "report_year", "year") if column in data.columns),
+        None,
+    )
+    month_column = next(
+        (column for column in ("report_date_month", "month") if column in data.columns),
+        None,
+    )
+    day_column = next(
+        (column for column in ("report_date_day", "work_day", "day") if column in data.columns),
+        None,
+    )
+    if not (year_column and month_column and day_column):
+        return None
 
-    ``sheet_name`` is the report date in the source workbook, not a plant
-    measurement.  The raw sheet label and duplicate raw date/work-day fields are
+    date_parts = pd.DataFrame({
+        "year": pd.to_numeric(data[year_column], errors="coerce"),
+        "month": pd.to_numeric(data[month_column], errors="coerce"),
+        "day": pd.to_numeric(data[day_column], errors="coerce"),
+    })
+    return pd.to_datetime(date_parts, errors="coerce")
+
+
+def preprocess_calendar_features(data):
+    """Build leakage-safe calendar features and drop raw time columns.
+
+    ``sheet_name`` is the report date in some source workbooks, not a plant
+    measurement.  Newer converted CSVs may instead keep non-date sheet labels
+    plus explicit ``report_date_*`` fields.  The raw labels/date fields are
     removed before model feature selection so models cannot memorize individual
     sheets.  Only bounded calendar components and their cyclical encodings are
     retained as candidate inputs.
@@ -313,12 +339,11 @@ def preprocess_calendar_features(data):
             format="%Y.%m.%d",
             errors="coerce",
         )
-        if parsed_dates.isna().all():
-            raise ValueError(
-                "sheet_name was present but no values could be parsed as dates "
-                "in YYYY.MM.DD format."
-            )
 
+    if parsed_dates is None or parsed_dates.isna().all():
+        parsed_dates = _parse_report_date_columns(transformed)
+
+    if parsed_dates is not None and parsed_dates.notna().any():
         transformed["date"] = parsed_dates
         transformed["year"] = parsed_dates.dt.year
         transformed["month"] = parsed_dates.dt.month
@@ -328,6 +353,12 @@ def preprocess_calendar_features(data):
         transformed["month_cos"] = np.cos(2.0 * np.pi * transformed["month"] / 12.0)
         transformed["day_sin"] = np.sin(2.0 * np.pi * transformed["day"] / 31.0)
         transformed["day_cos"] = np.cos(2.0 * np.pi * transformed["day"] / 31.0)
+    elif "sheet_name" in transformed.columns:
+        print(
+            "Warning: sheet_name was present but not parseable as YYYY.MM.DD, "
+            "and no complete report_date_year/month/day fallback was available; "
+            "calendar features will be skipped."
+        )
 
     transformed = transformed.drop(
         columns=[column for column in RAW_TIME_COLUMNS if column in transformed.columns],
